@@ -6,27 +6,23 @@ import {
 	type SetStateAction,
 } from "react";
 import type { Location } from "@/bindings.gen";
-import { getMapState, getVisibleTags, duplicateLocation, addLocations } from "@/store/useMapStore";
+import { getMapState, getVisibleTags, duplicateLocation } from "@/store/useMapStore";
 import { sortTagsByMode } from "@/lib/util/util";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { getSettings, setSetting, MOVEMENT_CYCLE, MOVEMENT_MODES } from "@/store/settings";
 import { PANO_ZOOM, zoomInStep, zoomOutStep } from "@/lib/sv/constants";
 import { tweenPov } from "@/lib/sv/tweenPov";
-import { type PanoReference, nearestLinkHeading, followLinkedPanos } from "@/lib/sv/lookup";
+import { type PanoReference, nearestLinkHeading } from "@/lib/sv/lookup";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
-import { downloadPano } from "@/lib/sv/panoDownload";
 import { isVirtualLocation } from "@/types";
 import { cycle } from "@/types/util";
 import { reviewNext, reviewPrev } from "@/lib/review/review";
 import { registerMapKeyActionHandler } from "@/lib/map/mapKeyBindings";
 import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
-import { toggleViewportLock } from "@/lib/sv/viewportLock";
-import { sendHideCar } from "./PanoControls";
-import { singletonPano, getPanorama, clearSingletonPano } from "@/lib/sv/panoSingleton";
-import { google } from "@/lib/sv/opensv";
+import { singletonPano } from "@/lib/sv/panoSingleton";
 
 interface LocationHotkeyDeps {
 	location: Location | null;
@@ -163,10 +159,6 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 		if (location) duplicateLocation(location.id);
 	});
 
-	useHotkey(useBinding("downloadPanoTile"), () => {
-		const panoId = singletonPano?.getPano();
-		if (panoId) downloadPano(panoId);
-	});
 	const stepPanoDate = (step: 1 | -1) => {
 		if (!panoDates.length) return;
 		const current = selectedPanoId ?? currentPano?.location?.pano ?? location?.panoId;
@@ -180,48 +172,6 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 	};
 	useHotkey(useBinding("nextPanoDate"), () => stepPanoDate(1));
 	useHotkey(useBinding("prevPanoDate"), () => stepPanoDate(-1));
-	useHotkey(useBinding("followRoad"), () => {
-		if (!singletonPano) return;
-		const panoId = singletonPano.getPano();
-		const heading = singletonPano.getPov().heading;
-		if (!panoId) return;
-		const container = fullscreenContainerRef.current ?? panoContainerRef.current?.parentElement;
-		if (container) toast(t("Following road..."), 1500, container);
-		followLinkedPanos(panoId, heading)
-			.then((locs) => {
-				if (locs.length > 0) addLocations(locs);
-				if (container)
-					toast(
-						t({ one: "Added {n} location", other: "Added {n} locations" }, { n: locs.length }),
-						1500,
-						container,
-					);
-			})
-			.catch(() => {
-				if (container) toast(t("Follow road failed"), 1500, container);
-			});
-	});
-
-	useHotkey(useBinding("refreshPano"), () => {
-		if (!singletonPano || !location) return;
-		const panoId = singletonPano.getPano();
-		const pov = singletonPano.getPov();
-		const zoom = singletonPano.getZoom();
-		clearSingletonPano();
-		const fresh = getPanorama();
-		if (!fresh) return;
-		if (panoId) fresh.setPano(panoId);
-		else fresh.setPosition({ lat: location.lat, lng: location.lng });
-		fresh.setPov(pov);
-		fresh.setZoom(zoom);
-		fresh.setVisible(true);
-		google.maps.event.trigger(fresh, "resize");
-		sendHideCar(!getSettings().showCar);
-	});
-
-	useHotkey(useBinding("viewportLock"), () => {
-		if (singletonPano) toggleViewportLock(singletonPano);
-	});
 
 	const quicktagSlot = (idx: number) => {
 		if (!location || !getMapState().map) return;

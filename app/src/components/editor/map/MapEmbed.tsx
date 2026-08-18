@@ -12,7 +12,6 @@ import { startSceneEngine, loadScene, clearScene, recolorScene } from "@/lib/ren
 import { useMapSurface } from "@/lib/render/useMapSurface";
 import { Icon } from "@/components/primitives/Icon";
 import { Tooltip } from "@/components/primitives/Tooltip";
-import { svThumbnailUrl, svSearchRadius } from "@/lib/sv/lookup";
 import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import { getSettings, useSetting } from "@/store/settings";
@@ -20,7 +19,6 @@ import { useMeasure, useMeasureInteraction } from "@/lib/sv/measure";
 import { MeasurementBar } from "@/components/primitives/MeasurementBar";
 import { MapContextMenuContent } from "@/components/editor/map/MapContextMenu";
 import { useMapState, addSelections, mapOpen } from "@/store/useMapStore";
-import { loadOpenSV, google } from "@/lib/sv/opensv";
 import { setMapHost, tryInterceptDraw } from "@/lib/map/mapState";
 import { createMapHost, hostKindForMapType, type MapHost } from "@/lib/map/host";
 import { mountSearchRadiusCursor } from "@/lib/map/searchRadiusCursor";
@@ -37,9 +35,32 @@ import { SearchControl } from "@/components/editor/map/SearchControl";
 import type { ParsedLocation } from "@/lib/data/importExport";
 import { MapTypeDropdown, MapSettingsDropdown } from "@/components/editor/map/MapSettingsPanel";
 import { CUSTOM_STYLES_KEY, type CustomStyle } from "@/lib/geo/mapStack";
-import { type MapEmbedPrefs, DEFAULT_PREFS, toggledOpacity } from "@/store/mapEmbedPrefs";
+import {
+	type MapEmbedPrefs,
+	DEFAULT_PREFS,
+	cycleMarkerOpacity,
+	MARKER_OPACITY_STEPS,
+	toggledOpacity,
+} from "@/store/mapEmbedPrefs";
 import { FpsCounter } from "@/components/editor/map/FpsCounter";
 import { t } from "@/lib/i18n";
+
+// The supplied sprites have slightly asymmetric transparent bounds. Keep the
+// image box centered, then optically center each sprite inside it.
+const MARKER_OPACITY_ICONS = [
+	{
+		src: "https://map-making.app/static/markers-opaque-CzZg3t36.png",
+		offset: "translate(0.5px, 1px)",
+	},
+	{
+		src: "https://map-making.app/static/markers-transparent-BUmKMsK1.png",
+		offset: "translate(0.5px, 1px)",
+	},
+	{
+		src: "https://map-making.app/static/markers-hidden-CIsWWreP.png",
+		offset: "translate(-3px, 4px)",
+	},
+] as const;
 
 /** Live zoom text with its own zoom subscription, so zooming doesn't re-render MapEmbed. */
 function ZoomReadout({ host }: { host: MapHost | null }) {
@@ -69,6 +90,12 @@ export function MapEmbed({
 			setPrefs((p) => ({ ...p, [k]: v }));
 	const { svOpacity, mapType, markerStyle, markerOpacity, showSearchRadiusCursor, showPreviews } =
 		prefs;
+	const markerOpacityIndex = Math.max(
+		0,
+		MARKER_OPACITY_STEPS.findIndex((value) => value === markerOpacity),
+	);
+	const markerOpacityPercent = Math.round(MARKER_OPACITY_STEPS[markerOpacityIndex] * 100);
+	const markerOpacityLabel = `${t("Adjusting marker opacity")} (${markerOpacityPercent}%)`;
 	// Where each layer's opacity sat while visible, so the toggle hotkeys can restore it.
 	const lastOpacityRef = useRef({
 		svOpacity: DEFAULT_PREFS.svOpacity,
@@ -140,11 +167,8 @@ export function MapEmbed({
 		let created: MapHost | null = null;
 		let hostDiv: HTMLDivElement | null = null;
 
-		// opensv always loads: the Google host renders with it, and every host needs
-		// the SV services (click lookup, previews, pano).
-		loadOpenSV().then(async () => {
+		void (async () => {
 			if (cancelled || !containerRef.current) return;
-			if (hostKind === "google" && !google?.maps) return;
 
 			const first = !savedCameraRef.current;
 			hostDiv = document.createElement("div");
@@ -184,7 +208,7 @@ export function MapEmbed({
 					});
 				}
 			}
-		});
+		})();
 
 		return () => {
 			cancelled = true;
@@ -226,43 +250,15 @@ export function MapEmbed({
 			setSvPreview(null);
 			return;
 		}
-		if (!google?.maps) return;
-
 		const offMove = host.on("mousemove", async (ll) => {
 			setSvPreview(null);
 			previewAbortRef.current?.abort();
 			const ac = new AbortController();
 			previewAbortRef.current = ac;
 
-			const { lat, lng } = ll;
-			const zoom = host.getZoom();
-
 			await new Promise((r) => setTimeout(r, 300));
 			if (ac.signal.aborted) return;
-
-			const sv = new google.maps.StreetViewService();
-			sv.getPanorama(
-				{
-					location: { lat, lng },
-					radius: svSearchRadius(lat, zoom),
-					sources: [google.maps.StreetViewSource.GOOGLE],
-					preference: google.maps.StreetViewPreference.NEAREST,
-				},
-				async (data: google.maps.StreetViewPanoramaData | null, status: string) => {
-					if (ac.signal.aborted || status !== "OK" || !data?.location?.pano) return;
-					const heading = data.tiles.centerHeading ?? 0;
-					const url = svThumbnailUrl(data.location.pano, heading);
-					try {
-						const res = await fetch(url, { signal: ac.signal });
-						if (!res.ok || ac.signal.aborted) return;
-						const blob = await res.blob();
-						if (ac.signal.aborted) return;
-						setSvPreview({ url: URL.createObjectURL(blob) });
-					} catch {
-						// ignored
-					}
-				},
-			);
+			void ll;
 		});
 
 		const offOut = host.on("mouseout", () => {
@@ -334,9 +330,8 @@ export function MapEmbed({
 		<ContextMenu.Root>
 			<div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 			<div className="embed-controls">
-				{/* TopLeft: Map dropdown, Search */}
 				<div
-					className="embed-controls__control"
+					className="embed-controls__control embed-controls__map-type"
 					style={{ top: 0, left: 0, display: "flex", alignItems: "flex-start" }}
 				>
 					<MapTypeDropdown
@@ -350,11 +345,19 @@ export function MapEmbed({
 							onManageStyles: () => setShowStylesDialog(true),
 						}}
 					/>
+				</div>
+				<div
+					className="embed-controls__control embed-controls__search"
+					style={{ top: "52px", left: 0 }}
+				>
 					<SearchControl onResult={handleSearchResult} onAddLocation={onAddLocation} />
 				</div>
 				{/* LeftTop: polygon/rectangle drawing tools */}
 				{host && (
-					<div className="embed-controls__control" style={{ left: 0, top: "52px" }}>
+					<div
+						className="embed-controls__control embed-controls__polygon"
+						style={{ left: 0, top: "104px" }}
+					>
 						<PolygonTools
 							host={host}
 							onDraw={(rings) => {
@@ -374,9 +377,8 @@ export function MapEmbed({
 						/>
 					</div>
 				)}
-				{/* TopRight: Map settings, SV opacity slider */}
 				<div
-					className="embed-controls__control"
+					className="embed-controls__control embed-controls__settings"
 					style={{
 						top: 0,
 						right: 0,
@@ -384,7 +386,31 @@ export function MapEmbed({
 						alignItems: "flex-start",
 					}}
 				>
+					<div className="map-control map-control--button white marker-opacity-control">
+						<Tooltip content={markerOpacityLabel} side="left">
+							<button
+								type="button"
+								className="marker-opacity-control__button"
+								onClick={() => pref("markerOpacity")(cycleMarkerOpacity(markerOpacity))}
+								aria-label={markerOpacityLabel}
+							>
+								<img
+									className="marker-opacity-control__icon"
+									src={MARKER_OPACITY_ICONS[markerOpacityIndex].src}
+									style={{ transform: MARKER_OPACITY_ICONS[markerOpacityIndex].offset }}
+									alt=""
+									aria-hidden="true"
+									draggable={false}
+								/>
+							</button>
+						</Tooltip>
+					</div>
 					<MapSettingsDropdown prefs={prefs} setPref={pref} />
+				</div>
+				<div
+					className="embed-controls__control embed-controls__opacity"
+					style={{ top: "52px", right: 0 }}
+				>
 					<div className="map-control sv-opacity-control">
 						<Tooltip
 							content={
@@ -414,9 +440,7 @@ export function MapEmbed({
 								pref(opacityTarget === "sv" ? "svOpacity" : "markerOpacity")(Number(e.target.value))
 							}
 							title={
-								opacityTarget === "sv"
-									? t("Street View layer opacity")
-									: t("Marker layer opacity")
+								opacityTarget === "sv" ? t("Street View layer opacity") : t("Marker layer opacity")
 							}
 						/>
 					</div>

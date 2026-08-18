@@ -12,6 +12,13 @@ export const commands = {
 	writeTempFile: (name: string, content: string) => __TAURI_INVOKE<string>("write_temp_file", { name, content }),
 	/**  Read a file from disk as UTF-8 text. Used by JS to read temp files and plugin sources. */
 	readFile: (path: string) => __TAURI_INVOKE<string>("read_file", { path }),
+	tencentCoverageIsCached: () => __TAURI_INVOKE<boolean>("tencent_coverage_is_cached"),
+	/**
+	 *  Download the Tencent PMTiles archive if it is not already cached.
+	 */
+	tencentCoveragePrepare: () => __TAURI_INVOKE<null>("tencent_coverage_prepare"),
+	/**  Read one byte range from a locally cached copy of the Tencent coverage archive. */
+	tencentCoverageRead: (offset: number, length: number) => __TAURI_INVOKE<number[]>("tencent_coverage_read", { offset, length }),
 	appReady: () => __TAURI_INVOKE<number>("app_ready"),
 	/**  Return the platform-specific app data directory path (e.g., `%LOCALAPPDATA%/app.map-making.local`). */
 	getAppDataDir: () => __TAURI_INVOKE<string>("get_app_data_dir"),
@@ -78,7 +85,7 @@ export const commands = {
 	 *  Finds the nearest city/country for a coordinate. O(log n) k-d tree lookup.
 	 *  Always returns `Some` -- the GeoNames dataset covers every landmass.
 	 */
-	reverseGeocode: (lat: number, lng: number) => __TAURI_INVOKE<GeoResult | null>("reverse_geocode", { lat, lng }),
+	reverseGeocode: (lat: number, lng: number, source: string | null) => __TAURI_INVOKE<GeoResult | null>("reverse_geocode", { lat, lng, source }),
 	discordPresenceSet: (activity: PresenceActivity) => __TAURI_INVOKE<null>("discord_presence_set", { activity }),
 	discordPresenceClear: () => __TAURI_INVOKE<null>("discord_presence_clear"),
 	/**
@@ -652,6 +659,11 @@ export type GeoResult = {
 	country: string,
 	/**  ISO 3166-1 alpha-2 (e.g. "US", "FR"). */
 	country_code: string,
+	province: string,
+	district: string,
+	town: string,
+	adcode: string,
+	formatted_address: string,
 };
 
 /**  The signed-in GeoGuessr account. */
@@ -1448,4 +1460,3 @@ function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deseria
 
     return Object.assign(fn, base);
 }
-

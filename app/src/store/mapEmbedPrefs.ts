@@ -1,7 +1,15 @@
-import type { SvColor, MapTypeKey, SvCoverageType, SvThickness, MarkerStyle } from "@/types";
+import type {
+	SvColor,
+	MapTypeKey,
+	SvCoverageType,
+	SvThickness,
+	MarkerStyle,
+	PanoProviderKey,
+} from "@/types";
 import type { OpacityToggleMode } from "./settings";
 
 export interface MapEmbedPrefs {
+	panoProvider: PanoProviderKey;
 	svOpacity: number;
 	svColor: SvColor;
 	showLabels: boolean;
@@ -26,9 +34,11 @@ export interface MapEmbedPrefs {
 	showSearchRadiusCursor: boolean;
 	showPreviews: boolean;
 	selectOnly: boolean;
+	findNearbyPanoOnClick: boolean;
 }
 
 export const DEFAULT_PREFS: MapEmbedPrefs = {
+	panoProvider: "baidu",
 	svOpacity: 0.5,
 	svColor: "#1098ad",
 	showLabels: true,
@@ -53,7 +63,16 @@ export const DEFAULT_PREFS: MapEmbedPrefs = {
 	showSearchRadiusCursor: false,
 	showPreviews: false,
 	selectOnly: false,
+	findNearbyPanoOnClick: true,
 };
+
+export const MARKER_OPACITY_STEPS = [1, 0.35, 0] as const;
+
+/** Cycle the map's unselected marker layer through the three toolbar states. */
+export function cycleMarkerOpacity(current: number): number {
+	const index = MARKER_OPACITY_STEPS.findIndex((value) => value === current);
+	return MARKER_OPACITY_STEPS[index < 0 ? 0 : (index + 1) % MARKER_OPACITY_STEPS.length];
+}
 
 /** Next value for a layer opacity toggle: a visible layer goes off, a hidden one comes
  *  back at `lastNonZero` (or full, per the setting). */

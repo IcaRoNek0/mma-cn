@@ -46,6 +46,7 @@ describe("marker layer flattening (layer-level opacity)", () => {
 				expect(layer).toBeInstanceOf(SDFMarkerLayer);
 				expect(layer.props.shape).toBe(MARKER_STYLE[style].shape);
 				expect(layer.props.radiusPixels).toBeCloseTo(MARKER_STYLE[style].radiusPixels);
+				expect(layer.props.strokeWidthPixels).toBeCloseTo(1.5);
 			}
 		}
 	});

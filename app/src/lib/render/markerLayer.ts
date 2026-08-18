@@ -71,6 +71,7 @@ export function buildMarkerLayer(
 		data: { length: count, attributes },
 		shape: s.shape,
 		radiusPixels: s.radiusPixels * sizeScale,
+		strokeWidthPixels: Math.min(2.25, Math.max(1.25, 1.5 * sizeScale)),
 		pickable: true,
 		...props,
 		...(flatten

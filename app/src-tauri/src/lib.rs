@@ -58,6 +58,7 @@ mod sync_engine;
 mod sync_geoguessr;
 mod sync_keying;
 mod sync_map_making;
+mod tencent_coverage;
 #[cfg(test)]
 mod test_util;
 mod vcs;
@@ -154,6 +155,8 @@ fn os_open(path: &std::path::Path) -> AppResult<()> {
     let program = "open";
     #[cfg(target_os = "linux")]
     let program = "xdg-open";
+    #[cfg(target_os = "android")]
+    let program = "termux-open";
     std::process::Command::new(program).arg(path).spawn()?;
     Ok(())
 }
@@ -288,7 +291,10 @@ fn list_user_plugins() -> Vec<PluginManifest> {
         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
             match serde_json::from_str::<PluginManifest>(&content) {
                 Ok(mut manifest) => {
-                    let folder_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                    let folder_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
                     if manifest.id.is_empty() {
                         manifest.id = folder_name.to_string();
                     }
@@ -542,7 +548,6 @@ pub(crate) fn resolve_googl(id: &str, mapsapp: bool) -> tauri::http::Response<Ve
 
 /// Application entry point. Configures panic logging, URI scheme protocols, Tauri plugins,
 /// the IPC command handler (with specta binding generation in debug builds), and window setup.
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 static START_INSTANT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 static STARTUP_MS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
@@ -576,6 +581,9 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         .commands(tauri_specta::collect_commands![
             write_temp_file,
             read_file,
+            tencent_coverage::tencent_coverage_is_cached,
+            tencent_coverage::tencent_coverage_prepare,
+            tencent_coverage::tencent_coverage_read,
             // --- Utility ---
             app_ready,
             get_app_data_dir,
@@ -715,6 +723,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         ])
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = START_INSTANT.set(std::time::Instant::now());
     let default_hook = std::panic::take_hook();
@@ -928,30 +937,37 @@ pub fn run() {
                     },
                 ))
                 .build(),
-        )
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .setup(|app| {
-            let t = std::time::Instant::now();
-            let _ = APP_HANDLE.set(app.handle().clone());
-            storage::init_paths(app.handle())?;
-            storage::run_migrations()?;
-            log::info!("[startup] migrations: {}ms", t.elapsed().as_millis());
+        );
 
-            #[cfg(desktop)]
-            {
-                app.handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())?;
-                app.handle().plugin(tauri_plugin_process::init())?;
-            }
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
 
-            if let Some(t0) = START_INSTANT.get() {
-                log::info!(
-                    "[startup] setup done: {}ms since run()",
-                    t0.elapsed().as_millis()
-                );
-            }
-            Ok(())
-        });
+    let builder = builder.setup(|app| {
+        let t = std::time::Instant::now();
+        let _ = APP_HANDLE.set(app.handle().clone());
+        storage::init_paths(app.handle())?;
+        storage::run_migrations()?;
+        log::info!("[startup] migrations: {}ms", t.elapsed().as_millis());
+
+        if let Err(error) = tencent_coverage::ensure_cache() {
+            log::warn!("[startup] Tencent coverage cache unavailable: {error}");
+        }
+
+        #[cfg(desktop)]
+        {
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle().plugin(tauri_plugin_process::init())?;
+        }
+
+        if let Some(t0) = START_INSTANT.get() {
+            log::info!(
+                "[startup] setup done: {}ms since run()",
+                t0.elapsed().as_millis()
+            );
+        }
+        Ok(())
+    });
 
     #[cfg(feature = "e2e")]
     let builder = builder.plugin(tauri_plugin_webdriver::init());

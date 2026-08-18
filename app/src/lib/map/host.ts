@@ -91,7 +91,8 @@ export function hostInstance<K extends MapHostKind>(
 }
 
 export function hostKindForMapType(mapType: MapTypeKey): MapHostKind {
-	return mapType === "vector" ? "maplibre" : "google";
+	void mapType;
+	return "maplibre";
 }
 
 export interface CreateHostOpts extends BasemapOpts {
@@ -106,12 +107,9 @@ export async function createMapHost(
 	prefs: MapEmbedPrefs,
 	opts: CreateHostOpts,
 ): Promise<MapHost> {
-	if (kind === "maplibre") {
-		const { createMapLibreHost } = await import("@/lib/map/maplibreHost");
-		return createMapLibreHost(container, prefs, opts);
-	}
-	const { createGoogleMapHost } = await import("@/lib/map/googleHost");
-	return createGoogleMapHost(container, prefs, opts);
+	void kind;
+	const { createMapLibreHost } = await import("@/lib/map/maplibreHost");
+	return createMapLibreHost(container, prefs, opts);
 }
 
 /** Axis-aligned bounds of [lng, lat] coords (or LatLng points). */

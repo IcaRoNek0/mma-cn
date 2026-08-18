@@ -3,11 +3,13 @@ import type { CellManager } from "@/lib/render/CellManager";
 import { boundsOfCoords, type MapHost } from "@/lib/map/host";
 import { LOCATION_LAYER_ID } from "@/lib/render/buildSceneLayers";
 import { cmd } from "@/lib/commands";
-import { lookupStreetView } from "@/lib/sv/lookup";
+import { fallbackPanoramaMetadata, getPanoramaProvider, type PanoramaMetadata } from "@/lib/pano";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
 import { tryInterceptClick, fitMapToBounds } from "@/lib/map/mapState";
 import { getSettings } from "@/store/settings";
+import { getLocal } from "@/lib/hooks/useLocalStorage";
+import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
 import type { ParsedLocation } from "@/lib/data/importExport";
 import { openSeenEntry } from "@/lib/seen/seenOverlay";
 import { openContextMenuLatLng, openContextMenuLocation } from "@/lib/map/contextMenu";
@@ -21,7 +23,7 @@ import {
 	setActiveLocation,
 	toggleManualSelection,
 } from "@/store/useMapStore";
-import { isVirtualLocation, isImportPreview, locId, createLocation } from "@/types";
+import { isVirtualLocation, isImportPreview, locId, createLocation, LocationFlag } from "@/types";
 import type { MaybeLocation, Bounds } from "@/types";
 import type { Location } from "@/bindings.gen";
 
@@ -90,20 +92,34 @@ export async function createLocationAtLatLng(
 	if (active != null && isImportPreview(active)) return null;
 
 	const tr = trace("add");
-	const ms = getMapState().map?.meta.settings;
-	const loc = await lookupStreetView(lat, lng, zoom, {
-		preferOfficial: ms?.preferOfficial,
-		onlyOfficial: ms?.onlyOfficial,
-		pointAlongRoad: ms?.pointAlongRoad,
-		preferDirection: ms?.preferDirection,
-		defaultPanoId: ms?.defaultPanoId,
-		preferHigherQuality: ms?.preferHigherQuality,
-		minRadius: ms?.searchRadius ?? undefined,
-	});
-	if (!loc) {
+	const providerKey = getLocal("mapEmbedPrefs", DEFAULT_PREFS).panoProvider ?? "baidu";
+	const provider = getPanoramaProvider(providerKey === "baidu" ? "baidu_pano" : "qq_pano");
+	const nearest = await provider.findNearest({ lat, lng }, zoom);
+	if (!nearest) {
 		if (opts?.container) toast(t("No coverage found at this location."), 1500, opts.container);
 		return null;
 	}
+	let metadata: PanoramaMetadata;
+	try {
+		metadata = await provider.getMetadata(nearest.panoId);
+	} catch (error) {
+		// qsdata can return a tile-only Baidu pano. Keep it addable when sdata
+		// is unavailable, using its coordinate or the clicked GCJ-02 point.
+		tr.step("metadata fallback");
+		metadata = fallbackPanoramaMetadata(
+			provider.source,
+			nearest.panoId,
+			nearest.position ?? { lat, lng },
+		);
+	}
+	const loc = createLocation({
+		...metadata.position,
+		heading: metadata.heading || nearest.heading,
+		pitch: metadata.pitch,
+		panoId: metadata.panoId,
+		flags: LocationFlag.LoadAsPanoId,
+		extra: { source: metadata.source },
+	});
 	tr.step("lookup");
 	await addLocations([loc]);
 	tr.step("addLocations");
@@ -119,6 +135,7 @@ export interface MapClickCtx {
 	cm: CellManager;
 	host: MapHost | null;
 	selectOnly?: boolean;
+	findNearbyPanoOnClick?: boolean;
 	measuring?: boolean;
 	// Dispatch the surface's context menu at the given client coords. Absent => the
 	// surface has no context menu and ignores right-click (the minimap).
@@ -193,6 +210,7 @@ export async function handleMapClick(
 			if (container) toast(t("Select-only mode is on."), 1500, container);
 			return;
 		}
+		if (ctx.findNearbyPanoOnClick === false) return;
 		await createLocationAtLatLng(info.coordinate[1], info.coordinate[0], ctx.host?.getZoom() ?? 2, {
 			container,
 		});

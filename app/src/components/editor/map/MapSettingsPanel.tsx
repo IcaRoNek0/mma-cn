@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useMemo, type RefObject } from "react";
 import { NSelect } from "@/components/primitives/NSelect";
 import { SwitchRow } from "@/components/primitives/SwitchRow";
-import { Button } from "@/components/primitives/Button";
-import { buildTileUrl, createRoadmapTileConfig, type MapStyle } from "@/lib/geo/tiles";
+import type { MapStyle } from "@/lib/geo/tiles";
 import {
 	BUILTIN_STYLE_KEYS,
 	BUILTIN_STYLE_LABELS,
@@ -12,7 +11,8 @@ import {
 import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiChevronDown, mdiCogOutline } from "@mdi/js";
-import type { MapTypeKey, SvCoverageType, MarkerStyle } from "@/types";
+import type { MapTypeKey, MarkerStyle, PanoProviderKey } from "@/types";
+import { petalTileUrl } from "@/lib/map/chinaBasemap";
 import { ColorPicker } from "@/components/primitives/ColorPicker";
 import { useClickOutside } from "@/lib/hooks/useClickOutside";
 import { useStableHandler } from "@/lib/hooks/useStableHandler";
@@ -23,7 +23,7 @@ import { ScoreBoundsEditor } from "./ScoreBoundsEditor";
 import { t, msg } from "@/lib/i18n";
 
 const MAP_TYPE_LABELS: Record<MapTypeKey, string> = {
-	map: msg("Map"),
+	map: msg("Huawei Map"),
 	satellite: msg("Satellite"),
 	osm: msg("OSM"),
 	vector: msg("Vector"),
@@ -114,28 +114,18 @@ function SettingsPopup({ layerConfig: e }: { layerConfig: LayerConfig }) {
 				<legend className="layer-config__header">
 					{t("Street\u00A0View")} <span className="layer-config__divider" />
 				</legend>
-				<div
-					className="layer-config__item"
-					style={{ display: "flex", justifyContent: "space-between" }}
-				>
-					<span>{t("Show lines:")}</span>
+				<div className="layer-config__item" style={{ display: "flex", gap: 8 }}>
+					<label style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
+						{t("Provider:")}
+						<NSelect
+							value={p.panoProvider ?? "baidu"}
+							onChange={(event) => setPref("panoProvider")(event.target.value as PanoProviderKey)}
+						>
+							<option value="baidu">{t("Baidu")}</option>
+							<option value="tencent">{t("Tencent")}</option>
+						</NSelect>
+					</label>
 					<div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-						<div className="button-group">
-							{[
-								{ value: "official" as SvCoverageType, name: t("Official") },
-								{ value: "unofficial" as SvCoverageType, name: t("Unofficial") },
-								{ value: "default" as SvCoverageType, name: t("All") },
-							].map((opt) => (
-								<Button
-									key={opt.value}
-									className="button-group__button"
-									aria-checked={p.svCoverageType === opt.value}
-									onClick={() => setPref("svCoverageType")(opt.value)}
-								>
-									{opt.name}
-								</Button>
-							))}
-						</div>
 						<ColorPicker
 							color={hexToRgbObj(resolveSvColorHex(p.svColor))}
 							onChange={(c) => setPref("svColor")(rgbToHex(c))}
@@ -276,7 +266,7 @@ const MAP_TYPE_PREVIEW_STATIC: Partial<Record<MapTypeKey, string>> = {
 	vector: "https://basemaps.cartocdn.com/rastertiles/voyager/0/0/0.png",
 };
 
-const MAP_TYPES: MapTypeKey[] = ["map", "satellite", "osm", "vector"];
+const MAP_TYPES: MapTypeKey[] = ["map"];
 
 function BasemapSelector({
 	previewUrls,
@@ -407,7 +397,10 @@ export function MapTypeDropdown({ layerConfig }: { layerConfig: LayerConfig }) {
 	const rowMeasureRef = useRef<HTMLDivElement>(null);
 	const rowRef = useRef<HTMLDivElement>(null);
 	const compact = useMapTypeCompact(containerRef, rowMeasureRef);
-	const mapPreviewUrl = useMemo(() => buildTileUrl(createRoadmapTileConfig(), 0, 0, 0), []);
+	const mapPreviewUrl = useMemo(
+		() => petalTileUrl().replace("{z}", "0").replace("{x}", "0").replace("{y}", "0"),
+		[],
+	);
 
 	useEffect(() => {
 		const measure = rowMeasureRef.current;
@@ -525,12 +518,17 @@ export function MapSettingsDropdown({
 
 	return (
 		<div
-			className="map-control map-control--menu"
+			className="map-control map-control--menu map-settings-control"
 			ref={containerRef}
 			style={{ position: "relative" }}
 		>
-			<button className="map-control__menu-button" onClick={() => setIsOpen(!isOpen)}>
-				{t("Map settings")}
+			<button
+				className="map-control__menu-button map-settings-control__button"
+				onClick={() => setIsOpen(!isOpen)}
+				aria-label={t("Map settings")}
+			>
+				<Icon className="map-settings-control__icon" path={mdiCogOutline} size={20} />
+				<span className="map-settings-control__label">{t("Map settings")}</span>
 			</button>
 			{isOpen && (
 				<div
@@ -598,6 +596,11 @@ export function MapSettingsDropdown({
 						<legend className="fieldset__header">
 							{t("Map behaviour")} <span className="fieldset__divider" />
 						</legend>
+						<SwitchRow
+							checked={p.findNearbyPanoOnClick}
+							onChange={setPref("findNearbyPanoOnClick")}
+							label={t("Click map to find nearby Street View")}
+						/>
 						<SwitchRow
 							checked={p.showPreviews}
 							onChange={setPref("showPreviews")}

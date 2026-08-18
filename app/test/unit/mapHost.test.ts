@@ -18,10 +18,9 @@ describe("boundsOfCoords", () => {
 });
 
 describe("hostKindForMapType", () => {
-	it("routes vector to maplibre, everything else to google", () => {
-		expect(hostKindForMapType("vector")).toBe("maplibre");
-		expect(hostKindForMapType("map")).toBe("google");
-		expect(hostKindForMapType("satellite")).toBe("google");
-		expect(hostKindForMapType("osm")).toBe("google");
+	it("routes every retained map type through MapLibre", () => {
+		for (const mapType of ["vector", "map", "satellite", "osm"] as const) {
+			expect(hostKindForMapType(mapType)).toBe("maplibre");
+		}
 	});
 });

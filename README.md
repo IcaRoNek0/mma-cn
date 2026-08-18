@@ -1,58 +1,301 @@
-# Map Making App
+# MMA-CN
 
-A local-first desktop alternative to [map-making.app](https://map-making.app).
+Linux deployment guide for MMA-CN, a local-first map editor with Baidu and Tencent Street View support. The browser service uses Photo Sphere Viewer (PSV) for panoramas and does not require Google Street View.
 
-![preview](img/preview.png)
+[简体中文](#简体中文) · [English](#english)
 
-## Features
+## 简体中文
 
-- Offline/local-first
-- Much faster for large maps; handles millions of locations
-- Configurable hotkeys
-- Composable & saveable selections
-- Map generator/vali/autotag built-in
-- Version history with commits
-- Editor state saves automatically - pick up where you left off
-- Extra fields on locations - arbitrary metadata
-- "Seen locations" history - find locations you've looked at before
-- Concurrent and manageable reviews
-- Plugin system
+### 系统要求
 
-...and much more!
+- Ubuntu/Debian Linux（建议 Ubuntu 22.04 或更新版本）
+- Node.js 24.x（`24.15.0` 或更高版本）和 npm
+- Rust stable、Cargo
+- 编译和运行依赖：`build-essential`、`pkg-config`、`libssl-dev`、GTK/WebKitGTK 开发包、`xvfb`
+- 运行时可访问华为底图、百度街景、腾讯街景及腾讯覆盖数据源
 
-## Installation
-
-Open [the latest release](https://github.com/ccmdi/mma/releases/latest) and download the installer for your platform.
-
-### macOS / Linux
-
-On macOS, you will likely need to run:
-```zsh
-xattr -dr com.apple.quarantine "/Applications/Map Making App.app"
-```
-
-On both Mac & Linux, framerate and rendering stability can be an issue. If you encounter these problems, you can [run the app in a browser](#run-in-a-browser). The web version will eventually be a first-class launch option, but is only available from source for now.
-
-### From source
+在 Ubuntu/Debian 上安装常用依赖：
 
 ```bash
-cd app && npm install && cargo tauri build
+sudo apt update
+sudo apt install -y build-essential curl pkg-config libssl-dev \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf xvfb
 ```
 
-Requires: Rust toolchain, Node.js, npm.
+如果发行版没有 `libwebkit2gtk-4.1-dev`，请安装该发行版提供的对应 WebKitGTK 开发包（例如 `libwebkit2gtk-4.0-dev`）。
 
-### Run in a browser
-
-Serve the app locally and open it in any browser:
+### 获取源码
 
 ```bash
-cd app && npm install && npm run build
-cargo run --manifest-path src-tauri/Cargo.toml --features web-serve -- --serve
+git clone https://github.com/IcaRoNek0/mma-cn.git
+cd mma-cn
 ```
 
-Then open the printed `http://127.0.0.1:1430`.
+### 安装 Node.js 和 Rust
 
-## More
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm use 24
 
-- [Migrations](scripts/migrations/README.md) - bring your data over from map-making.app
-- [Plugins](plugins/README.md) - extend the editor
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+. "$HOME/.cargo/env"
+rustup default stable
+```
+
+重新登录 shell 后，如果 `node` 或 `cargo` 不在 `PATH` 中，请重新执行上面的环境加载命令。
+
+### 配置华为底图
+
+源码不包含测试 key。复制配置模板并填写自己的华为 Petal Maps key：
+
+```bash
+cd app
+cp .env.example .env.production.local
+$EDITOR .env.production.local
+```
+
+至少填写：
+
+```dotenv
+VITE_PETAL_MAP_KEY=你的华为PetalMapsKey
+```
+
+也可以在构建前临时导出：
+
+```bash
+export VITE_PETAL_MAP_KEY='你的华为 Petal Maps key'
+```
+
+修改 `VITE_*` 变量后必须重新构建前端和 Rust 服务。不要将真实 key 提交到 Git。
+
+### 安装依赖并构建
+
+```bash
+cd app
+npm ci
+npm run build
+cargo build --manifest-path src-tauri/Cargo.toml --features web-serve --release
+```
+
+首次 Rust release 构建可能需要较长时间。生成的服务程序为：
+
+```text
+app/src-tauri/target/release/map-making-app
+```
+
+### 启动浏览器服务
+
+仅本机访问：
+
+```bash
+cd app
+MMA_SERVE_ADDR=127.0.0.1:1430 xvfb-run -a \
+  ./src-tauri/target/release/map-making-app --serve
+```
+
+然后打开 `http://127.0.0.1:1430/`。`5173` 是 Vite 开发端口，不是完整部署入口。
+
+允许同一局域网访问时，可监听所有网卡：
+
+```bash
+MMA_SERVE_ADDR=0.0.0.0:1430 xvfb-run -a \
+  ./src-tauri/target/release/map-making-app --serve
+```
+
+当前服务没有登录鉴权和多人冲突处理，不要把 1430 端口直接暴露到公网。`xvfb-run -a` 用于提供 GTK/WebKit 所需的虚拟显示器，服务器无桌面环境时不能省略。
+
+### systemd 持久运行（可选）
+
+创建专用用户和目录：
+
+```bash
+sudo useradd --system --create-home --shell /usr/sbin/nologin mma
+sudo install -d -o mma -g mma /opt/mma
+sudo install -m 0755 app/src-tauri/target/release/map-making-app /opt/mma/map-making-app
+```
+
+创建 `/etc/systemd/system/mma.service`：
+
+```ini
+[Unit]
+Description=MMA-CN browser service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mma
+Group=mma
+Environment=MMA_SERVE_ADDR=127.0.0.1:1430
+Environment=XDG_DATA_HOME=/var/lib/mma
+Environment=XDG_CONFIG_HOME=/var/lib/mma/config
+Environment=XDG_CACHE_HOME=/var/cache/mma
+Environment=XDG_RUNTIME_DIR=/run/mma
+StateDirectory=mma
+CacheDirectory=mma
+RuntimeDirectory=mma
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x720x24" /opt/mma/map-making-app --serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用并查看日志：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mma
+sudo systemctl status mma
+sudo journalctl -u mma -f
+```
+
+### 日常使用和更新
+
+日常启动不需要重新编译，直接启动已生成的二进制即可。以下情况需要重新构建：
+
+- 修改 React/TypeScript/CSS 或 `VITE_*` 配置：执行 `npm run build`，再执行 Rust release build。
+- 修改 Rust 代码：执行 Rust release build。
+- 修改 `package-lock.json`：先执行 `npm ci`。
+
+JSON 题库可以在网页的导入区域通过文件上传导入。腾讯覆盖 PMTiles 首次使用时会缓存到应用数据目录，缓存缺失时会自动重新下载。
+
+### 验证服务
+
+```bash
+curl -fsS http://127.0.0.1:1430/ -o /dev/null
+ss -ltn | grep 1430
+```
+
+打开网页后，应能看到完整编辑器，并可测试华为底图、百度/腾讯街景和 JSON 文件导入。
+
+## English
+
+### Requirements
+
+- Ubuntu/Debian Linux (Ubuntu 22.04 or newer recommended)
+- Node.js 24.x (`24.15.0` or newer) and npm
+- Rust stable and Cargo
+- Build/runtime packages: `build-essential`, `pkg-config`, `libssl-dev`, GTK/WebKitGTK development packages, and `xvfb`
+- Runtime network access to Huawei basemap, Baidu Street View, Tencent Street View, and the Tencent coverage source
+
+Install common Ubuntu/Debian packages:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential curl pkg-config libssl-dev \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf xvfb
+```
+
+If `libwebkit2gtk-4.1-dev` is unavailable, install the equivalent WebKitGTK development package supplied by your distribution (for example, `libwebkit2gtk-4.0-dev`).
+
+### Get the source
+
+```bash
+git clone https://github.com/IcaRoNek0/mma-cn.git
+cd mma-cn
+```
+
+### Install Node.js and Rust
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm use 24
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+. "$HOME/.cargo/env"
+rustup default stable
+```
+
+After opening a new shell, reload the nvm and Cargo environment lines if `node` or `cargo` is not found.
+
+### Configure the Huawei basemap
+
+The source tree does not contain a test key. Copy the template and provide your own Huawei Petal Maps key:
+
+```bash
+cd app
+cp .env.example .env.production.local
+$EDITOR .env.production.local
+```
+
+Set at least:
+
+```dotenv
+VITE_PETAL_MAP_KEY=your-huawei-petal-maps-key
+```
+
+Alternatively, export it only for the build:
+
+```bash
+export VITE_PETAL_MAP_KEY='your Huawei Petal Maps key'
+```
+
+Changing a `VITE_*` variable requires rebuilding both the frontend and the Rust service. Never commit a real key.
+
+### Install dependencies and build
+
+```bash
+cd app
+npm ci
+npm run build
+cargo build --manifest-path src-tauri/Cargo.toml --features web-serve --release
+```
+
+The release service binary is `app/src-tauri/target/release/map-making-app`.
+
+### Start the browser service
+
+For local access only:
+
+```bash
+cd app
+MMA_SERVE_ADDR=127.0.0.1:1430 xvfb-run -a \
+  ./src-tauri/target/release/map-making-app --serve
+```
+
+Open `http://127.0.0.1:1430/`. Port `5173` is the Vite development port, not the complete deployment entry point.
+
+To allow access from a trusted LAN:
+
+```bash
+MMA_SERVE_ADDR=0.0.0.0:1430 xvfb-run -a \
+  ./src-tauri/target/release/map-making-app --serve
+```
+
+The service currently has no login/authentication or multi-user conflict handling. Do not expose port 1430 directly to the public Internet. `xvfb-run -a` provides the virtual display required by GTK/WebKit on headless servers.
+
+### Keep it running with systemd (optional)
+
+Use the same `mma` user, `/opt/mma` installation, and systemd unit shown in the Chinese section above, then run:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mma
+sudo systemctl status mma
+sudo journalctl -u mma -f
+```
+
+### Updates and verification
+
+Normal restarts do not require a rebuild. Rebuild the frontend and Rust binary after changing frontend code or `VITE_*` settings; rebuild Rust after changing Rust code; run `npm ci` when `package-lock.json` changes.
+
+Import JSON question banks through the web UI's file upload control. Tencent coverage PMTiles are cached under the application data directory and downloaded again if the cache is missing.
+
+Verify the HTTP endpoint:
+
+```bash
+curl -fsS http://127.0.0.1:1430/ -o /dev/null
+ss -ltn | grep 1430
+```
+
+The editor should load in the browser, including Huawei basemap, Baidu/Tencent Street View, and JSON import.

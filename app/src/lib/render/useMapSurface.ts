@@ -58,6 +58,7 @@ export function useMapSurface(
 				cm: getScene(),
 				host,
 				selectOnly: opts.prefs.selectOnly,
+				findNearbyPanoOnClick: opts.prefs.findNearbyPanoOnClick,
 				measuring: opts.measuring,
 				onContextMenu: opts.onContextMenu,
 			});
@@ -95,6 +96,7 @@ export function useMapSurface(
 		panoDotColor,
 		panoDotScaled,
 		opts.prefs.selectOnly,
+		opts.prefs.findNearbyPanoOnClick,
 		opts.measuring,
 		opts.onContextMenu,
 		opts.onError,

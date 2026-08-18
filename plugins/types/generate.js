@@ -1,7 +1,7 @@
 // Bundle the plugin type surface (mma.d.ts) from the app's source.
 // Two stages: tsc emits real .d.ts files (JSDoc survives declaration emit),
 // then rollup-plugin-dts rolls them into one file.
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -13,10 +13,30 @@ const out = path.resolve(__dirname, "mma.d.ts");
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mma-dts-"));
   try {
-    execSync(
-      `npx tsc -p tsconfig.app.json --declaration --emitDeclarationOnly --noEmit false --rootDir src --outDir "${tmp}"`,
-      { cwd: appDir, stdio: "inherit" },
-    );
+    const tscArgs = [
+      "-p",
+      "tsconfig.app.json",
+      "--declaration",
+      "--emitDeclarationOnly",
+      "--noEmit",
+      "false",
+      "--rootDir",
+      "src",
+      "--outDir",
+      tmp,
+    ];
+    // @typescript/native has no Android arm64 binary in Termux. Prefer the
+    // bundled JavaScript compiler when available, while retaining npx as a
+    // fallback for normal desktop installs.
+    const bundledTsc = path.join(appDir, "node_modules", "typescript", "bin", "tsc6");
+    if (fs.existsSync(bundledTsc)) {
+      execFileSync(process.execPath, [bundledTsc, ...tscArgs], { cwd: appDir, stdio: "inherit" });
+    } else {
+      execFileSync(process.platform === "win32" ? "npx.cmd" : "npx", ["tsc", ...tscArgs], {
+        cwd: appDir,
+        stdio: "inherit",
+      });
+    }
 
     // Hand-written .d.ts sources (getmetadata.gen, google-maps) are not emitted
     // by tsc - copy them in so imports resolve.

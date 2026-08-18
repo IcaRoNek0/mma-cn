@@ -613,6 +613,7 @@ fn build_extra_via_map(
     extra_str: Option<&str>,
     country_code: Option<&serde_json::value::RawValue>,
     state_code: Option<&serde_json::value::RawValue>,
+    source: Option<&str>,
     names: &mut Vec<String>,
     name_to_local: &mut rustc_hash::FxHashMap<String, u32>,
     tags: &mut Vec<u32>,
@@ -628,6 +629,10 @@ fn build_extra_via_map(
     if let Some(sc) = state_code {
         m.entry("stateCode")
             .or_insert_with(|| serde_json::from_str(sc.get()).unwrap_or(Value::Null));
+    }
+    if let Some(source) = source.filter(|s| !s.is_empty()) {
+        m.entry("source")
+            .or_insert_with(|| Value::String(source.to_owned()));
     }
     if let Some(Value::Array(arr)) = m.remove("tags") {
         for v in arr {
@@ -811,6 +816,8 @@ fn parse_single_json_mut(buf: &mut [u8]) -> ParsedMap {
         #[serde(borrow, rename = "stateCode")]
         state_code: Option<&'a serde_json::value::RawValue>,
         #[serde(borrow)]
+        source: Option<Cow<'a, str>>,
+        #[serde(borrow)]
         extra: Option<&'a serde_json::value::RawValue>,
     }
 
@@ -846,11 +853,13 @@ fn parse_single_json_mut(buf: &mut [u8]) -> ParsedMap {
                 let has_top_pano = raw.pano_id.is_some();
                 let top_pano = raw.pano_id.map(|c| c.into_owned());
                 let extra_str = raw.extra.map(|rv| rv.get());
+                let source = raw.source.as_deref();
 
                 // Fast path unless we must edit `extra` beyond stripping tags: folding a
                 // non-null top-level country/state code, or a `panoId` nested in `extra`.
                 let need_map = raw.country_code.is_some()
                     || raw.state_code.is_some()
+                    || source.is_some()
                     || extra_str.is_some_and(|s| {
                         memchr::memmem::find(s.as_bytes(), b"\"panoId\"").is_some()
                     });
@@ -870,6 +879,7 @@ fn parse_single_json_mut(buf: &mut [u8]) -> ParsedMap {
                             extra_str,
                             raw.country_code,
                             raw.state_code,
+                            source,
                             &mut names,
                             &mut name_to_local,
                             &mut tags,
@@ -881,6 +891,7 @@ fn parse_single_json_mut(buf: &mut [u8]) -> ParsedMap {
                         extra_str,
                         raw.country_code,
                         raw.state_code,
+                        source,
                         &mut names,
                         &mut name_to_local,
                         &mut tags,

@@ -14,9 +14,10 @@ import { type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
-import { createSvTileSource, type SvTileSource } from "@/lib/geo/mapStack";
-import { vectorStyleUrl } from "@/lib/geo/mapStyles";
-import { BLOBBY_ZOOM_THRESHOLD } from "@/lib/sv/constants";
+import { Protocol } from "pmtiles";
+import { baiduCoverageProtocol } from "@/lib/map/baiduCoverage";
+import { chinaBasemapStyle, TENCENT_COVERAGE_URL } from "@/lib/map/chinaBasemap";
+import { cachedTencentCoverage, TENCENT_COVERAGE_ARCHIVE_KEY } from "@/lib/map/tencentCoverage";
 import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 import type { LatLng, Bounds } from "@/types";
 import type {
@@ -30,14 +31,23 @@ import type {
 } from "@/lib/map/host";
 
 const ZOOM_OFFSET = 1;
-const SV_SOURCE = "mma-sv";
-const SV_SCHEME = "mma-sv://";
+const COVERAGE_SOURCE = "mma-cn-coverage";
+const COVERAGE_LAYER_PREFIX = "mma-cn-coverage";
 
 const PREFETCH_MARGIN = 128;
 
 // Raster (SV) tiles queue behind MapLibre's global image-request cap (default 16);
 // vector tiles don't, so the basemap outruns SV coverage without this.
 maplibregl.setMaxParallelImageRequests(64);
+
+const protocolState = globalThis as typeof globalThis & { __mmaCnProtocols?: boolean };
+if (!protocolState.__mmaCnProtocols) {
+	const pmtiles = new Protocol();
+	pmtiles.add(cachedTencentCoverage(TENCENT_COVERAGE_URL));
+	maplibregl.addProtocol("pmtiles", pmtiles.tile);
+	maplibregl.addProtocol("mma-baidu", baiduCoverageProtocol);
+	protocolState.__mmaCnProtocols = true;
+}
 
 type MlEventName = "mousemove" | "mousedown" | "mouseup" | "mouseout" | "zoom" | "move" | "load";
 
@@ -115,16 +125,13 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 	readonly kind = "maplibre" as const;
 	readonly map: maplibregl.Map;
 	private overlays = new Set<MapLibreDeckOverlay>();
-	private svSrc: SvTileSource;
-	private svRev = 0;
-	private styleName: string;
+	private prefs: MapEmbedPrefs;
 
 	private outer: HTMLElement;
 	private mapDiv: HTMLDivElement;
 
 	constructor(container: HTMLElement, prefs: MapEmbedPrefs, opts: CreateHostOpts) {
-		this.svSrc = createSvTileSource(prefs);
-		this.styleName = prefs.vectorStyleName;
+		this.prefs = prefs;
 		// Oversized, clipped inner container = tile prefetch margin (see PREFETCH_MARGIN).
 		this.outer = container;
 		if (!container.style.position) container.style.position = "relative";
@@ -135,7 +142,7 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 		const camera = opts.camera ?? { center: { lat: 0, lng: 0 }, zoom: 2 };
 		this.map = new maplibregl.Map({
 			container: this.mapDiv,
-			style: vectorStyleUrl(prefs.vectorStyleName),
+			style: chinaBasemapStyle(),
 			center: [camera.center.lng, camera.center.lat],
 			zoom: camera.zoom - ZOOM_OFFSET,
 			minZoom: 0,
@@ -147,20 +154,13 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 			renderWorldCopies: true,
 			fadeDuration: 0,
 			maxTileCacheZoomLevels: 10,
-			transformRequest: (url) => {
-				if (!url.startsWith(SV_SCHEME)) return undefined;
-				const m = url.match(/^mma-sv:\/\/(\d+)\/(\d+)\/(\d+)/);
-				if (!m) return undefined;
-				return { url: this.svSrc.url(Number(m[2]), Number(m[3]), Number(m[1])) };
-			},
 		});
 		this.map.touchZoomRotate.disableRotation();
 		this.map.keyboard.disable();
 		// Cursor comes from a CSS class so handleMapHover's inline pointer/"" toggling
 		// layers over it (inline "" must fall back to crosshair, not the engine default).
 		this.map.getCanvas().classList.add("mma-vector-canvas");
-		// Re-add the SV overlay after every style (re)load: setStyle wipes custom sources.
-		this.map.on("style.load", () => this.addSvLayer());
+		this.map.on("style.load", () => this.addCoverageLayers());
 
 		this.map.on("contextmenu", (e) => {
 			e.preventDefault();
@@ -183,38 +183,69 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 		return this.map;
 	}
 
-	private svTileTemplate(): string {
-		return `${SV_SCHEME}{z}/{x}/{y}?r=${this.svRev}`;
+	private coverageLayerIds(): string[] {
+		return (this.map.getStyle().layers ?? [])
+			.map((layer) => layer.id)
+			.filter((id) => id.startsWith(COVERAGE_LAYER_PREFIX));
 	}
 
-	private addSvLayer() {
-		if (this.map.getSource(SV_SOURCE)) return;
-		this.map.addSource(SV_SOURCE, {
-			type: "raster",
-			tiles: [this.svTileTemplate()],
-			tileSize: 256,
-			maxzoom: 20,
-		});
-		// Below the style's labels (first symbol layer), above its geometry.
-		const firstSymbol = this.map.getStyle().layers?.find((l) => l.type === "symbol")?.id;
-		this.map.addLayer(
-			{
-				id: SV_SOURCE,
+	private removeCoverageLayers() {
+		for (const id of this.coverageLayerIds()) this.map.removeLayer(id);
+		if (this.map.getSource(COVERAGE_SOURCE)) this.map.removeSource(COVERAGE_SOURCE);
+	}
+
+	private addCoverageLayers() {
+		if (!this.map.isStyleLoaded() || this.map.getSource(COVERAGE_SOURCE)) return;
+		const opacity = this.prefs.svOpacity;
+		if ((this.prefs.panoProvider ?? "baidu") === "baidu") {
+			this.map.addSource(COVERAGE_SOURCE, {
 				type: "raster",
-				source: SV_SOURCE,
-				paint: { "raster-opacity": this.svOpacityExpr(), "raster-fade-duration": 0 },
-			},
-			firstSymbol,
-		);
-	}
+				tiles: ["mma-baidu://tiles/{z}/{x}/{y}"],
+				tileSize: 256,
+				minzoom: 0,
+				maxzoom: 20,
+			});
+			this.map.addLayer({
+				id: `${COVERAGE_LAYER_PREFIX}-baidu`,
+				type: "raster",
+				source: COVERAGE_SOURCE,
+				paint: {
+					"raster-opacity": opacity,
+					"raster-hue-rotate": 140,
+					"raster-saturation": 1,
+					"raster-fade-duration": 0,
+				},
+			});
+			return;
+		}
 
-	// 256px raster tiles render at tile z = floor(cameraZoom) + 1 here, so the
-	// tile-zoom blobby threshold maps to a camera-zoom step at the same number
-	// (the +1 cancels ZOOM_OFFSET).
-	private svOpacityExpr(): number | maplibregl.ExpressionSpecification {
-		const below = this.svSrc.opacity(BLOBBY_ZOOM_THRESHOLD);
-		const above = this.svSrc.opacity(BLOBBY_ZOOM_THRESHOLD + 1);
-		return below === above ? above : ["step", ["zoom"], below, BLOBBY_ZOOM_THRESHOLD, above];
+		this.map.addSource(COVERAGE_SOURCE, {
+			type: "vector",
+			url: `pmtiles://${TENCENT_COVERAGE_ARCHIVE_KEY}`,
+			minzoom: 0,
+			maxzoom: 11,
+		});
+		for (const sourceLayer of ["sv", "ccf"]) {
+			this.map.addLayer({
+				id: `${COVERAGE_LAYER_PREFIX}-tencent-${sourceLayer}`,
+				type: "line",
+				source: COVERAGE_SOURCE,
+				"source-layer": sourceLayer,
+				paint: {
+					"line-color": this.prefs.svColor,
+					"line-opacity": opacity,
+					"line-width": [
+						"interpolate",
+						["linear"],
+						["zoom"],
+						3,
+						this.prefs.svThickness === "high" ? 7 : 5,
+						8,
+						this.prefs.svThickness === "high" ? 3 : 1,
+					],
+				},
+			});
+		}
 	}
 
 	getZoom() {
@@ -317,21 +348,24 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 	}
 
 	applyPrefs(prefs: MapEmbedPrefs, _opts: BasemapOpts) {
-		const next = createSvTileSource(prefs);
-		// Refetch SV tiles only when the coverage config actually changed.
-		const refetch = next.key !== this.svSrc.key;
-		this.svSrc = next;
-		if (this.map.getLayer(SV_SOURCE)) {
-			this.map.setPaintProperty(SV_SOURCE, "raster-opacity", this.svOpacityExpr());
+		const previous = this.prefs;
+		this.prefs = prefs;
+		if (!this.map.isStyleLoaded()) return;
+		const coverageChanged =
+			(previous.panoProvider ?? "baidu") !== (prefs.panoProvider ?? "baidu") ||
+			previous.svColor !== prefs.svColor ||
+			previous.svThickness !== prefs.svThickness;
+		if (coverageChanged) {
+			this.removeCoverageLayers();
+			this.addCoverageLayers();
+			return;
 		}
-		if (refetch) {
-			this.svRev++;
-			const src = this.map.getSource(SV_SOURCE) as maplibregl.RasterTileSource | undefined;
-			if (src) src.setTiles([this.svTileTemplate()]);
-		}
-		if (prefs.vectorStyleName !== this.styleName) {
-			this.styleName = prefs.vectorStyleName;
-			this.map.setStyle(vectorStyleUrl(prefs.vectorStyleName));
+		for (const id of this.coverageLayerIds()) {
+			this.map.setPaintProperty(
+				id,
+				id.endsWith("baidu") ? "raster-opacity" : "line-opacity",
+				prefs.svOpacity,
+			);
 		}
 	}
 

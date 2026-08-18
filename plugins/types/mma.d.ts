@@ -21,6 +21,13 @@ declare const commands: {
     writeTempFile: (name: string, content: string) => Promise<string>;
     /**  Read a file from disk as UTF-8 text. Used by JS to read temp files and plugin sources. */
     readFile: (path: string) => Promise<string>;
+    tencentCoverageIsCached: () => Promise<boolean>;
+    /**
+     *  Download the Tencent PMTiles archive if it is not already cached.
+     */
+    tencentCoveragePrepare: () => Promise<null>;
+    /**  Read one byte range from a locally cached copy of the Tencent coverage archive. */
+    tencentCoverageRead: (offset: number, length: number) => Promise<number[]>;
     appReady: () => Promise<number>;
     /**  Return the platform-specific app data directory path (e.g., `%LOCALAPPDATA%/app.map-making.local`). */
     getAppDataDir: () => Promise<string>;
@@ -87,7 +94,7 @@ declare const commands: {
      *  Finds the nearest city/country for a coordinate. O(log n) k-d tree lookup.
      *  Always returns `Some` -- the GeoNames dataset covers every landmass.
      */
-    reverseGeocode: (lat: number, lng: number) => Promise<GeoResult | null>;
+    reverseGeocode: (lat: number, lng: number, source: string | null) => Promise<GeoResult | null>;
     discordPresenceSet: (activity: PresenceActivity) => Promise<null>;
     discordPresenceClear: () => Promise<null>;
     /**
@@ -852,6 +859,11 @@ type GeoResult = {
     country: string;
     /**  ISO 3166-1 alpha-2 (e.g. "US", "FR"). */
     country_code: string;
+    province: string;
+    district: string;
+    town: string;
+    adcode: string;
+    formatted_address: string;
 };
 /**  The signed-in GeoGuessr account. */
 type GgUser = {
@@ -1700,6 +1712,7 @@ export type WorkArea = "overview" | "location" | "duplicates" | "import" | "plug
 /** Hex like "#1098ad"; legacy stored prefs may hold an Open Props ramp name. */
 export type SvColor = string;
 export type MapTypeKey = "map" | "satellite" | "osm" | "vector";
+export type PanoProviderKey = "baidu" | "tencent";
 export type SvCoverageType = "official" | "unofficial" | "default";
 export type SvThickness = "default" | "high";
 export type MarkerStyle = "pin" | "circle" | "arrow";
@@ -2087,10 +2100,6 @@ declare namespace store {
 /** Prompt for GeoJSON file(s) and add their polygons as selections. */
 declare function loadGeoJSON(): Promise<void>;
 
-declare const requiresMap: () => boolean;
-declare const hasActiveLocation: () => boolean;
-declare const hasSelection: () => boolean;
-declare const hasAnySelections: () => boolean;
 /** Every editor command (palette entries; all are hotkey-bindable in Settings). */
 declare const COMMANDS: {
     save: {
@@ -2107,21 +2116,21 @@ declare const COMMANDS: {
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     copyToMap: {
         label: "Copy location to map via hotkeys...";
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     quickCopyToMap: {
         label: "Copy location to map...";
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof hasActiveLocation;
+        enabled: () => boolean;
     };
     undo: {
         label: "Undo";
@@ -2144,28 +2153,28 @@ declare const COMMANDS: {
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     "open-history": {
         label: "Open version history";
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     "open-seen": {
         label: "Open seen locations";
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     "toggle-seen-overlay": {
         label: "Toggle seen locations overlay";
         icon: string;
         group: "Map";
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     selectAll: {
         label: "Select everything";
@@ -2210,7 +2219,7 @@ declare const COMMANDS: {
         icon: string;
         group: "Selections";
         execute: () => Promise<void>;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     "invert-selection": {
         label: "Invert selection";
@@ -2250,7 +2259,7 @@ declare const COMMANDS: {
         group: "Selections";
         defaultBinding: string;
         execute: typeof resetSelections;
-        enabled: typeof hasAnySelections;
+        enabled: () => boolean;
     };
     "find-duplicates": {
         label: "Find duplicates...";
@@ -2283,7 +2292,7 @@ declare const COMMANDS: {
         label: "Review selected locations";
         icon: string;
         group: "Selections";
-        enabled: typeof hasSelection;
+        enabled: () => boolean;
         execute: () => void;
     };
     "review-sessions": {
@@ -2298,7 +2307,7 @@ declare const COMMANDS: {
         group: "Selections";
         aliases: string[];
         execute: () => void;
-        enabled: typeof hasSelection;
+        enabled: () => boolean;
     };
     "select-spaced": {
         label: "Pick evenly spaced locations from selection";
@@ -2306,7 +2315,7 @@ declare const COMMANDS: {
         group: "Selections";
         aliases: string[];
         execute: () => void;
-        enabled: typeof hasSelection;
+        enabled: () => boolean;
     };
     "ghost-selections": {
         label: "Ghost selections";
@@ -2314,14 +2323,14 @@ declare const COMMANDS: {
         group: "Selections";
         aliases: string[];
         execute: () => Promise<void>;
-        enabled: typeof hasAnySelections;
+        enabled: () => boolean;
     };
     "save-selections": {
         label: "Save current selections...";
         icon: string;
         group: "Selections";
         execute: () => void;
-        enabled: typeof hasAnySelections;
+        enabled: () => boolean;
     };
     "apply-saved-selection": {
         label: "Apply saved selection...";
@@ -2333,7 +2342,7 @@ declare const COMMANDS: {
         label: "Delete selected locations";
         icon: string;
         group: "Selections";
-        enabled: typeof hasSelection;
+        enabled: () => boolean;
         execute: () => void;
     };
     "bulk-validate": {
@@ -2404,7 +2413,7 @@ declare const COMMANDS: {
         group: "Tags";
         aliases: string[];
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     "apply-field-as-tags": {
         label: "Apply metadata as tags";
@@ -2412,7 +2421,7 @@ declare const COMMANDS: {
         group: "Tags";
         aliases: string[];
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
     "assign-doclinks": {
         label: "Assign document links...";
@@ -2420,7 +2429,7 @@ declare const COMMANDS: {
         group: "Tags";
         aliases: string[];
         execute: () => void;
-        enabled: typeof requiresMap;
+        enabled: () => boolean;
     };
 };
 export type CommandId = keyof typeof COMMANDS;
@@ -3130,7 +3139,6 @@ declare function getSeenCount(filter?: SeenFilter): Promise<number>;
 /** Delete the entire seen history. Not undoable. */
 declare function clearSeen(): Promise<void>;
 
-/** Open a seen entry's panorama in the Street View viewer. */
 declare function loadSeenPano(entry: SeenEntry): Promise<void>;
 
 /** True when the location is missing any of the given enrich fields (default: the enabled set). */
@@ -3178,6 +3186,7 @@ declare function fetchSvMetadata(panoIds: string[], signal?: AbortSignal): Promi
 declare function mmaBufUrl(path: string): string;
 
 export interface MapEmbedPrefs {
+    panoProvider: PanoProviderKey;
     svOpacity: number;
     svColor: SvColor;
     showLabels: boolean;
@@ -3202,6 +3211,7 @@ export interface MapEmbedPrefs {
     showSearchRadiusCursor: boolean;
     showPreviews: boolean;
     selectOnly: boolean;
+    findNearbyPanoOnClick: boolean;
 }
 
 export interface MapStyle {

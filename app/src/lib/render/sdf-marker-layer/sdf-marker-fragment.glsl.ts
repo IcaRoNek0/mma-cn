@@ -71,14 +71,24 @@ void main(void) {
     ramp *= 0.5;
   }
 
-  float alpha = 1.0 - smoothstep(-ramp, ramp, d);
+  float outerCoverage = 1.0 - smoothstep(-ramp, ramp, d);
 
-  if (alpha < 0.01) {
+  if (outerCoverage < 0.01) {
     discard;
   }
 
-  fragColor = vFillColor;
-  fragColor.a *= alpha;
+  // Keep the marker's configured size while reserving an inner ring for a
+  // contrast-aware outline. This remains legible on both light and dark maps.
+  float stroke = sdfMarker.strokeWidthPixels / outerRadiusPixels;
+  float fillCoverage = 1.0 - smoothstep(-stroke - ramp, -stroke + ramp, d);
+  float outlineCoverage = max(0.0, outerCoverage - fillCoverage);
+  float luminance = dot(vFillColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+  vec3 outlineColor = luminance > 0.58 ? vec3(0.06) : vec3(0.96);
+  vec3 color = (
+    vFillColor.rgb * fillCoverage + outlineColor * outlineCoverage
+  ) / max(outerCoverage, 0.001);
+
+  fragColor = vec4(color, vFillColor.a * outerCoverage);
   if (sdfMarker.flattenOpacity > 0.0) {
     fragColor = vec4(fragColor.rgb * fragColor.a * sdfMarker.flattenOpacity, fragColor.a);
   }

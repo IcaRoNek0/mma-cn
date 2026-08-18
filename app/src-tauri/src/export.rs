@@ -138,12 +138,15 @@ fn location_to_coord(
                 .unwrap_or(Value::Null),
         );
     }
+    if let Some(source) = loc.extra.as_ref().and_then(|e| e.get("source")) {
+        c.insert("source".into(), source);
+    }
 
     if opts.export_extras {
         let mut extra = serde_json::Map::new();
         if let Some(ref e) = loc.extra {
             for (k, v) in e.to_map() {
-                if k == "countryCode" || k == "stateCode" {
+                if k == "countryCode" || k == "stateCode" || k == "source" {
                     continue;
                 }
                 extra.insert(k, v);

@@ -19,6 +19,9 @@ export function useExactDate(
 
 	const { data, loading, error } = useAsync<number | null>(() => {
 		if (existingDatetime != null && panoMatchesLocation) return existingDatetime;
+		// Baidu/Tencent dates are already supplied by their metadata timeline;
+		// never send their IDs to Google's timestamp RPC.
+		if (location?.extra?.source && location.extra.source !== "google") return null;
 		if (!enabled || !panoId || !yearMonth) return null;
 		return resolveExactTimestamp(lat, lng, yearMonth);
 	}, [panoId, lat, lng, yearMonth, enabled, existingDatetime, panoMatchesLocation]);

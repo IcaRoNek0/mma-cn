@@ -6,13 +6,11 @@ import {
 	useRef,
 	useState,
 	useCallback,
-	useEffectEvent,
 } from "react";
 import {
 	LocationFlag,
 	VIRTUAL_FLAGS,
 	createLocation,
-	isVirtualLocation,
 	isImportPreview,
 	isSeenPreview,
 } from "@/types";
@@ -20,7 +18,7 @@ import { Tooltip } from "@/components/primitives/Tooltip";
 import { Icon } from "@/components/primitives/Icon";
 import { Button } from "@/components/primitives/Button";
 import { mdiChevronLeft, mdiChevronRight } from "@mdi/js";
-import { SV_SEARCH_RADIUS, storedZoom } from "@/lib/sv/constants";
+import { storedZoom } from "@/lib/sv/constants";
 import type { Tag } from "@/bindings.gen";
 import {
 	useMapState,
@@ -43,14 +41,9 @@ import {
 	reviewDelete,
 	isAtStart,
 } from "@/lib/review/review";
-import { loadOpenSV, google } from "@/lib/sv/opensv";
-import { fetchSvMetadata } from "@/lib/sv/svMeta";
-
 import {
 	useSettings,
 	useSetting,
-	getSettings,
-	panoDisplayOptions,
 	GEOCODE_PROVIDER_LABELS,
 	type GeocodeProvider,
 } from "@/store/settings";
@@ -58,15 +51,11 @@ import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { PluginLocationPanels } from "@/plugins/PluginPanels";
 import { relativeTime } from "@/lib/util/format";
-import { type PanoReference, resolvePano, fetchPanoData } from "@/lib/sv/lookup";
-import { usePanoEvent } from "@/lib/hooks/usePanoEvent";
 import { toast } from "@/lib/util/toast";
-import { isOfficialPano } from "@/lib/sv/panoId";
-import { enrich } from "@/lib/sv/enrich";
 import { FullscreenMiniMap } from "@/components/editor/location/FullscreenMiniMap";
 import { FullscreenTagBar } from "@/components/editor/location/FullscreenTagBar";
-import { PanoControls, CrosshairOverlay, sendHideCar } from "./PanoControls";
-import { seenPanoChanged, seenFlush, seenUpdateGeo } from "@/lib/seen/seen";
+import { PsvControls } from "./PsvControls";
+import { seenUpdateGeo } from "@/lib/seen/seen";
 import { useReverseGeocode, type GeoDisplay } from "@/components/editor/location/useReverseGeocode";
 import { usePanoViewer, setPanoAltitude } from "./PanoViewerContext";
 import {
@@ -76,12 +65,10 @@ import {
 	exitFullscreenMap,
 } from "./fullscreenModeState";
 import { FullscreenMiniLocationPreview } from "./FullscreenMiniLocationPreview";
-import { applyViewportLock, getViewportLockInfo } from "@/lib/sv/viewportLock";
+import { getViewportLockInfo } from "@/lib/sv/viewportLock";
 import { useEvent } from "@/lib/events";
-import { resetTrail, pushTrail, clearTrail } from "@/lib/sv/svTrail";
-import { singletonPano, singletonDiv, getPanorama, applyResolved } from "@/lib/sv/panoSingleton";
+import { singletonPano, singletonDiv, getPanorama, applyLocationPanorama } from "@/lib/sv/panoSingleton";
 import { PanoDatePicker } from "./PanoDatePicker";
-import { usePanoNavigation } from "./usePanoNavigation";
 import { useLocationHotkeys } from "./useLocationHotkeys";
 import { t } from "@/lib/i18n";
 
@@ -229,9 +216,13 @@ export function LocationPreview() {
 	const visibleTags = useMapState(getVisibleTags);
 	const [panoGeo, setPanoGeo] = useState<GeoDisplay | null>(null);
 	const geocodeProvider = useSetting("geocodeProvider");
-	const geoResult = useReverseGeocode(location?.lat ?? 0, location?.lng ?? 0, panoGeo);
+	const geoResult = useReverseGeocode(
+		location?.lat ?? 0,
+		location?.lng ?? 0,
+		panoGeo,
+		location?.extra?.source,
+	);
 	const cancelTweenRef = useRef<(() => void) | null>(null);
-	const getGeoResult = useEffectEvent(() => geoResult);
 	useEffect(() => {
 		setPendingTags((prev) => {
 			const next = idsToNames(location?.tags ?? []);
@@ -265,35 +256,13 @@ export function LocationPreview() {
 	useEvent("viewport-lock:changed");
 	const lockInfo = getViewportLockInfo();
 
-	useEffect(() => {
-		if (!singletonPano) return;
-		singletonPano.setOptions(panoDisplayOptions(getSettings()));
-	}, [
-		appSettings.showLinksControl,
-		appSettings.clickToGo,
-		appSettings.showRoadLabels,
-		appSettings.defaultMovementMode,
-		appSettings.hidePanoUI,
-		appSettings.hideNavWithUI,
-	]);
-
-	usePanoEvent(singletonPano, "status_changed", () => sendHideCar(!appSettings.showCar), [
-		appSettings.showCar,
-	]);
-
-	useEffect(() => {
-		if (!singletonPano || !appSettings.showCrosshair) return;
-		const overlay = new CrosshairOverlay(singletonPano);
-		return () => overlay.dispose();
-	}, [appSettings.showCrosshair]);
-
 	// Mount/unmount: move the persistent div in/out of the container.
 	// useLayoutEffect so appendChild runs before paint.
 	useLayoutEffect(() => {
 		const container = panoContainerRef.current;
 		if (!container) return;
 		container.appendChild(singletonDiv);
-		if (singletonPano && google?.maps) google.maps.event.trigger(singletonPano, "resize");
+		getPanorama().resize();
 		return () => {
 			if (container.contains(singletonDiv)) container.removeChild(singletonDiv);
 		};
@@ -302,158 +271,29 @@ export function LocationPreview() {
 	useEffect(() => {
 		if (!location) return;
 		let cancelled = false;
-		let statusListener: google.maps.MapsEventListener | null = null;
-		let lockListener: google.maps.MapsEventListener | null = null;
-
-		loadOpenSV().then(async () => {
-			if (cancelled) return;
-			if (!google?.maps) return;
-			const pano = getPanorama();
-			if (!pano) return;
-
-			// status_changed fires when the pano is fully loaded (getStatus() === "OK").
-			// All data (panoId, position, POV) is consistent at this point.
-			statusListener = pano.addListener("status_changed", () => {
-				if (cancelled || pano.getStatus() !== "OK") return;
-				const panoId = pano.getPano();
-				if (!panoId) return; // ?
-				const pos = pano.getPosition();
-				setCurrentPano((prev) => {
-					if (prev?.location?.pano === panoId) return prev;
-					return {
-						location: { pano: panoId, latLng: pos! },
-						imageDate: prev?.imageDate,
-					};
-				});
+		setCurrentPano(null);
+		setPanoDates([]);
+		setPanoReady(false);
+		applyLocationPanorama(location)
+			.then((metadata) => {
+				if (cancelled) return;
+				const pos = getPanorama().getPosition();
 				if (pos) {
-					pushTrail(pos.lng(), pos.lat());
-					const activeForSeen = getMapState().activeLocation;
-					const geo = getGeoResult();
-					seenPanoChanged(
-						{
-							locationId:
-								activeForSeen && !isVirtualLocation(activeForSeen) ? activeForSeen.id : null,
-							panoId: panoId,
-							lat: pos.lat(),
-							lng: pos.lng(),
-						},
-						geo && {
-							address: geo.address,
-							countryCode: activeForSeen?.extra?.countryCode ?? geo.countryCode,
-						},
-						() => ({
-							heading: pano.getPov().heading,
-							pitch: pano.getPov().pitch,
-							zoom: pano.getZoom(),
-						}),
-					);
+					setCurrentPano({ location: { pano: metadata.panoId, latLng: pos } });
 				}
+				setPanoDates(metadata.timeline.map((entry) => ({ pano: entry.panoId, date: entry.date })));
+				setPanoGeo({ address: metadata.address ?? "", countryCode: null });
+				setPanoAltitude(metadata.altitude ?? 0);
+				setPanoReady(true);
+			})
+			.catch((error) => {
+				if (!cancelled) toast(error instanceof Error ? error.message : t("Panorama failed to load"), 4000);
 			});
-
-			lockListener = pano.addListener("pano_changed", () => {
-				applyViewportLock(pano);
-			});
-
-			sendHideCar(!getSettings().showCar);
-			setCurrentPano(null);
-			setPanoDates([]);
-			resetTrail(location.lng, location.lat);
-
-			const result = await resolvePano(location);
-			if (cancelled) return;
-			applyResolved(pano, result, location);
-			google.maps.event.trigger(pano, "resize");
-			if (result.isFallback) {
-				const root = Object.values(pano).find((v) => v instanceof HTMLElement) as
-					| HTMLElement
-					| undefined;
-				if (root)
-					toast(t("Configured pano ID could not be found. Falling back to lat/lng."), 3000, root);
-			}
-			// Populate currentPano from the resolve result immediately.
-			// Covers the case where setPano() with the same ID doesn't trigger status_changed.
-			if (result.pano?.location) {
-				setCurrentPano(result.pano);
-			}
-			setPanoReady(true);
-		});
 
 		return () => {
 			cancelled = true;
-			clearTrail();
-			if (statusListener) google?.maps?.event?.removeListener(statusListener);
-			if (lockListener) google?.maps?.event?.removeListener(lockListener);
-			const pano = singletonPano;
-			if (pano) {
-				seenFlush(() => ({
-					heading: pano.getPov().heading,
-					pitch: pano.getPov().pitch,
-					zoom: pano.getZoom(),
-				}));
-			}
 		};
 	}, [location?.id]);
-
-	// Reactive: fetch dates + metadata whenever the current pano changes.
-	useEffect(() => {
-		if (!currentPano) {
-			setPanoDates([]);
-			return;
-		}
-		let cancelled = false;
-
-		function extractTimes(data: google.maps.StreetViewPanoramaData | null): PanoReference[] {
-			const raw = (data as unknown as { time?: { pano: string; AA?: Date }[] })?.time ?? [];
-			return raw.flatMap((t) =>
-				t.pano && t.AA instanceof Date ? [{ pano: t.pano, date: t.AA }] : [],
-			);
-		}
-
-		const loc = currentPano.location;
-		if (!loc?.latLng) return;
-		const panoPos = { lat: loc.latLng.lat(), lng: loc.latLng.lng() };
-		const byPano = fetchPanoData({ pano: loc.pano });
-		const byLoc = fetchPanoData({ location: panoPos, radius: SV_SEARCH_RADIUS });
-
-		Promise.all([byPano, byLoc]).then(([panoData, locData]) => {
-			if (cancelled) return;
-			const merged = new Map<string, PanoReference>();
-			for (const t of extractTimes(locData)) merged.set(t.pano, t);
-			for (const t of extractTimes(panoData)) merged.set(t.pano, t);
-
-			// If all entries are unofficial, do an extra
-			// official-only lookup to get the full multi-year coverage history.
-			const allUnofficial = merged.size > 0 && [...merged.keys()].every((p) => !isOfficialPano(p));
-			if (allUnofficial && !cancelled) {
-				fetchPanoData({
-					location: panoPos,
-					radius: 25,
-					sources: [google.maps.StreetViewSource.GOOGLE],
-				}).then((officialData) => {
-					if (cancelled) return;
-					for (const t of extractTimes(officialData)) merged.set(t.pano, t);
-					setPanoDates(Array.from(merged.values()));
-				});
-			} else {
-				setPanoDates(Array.from(merged.values()));
-			}
-		});
-
-		fetchSvMetadata([loc.pano]).then(([data]) => {
-			if (cancelled || !data) return;
-			setPanoAltitude(data.extra?.altitude ?? 0);
-			setPanoGeo({
-				address: data.location.description || "",
-				countryCode: data.extra?.countryCode?.toUpperCase() ?? null,
-			});
-			const loc = getMapState().activeLocation;
-			if (loc) enrich(loc, data);
-		});
-
-		return () => {
-			cancelled = true;
-		};
-	}, [location?.id, currentPano?.location?.pano]);
 
 	// Reads the active location at call time to stay referentially stable
 	// (it is a memo'd PanoDatePicker prop).
@@ -545,10 +385,7 @@ export function LocationPreview() {
 	const handleReturnToSpawn = useCallback(async () => {
 		const loc = getMapState().activeLocation;
 		if (!loc || !singletonPano) return;
-		if (!google) return;
-		const result = await resolvePano(loc);
-		applyResolved(singletonPano, result, loc);
-		google.maps.event.trigger(singletonPano, "resize");
+		await applyLocationPanorama(loc);
 		updateLocations([{ id: loc.id, patch: { flags: loc.flags & ~LocationFlag.LoadAsPanoId } }]);
 	}, []);
 
@@ -563,14 +400,14 @@ export function LocationPreview() {
 		const el = panoContainerRef.current;
 		if (!el) return;
 		const obs = new ResizeObserver(() => {
-			if (singletonPano && google?.maps) google.maps.event.trigger(singletonPano, "resize");
+			if (singletonPano) singletonPano.resize();
 		});
 		obs.observe(el);
 		return () => obs.disconnect();
 	}, [chipMode]);
 
 	useEffect(() => {
-		if (singletonPano && google?.maps) google.maps.event.trigger(singletonPano, "resize");
+		if (singletonPano) singletonPano.resize();
 	}, [appSettings.previewAspectRatio]);
 
 	useEffect(() => {
@@ -581,7 +418,7 @@ export function LocationPreview() {
 		const obs = new ResizeObserver(() => {
 			clearTimeout(timer);
 			timer = setTimeout(() => {
-				if (singletonPano && google?.maps) google.maps.event.trigger(singletonPano, "resize");
+				if (singletonPano) singletonPano.resize();
 			}, 150);
 		});
 		obs.observe(el);
@@ -608,8 +445,6 @@ export function LocationPreview() {
 		handleReturnToSpawn,
 		handleDateChange,
 	});
-
-	usePanoNavigation(appSettings);
 
 	if (!location || !map) return null;
 
@@ -647,7 +482,7 @@ export function LocationPreview() {
 							<div style={{ position: "absolute", inset: 0, zIndex: 1 }} />
 						)}
 						{panoReady && singletonPano && (
-							<PanoControls
+							<PsvControls
 								panorama={singletonPano}
 								isFullscreen={isFullscreen}
 								onFullscreen={handleFullscreen}

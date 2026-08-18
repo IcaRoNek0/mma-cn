@@ -1,7 +1,7 @@
 const TWEEN_DURATION = 160;
 
 export function tweenPov(
-	pano: google.maps.StreetViewPanorama,
+	pano: { getPov(): { heading: number; pitch: number }; setPov(pov: { heading: number; pitch: number }): void },
 	target: { heading: number; pitch: number },
 	onComplete?: () => void,
 ): () => void {

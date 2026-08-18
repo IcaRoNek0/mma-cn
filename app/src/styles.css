@@ -2020,9 +2020,11 @@ input[type="range"]:disabled {
 	width: 100%;
 	height: 100%;
 	position: absolute;
+	inset: 0;
 }
 .embed-controls__control {
 	position: absolute;
+	max-width: 100%;
 }
 .embed-controls__control .map-control {
 	pointer-events: all;
@@ -2039,6 +2041,7 @@ input[type="range"]:disabled {
 	margin: 0.5rem;
 	padding: 0 1rem;
 	box-shadow: 0 1px 4px -1px #0000004d;
+	box-sizing: border-box;
 }
 .map-control--transparent {
 	box-shadow: none;
@@ -2101,6 +2104,10 @@ input[type="range"]:disabled {
 	padding: 0 40px 0 16px;
 	display: block;
 	position: relative;
+	white-space: nowrap;
+}
+.map-settings-control__icon {
+	display: none;
 }
 .map-control__menu-button:after {
 	pointer-events: none;
@@ -3180,6 +3187,7 @@ input.date-picker__trigger:focus {
 	grid-gap: 1rem;
 	grid-template-rows: min-content min-content;
 	display: grid;
+	container: location-preview / inline-size;
 	/* x hidden: overflow-y alone computes x to auto, and .tag-list's -4px margin
 	   bleed would otherwise make the whole section horizontally scrollable */
 	overflow-x: hidden;
@@ -3232,9 +3240,13 @@ input.date-picker__trigger:focus {
 .location-preview__meta {
 	grid-gap: 0.5rem;
 	grid-template-areas: "desc date actions" "tags tags tags";
-	grid-auto-columns: 1fr;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 300px) max-content;
 	align-items: center;
 	display: grid;
+	min-width: 0;
+}
+.location-preview__meta > * {
+	min-width: 0;
 }
 .location-preview__timestamps,
 .location-preview__timestamp-sep {
@@ -3244,18 +3256,20 @@ input.date-picker__trigger:focus {
 	grid-area: desc;
 	font-size: 0.875rem;
 	line-height: 1rem;
+	overflow-wrap: anywhere;
 }
 .location-preview__date {
 	grid-area: date;
 	justify-self: center;
-	width: 300px;
+	width: min(300px, 100%);
 }
 .location-preview__actions {
-	grid-gap: 1rem;
 	grid-area: actions;
-	grid-auto-flow: column;
 	align-items: center;
-	display: grid;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	display: flex;
 }
 .location-preview__tags {
 	grid-gap: 0.25rem;
@@ -3269,9 +3283,30 @@ input.date-picker__trigger:focus {
 @media (max-width: 1799px) {
 	.location-preview__meta {
 		grid-template-areas: "desc desc" "date actions" "tags tags";
+		grid-template-columns: minmax(0, 1fr) max-content;
 	}
 	.location-preview__date {
 		justify-self: start;
+	}
+}
+@container location-preview (max-width: 620px) {
+	.location-preview__meta {
+		grid-template-areas: "desc" "date" "actions" "tags";
+		grid-template-columns: minmax(0, 1fr);
+		align-items: start;
+	}
+	.location-preview__date {
+		justify-self: stretch;
+	}
+	.location-preview__actions {
+		justify-content: flex-start;
+	}
+	.location-preview__tags .form-add-tag {
+		max-width: 100%;
+	}
+	.location-preview__tags .form-add-tag__input {
+		width: min(12rem, calc(100cqw - 4rem));
+		min-width: 0;
 	}
 }
 .map-control.location-preview__date {
@@ -3907,9 +3942,8 @@ body:not(.mm-tag-dragging) .tag-tree__edit:hover {
 .map-meta {
 	justify-content: flex-start;
 	align-items: center;
-	gap: 1rem;
-	height: 2rem;
-	overflow: hidden;
+	gap: 0.5rem 1rem;
+	min-height: 2rem;
 	display: flex;
 }
 .map-meta__total {
@@ -3953,8 +3987,9 @@ body:not(.mm-tag-dragging) .tag-tree__edit:hover {
 	flex-shrink: 0;
 }
 .map-meta__import {
-	gap: 1rem;
-	display: flex;
+	display: grid;
+	grid-template-columns: repeat(2, max-content);
+	gap: 0.35rem 0.5rem;
 	flex-shrink: 0;
 }
 .map-overview {
@@ -4001,6 +4036,81 @@ body:not(.mm-tag-dragging) .tag-tree__edit:hover {
 .opacity-target-toggle:hover {
 	background: #ebebeb;
 	color: #000;
+}
+.marker-opacity-control {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	min-width: 40px;
+}
+.marker-opacity-control__button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	line-height: 0;
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	border-radius: 2px;
+}
+.marker-opacity-control__button:hover {
+	background: #ebebeb;
+}
+.marker-opacity-control__icon {
+	display: block;
+	width: 24px;
+	height: 24px;
+	object-fit: contain;
+}
+@container map-embed (max-width: 620px) {
+	.map-settings-control__button {
+		width: 40px;
+		padding: 0;
+		place-items: center;
+		display: grid;
+	}
+	.map-settings-control__button::after {
+		display: none;
+	}
+	.map-settings-control__icon {
+		display: block;
+	}
+	.map-settings-control__label {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		clip: rect(0 0 0 0);
+		overflow: hidden;
+	}
+	.map-type-control__basemap {
+		min-width: 140px;
+	}
+	.search-control__input {
+		width: min(210px, calc(100cqw - 168px));
+		min-width: 112px;
+	}
+	.sv-opacity-control__slider {
+		width: clamp(3.5rem, 16cqw, 6rem);
+	}
+	.search-control .search-results {
+		width: min(260px, calc(100cqw - 1rem));
+	}
+}
+@container map-embed (max-width: 330px) {
+	.embed-controls__opacity {
+		top: 104px !important;
+	}
+	.embed-controls__polygon {
+		top: 156px !important;
+	}
+	.search-control__input {
+		width: calc(100cqw - 1rem);
+		min-width: 0;
+	}
 }
 .sv-preview-control {
 	height: auto;
@@ -4314,6 +4424,8 @@ body {
 	align-items: center;
 	gap: 1rem;
 	display: flex;
+	min-width: 0;
+	flex-wrap: wrap;
 }
 .page-map-editor h1 {
 	max-width: var(--size-header-3);
@@ -4327,6 +4439,7 @@ body {
 .map-embed {
 	position: relative;
 	min-width: 0;
+	container: map-embed / inline-size;
 }
 /* The map surface should never show a focus ring on click */
 .map-embed .gm-style:focus,
@@ -4385,6 +4498,8 @@ body {
 .settings-popup {
 	color: var(--text-1);
 	width: max-content;
+	max-width: min(24rem, calc(100cqw - 1rem));
+	box-sizing: border-box;
 	box-shadow: var(--shadow-4);
 	background: var(--surface-3);
 	border: 1px solid var(--border-subtle);
@@ -4397,6 +4512,7 @@ body {
 	transform-origin: top;
 	animation: 0.15s cubic-bezier(0.16, 1, 0.3, 1) popoverShow;
 	display: flex;
+	overflow-x: hidden;
 }
 .settings-popup input:where([type="checkbox"], [type="radio"]) {
 	margin-right: 0.25rem;
@@ -4413,6 +4529,7 @@ body {
 	align-items: center;
 	gap: 0.5rem;
 	display: flex;
+	min-width: 0;
 }
 .settings-popup__select:not(:last-of-type) {
 	margin-bottom: 0.25rem;
@@ -5172,8 +5289,8 @@ body {
 	position: absolute;
 	bottom: calc(var(--fs-tray-h, 0px) + 8px);
 	right: 8px;
-	width: max(250px, 23.15vmin);
-	height: max(200px, 18.52vmin);
+	width: min(max(250px, 23.15vmin), calc(100vw - 16px));
+	height: min(max(200px, 18.52vmin), calc(100vh - var(--fs-tray-h, 0px) - 16px));
 	border: 2px solid rgba(255, 255, 255, 0.4);
 	border-radius: 4px;
 	z-index: 12;
@@ -5306,6 +5423,9 @@ body {
 	display: flex;
 	flex-direction: column;
 	z-index: 13;
+	max-height: 45vh;
+	overflow-x: hidden;
+	overflow-y: auto;
 }
 
 /* Fullscreen tag bar. The 1fr -> 0fr row is the collapse: the tray shrinks with it,
@@ -5330,6 +5450,7 @@ body {
 .fullscreen-tagbar__content {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 0.5rem;
 	padding: 0.375rem 2.25rem 0.375rem 0.75rem;
 }
@@ -5367,6 +5488,8 @@ body {
 	gap: 4px;
 	z-index: 13;
 	pointer-events: none;
+	width: max-content;
+	max-width: calc(100% - 112px);
 }
 .location-preview__panorama:has(.compass-tape) .fullscreen-topbar {
 	top: 48px;
@@ -5380,8 +5503,9 @@ body {
 	padding: 0.25rem 0.75rem;
 	border-radius: 0.25rem;
 	pointer-events: auto;
-	width: max-content;
-	max-width: 60vw;
+	width: fit-content;
+	max-width: 100%;
+	overflow-wrap: anywhere;
 }
 
 /* Fullscreen date picker */
@@ -5390,7 +5514,7 @@ body {
 	bottom: var(--fs-tray-h, 0px);
 	left: 50%;
 	transform: translateX(-50%);
-	width: 300px;
+	width: min(300px, calc(100% - 112px));
 	z-index: 11;
 	padding-bottom: 8px;
 }
@@ -5409,7 +5533,8 @@ body {
 	gap: 4px;
 }
 .fullscreen-tagbar .form-add-tag__input {
-	width: 120px;
+	width: min(120px, calc(100vw - 5rem));
+	min-width: 0;
 }
 .fullscreen-tagbar__palette {
 	position: absolute;

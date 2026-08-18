@@ -129,6 +129,7 @@ export type WorkArea = "overview" | "location" | "duplicates" | "import" | "plug
 export type SvColor = string;
 
 export type MapTypeKey = "map" | "satellite" | "osm" | "vector";
+export type PanoProviderKey = "baidu" | "tencent";
 export type SvCoverageType = "official" | "unofficial" | "default";
 export type SvThickness = "default" | "high";
 export type MarkerStyle = "pin" | "circle" | "arrow";
