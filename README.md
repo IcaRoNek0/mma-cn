@@ -1,6 +1,11 @@
 # MMA-CN
 
-Linux deployment guide for MMA-CN, a local-first map editor with Baidu and Tencent Street View support. The browser service uses Photo Sphere Viewer (PSV) for panoramas and does not require Google Street View.
+MMA-CN is an unofficial modified fork of MMA (https://github.com/ccmdi/mma).
+Linux deployment guide for MMA-CN, a local-first map editor with Baidu and Tencent Street View support (include Tencent trekker). The browser service uses Photo Sphere Viewer (PSV) for panoramas and does not support Google Street View.
+
+MMA-CN是map-making app的改版，支持加载百度/腾讯街景（含腾讯trekker）。
+
+# 部署教程
 
 [简体中文](#简体中文) · [English](#english)
 
@@ -136,17 +141,19 @@ sudo systemctl status mma
 sudo journalctl -u mma -f
 ```
 
+---
+
 ## English
 
-### Requirements
+### System Requirements
 
 - Ubuntu/Debian Linux (Ubuntu 22.04 or newer recommended)
-- Node.js 24.x (`24.15.0` or newer) and npm
-- Rust stable and Cargo
-- Build/runtime packages: `build-essential`, `pkg-config`, `libssl-dev`, GTK/WebKitGTK development packages, and `xvfb`
-- Runtime network access to Huawei basemap, Baidu Street View, Tencent Street View, and the Tencent coverage source
+- Node.js 24.x (`24.15.0` or higher) and npm
+- Rust stable, Cargo
+- Build and runtime dependencies: `build-essential`, `pkg-config`, `libssl-dev`, GTK/WebKitGTK development packages, `xvfb`
+- Ensure that Huawei basemap, Baidu Street View, Tencent Street View, and Tencent coverage data sources are accessible at runtime
 
-Install common Ubuntu/Debian packages:
+Install common dependencies on Ubuntu/Debian:
 
 ```bash
 sudo apt update
@@ -155,9 +162,9 @@ sudo apt install -y build-essential curl pkg-config libssl-dev \
   librsvg2-dev patchelf xvfb
 ```
 
-If `libwebkit2gtk-4.1-dev` is unavailable, install the equivalent WebKitGTK development package supplied by your distribution (for example, `libwebkit2gtk-4.0-dev`).
+If your distribution does not provide `libwebkit2gtk-4.1-dev`, install the equivalent WebKitGTK development package provided by that distribution.
 
-### Get the source
+### Clone the Repository
 
 ```bash
 git clone https://github.com/IcaRoNek0/mma-cn.git
@@ -178,11 +185,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profil
 rustup default stable
 ```
 
-After opening a new shell, reload the nvm and Cargo environment lines if `node` or `cargo` is not found.
+Ensure `node` and `cargo` are in your `PATH`.
 
-### Configure the Huawei basemap
+### Configure Huawei Basemap
 
-The source tree does not contain a test key. Copy the template and provide your own Huawei Petal Maps key:
+Fill in your own Huawei Petal Maps key:
 
 ```bash
 cd app
@@ -190,21 +197,11 @@ cp .env.example .env.production.local
 $EDITOR .env.production.local
 ```
 
-Set at least:
-
 ```dotenv
-VITE_PETAL_MAP_KEY=your-huawei-petal-maps-key
+VITE_PETAL_MAP_KEY=your_huawei_petal_maps_key
 ```
 
-Alternatively, export it only for the build:
-
-```bash
-export VITE_PETAL_MAP_KEY='your Huawei Petal Maps key'
-```
-
-Changing a `VITE_*` variable requires rebuilding both the frontend and the Rust service. Never commit a real key.
-
-### Install dependencies and build
+### Install Dependencies and Build
 
 ```bash
 cd app
@@ -213,11 +210,15 @@ npm run build
 cargo build --manifest-path src-tauri/Cargo.toml --features web-serve --release
 ```
 
-The release service binary is `app/src-tauri/target/release/map-making-app`.
+The generated service binary is located at:
 
-### Start the browser service
+```text
+app/src-tauri/target/release/map-making-app
+```
 
-For local access only:
+### Start the Browser Service
+
+For local access:
 
 ```bash
 cd app
@@ -225,20 +226,47 @@ MMA_SERVE_ADDR=127.0.0.1:1430 xvfb-run -a \
   ./src-tauri/target/release/map-making-app --serve
 ```
 
-Open `http://127.0.0.1:1430/`. Port `5173` is the Vite development port, not the complete deployment entry point.
+Then open `http://127.0.0.1:1430/` in your browser.
 
-To allow access from a trusted LAN:
+### systemd Persistent Service (Optional)
+
+Create a dedicated user and directory:
 
 ```bash
-MMA_SERVE_ADDR=0.0.0.0:1430 xvfb-run -a \
-  ./src-tauri/target/release/map-making-app --serve
+sudo useradd --system --create-home --shell /usr/sbin/nologin mma
+sudo install -d -o mma -g mma /opt/mma
+sudo install -m 0755 app/src-tauri/target/release/map-making-app /opt/mma/map-making-app
 ```
 
-The service currently has no login/authentication or multi-user conflict handling. Do not expose port 1430 directly to the public Internet. `xvfb-run -a` provides the virtual display required by GTK/WebKit on headless servers.
+Create `/etc/systemd/system/mma.service`:
 
-### Keep it running with systemd (optional)
+```ini
+[Unit]
+Description=MMA-CN browser service
+After=network-online.target
+Wants=network-online.target
 
-Use the same `mma` user, `/opt/mma` installation, and systemd unit shown in the Chinese section above, then run:
+[Service]
+Type=simple
+User=mma
+Group=mma
+Environment=MMA_SERVE_ADDR=127.0.0.1:1430
+Environment=XDG_DATA_HOME=/var/lib/mma
+Environment=XDG_CONFIG_HOME=/var/lib/mma/config
+Environment=XDG_CACHE_HOME=/var/cache/mma
+Environment=XDG_RUNTIME_DIR=/run/mma
+StateDirectory=mma
+CacheDirectory=mma
+RuntimeDirectory=mma
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x720x24" /opt/mma/map-making-app --serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and view logs:
 
 ```bash
 sudo systemctl daemon-reload
@@ -246,18 +274,3 @@ sudo systemctl enable --now mma
 sudo systemctl status mma
 sudo journalctl -u mma -f
 ```
-
-### Updates and verification
-
-Normal restarts do not require a rebuild. Rebuild the frontend and Rust binary after changing frontend code or `VITE_*` settings; rebuild Rust after changing Rust code; run `npm ci` when `package-lock.json` changes.
-
-Import JSON question banks through the web UI's file upload control. Tencent coverage PMTiles are cached under the application data directory and downloaded again if the cache is missing.
-
-Verify the HTTP endpoint:
-
-```bash
-curl -fsS http://127.0.0.1:1430/ -o /dev/null
-ss -ltn | grep 1430
-```
-
-The editor should load in the browser, including Huawei basemap, Baidu/Tencent Street View, and JSON import.
