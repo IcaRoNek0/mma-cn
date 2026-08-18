@@ -12,7 +12,7 @@ Linux deployment guide for MMA-CN, a local-first map editor with Baidu and Tence
 - Node.js 24.x（`24.15.0` 或更高版本）和 npm
 - Rust stable、Cargo
 - 编译和运行依赖：`build-essential`、`pkg-config`、`libssl-dev`、GTK/WebKitGTK 开发包、`xvfb`
-- 运行时可访问华为底图、百度街景、腾讯街景及腾讯覆盖数据源
+- 确保运行时可访问华为底图、百度街景、腾讯街景及腾讯覆盖数据源
 
 在 Ubuntu/Debian 上安装常用依赖：
 
@@ -23,9 +23,9 @@ sudo apt install -y build-essential curl pkg-config libssl-dev \
   librsvg2-dev patchelf xvfb
 ```
 
-如果发行版没有 `libwebkit2gtk-4.1-dev`，请安装该发行版提供的对应 WebKitGTK 开发包（例如 `libwebkit2gtk-4.0-dev`）。
+如果发行版没有 `libwebkit2gtk-4.1-dev`，请安装该发行版提供的对应 WebKitGTK 开发包。
 
-### 获取源码
+### 克隆仓库到本地
 
 ```bash
 git clone https://github.com/IcaRoNek0/mma-cn.git
@@ -46,11 +46,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profil
 rustup default stable
 ```
 
-重新登录 shell 后，如果 `node` 或 `cargo` 不在 `PATH` 中，请重新执行上面的环境加载命令。
+确保 `node` 或 `cargo` 在 `PATH` 中
 
 ### 配置华为底图
 
-源码不包含测试 key。复制配置模板并填写自己的华为 Petal Maps key：
+填写自己的华为 Petal Maps key：
 
 ```bash
 cd app
@@ -58,19 +58,9 @@ cp .env.example .env.production.local
 $EDITOR .env.production.local
 ```
 
-至少填写：
-
 ```dotenv
 VITE_PETAL_MAP_KEY=你的华为PetalMapsKey
 ```
-
-也可以在构建前临时导出：
-
-```bash
-export VITE_PETAL_MAP_KEY='你的华为 Petal Maps key'
-```
-
-修改 `VITE_*` 变量后必须重新构建前端和 Rust 服务。不要将真实 key 提交到 Git。
 
 ### 安装依赖并构建
 
@@ -81,7 +71,7 @@ npm run build
 cargo build --manifest-path src-tauri/Cargo.toml --features web-serve --release
 ```
 
-首次 Rust release 构建可能需要较长时间。生成的服务程序为：
+生成的服务程序为：
 
 ```text
 app/src-tauri/target/release/map-making-app
@@ -89,7 +79,7 @@ app/src-tauri/target/release/map-making-app
 
 ### 启动浏览器服务
 
-仅本机访问：
+本机访问：
 
 ```bash
 cd app
@@ -97,16 +87,7 @@ MMA_SERVE_ADDR=127.0.0.1:1430 xvfb-run -a \
   ./src-tauri/target/release/map-making-app --serve
 ```
 
-然后打开 `http://127.0.0.1:1430/`。`5173` 是 Vite 开发端口，不是完整部署入口。
-
-允许同一局域网访问时，可监听所有网卡：
-
-```bash
-MMA_SERVE_ADDR=0.0.0.0:1430 xvfb-run -a \
-  ./src-tauri/target/release/map-making-app --serve
-```
-
-当前服务没有登录鉴权和多人冲突处理，不要把 1430 端口直接暴露到公网。`xvfb-run -a` 用于提供 GTK/WebKit 所需的虚拟显示器，服务器无桌面环境时不能省略。
+然后打开 `http://127.0.0.1:1430/`即可。
 
 ### systemd 持久运行（可选）
 
@@ -154,25 +135,6 @@ sudo systemctl enable --now mma
 sudo systemctl status mma
 sudo journalctl -u mma -f
 ```
-
-### 日常使用和更新
-
-日常启动不需要重新编译，直接启动已生成的二进制即可。以下情况需要重新构建：
-
-- 修改 React/TypeScript/CSS 或 `VITE_*` 配置：执行 `npm run build`，再执行 Rust release build。
-- 修改 Rust 代码：执行 Rust release build。
-- 修改 `package-lock.json`：先执行 `npm ci`。
-
-JSON 题库可以在网页的导入区域通过文件上传导入。腾讯覆盖 PMTiles 首次使用时会缓存到应用数据目录，缓存缺失时会自动重新下载。
-
-### 验证服务
-
-```bash
-curl -fsS http://127.0.0.1:1430/ -o /dev/null
-ss -ltn | grep 1430
-```
-
-打开网页后，应能看到完整编辑器，并可测试华为底图、百度/腾讯街景和 JSON 文件导入。
 
 ## English
 
