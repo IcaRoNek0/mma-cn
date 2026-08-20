@@ -1,10 +1,8 @@
-import type { Update } from "@tauri-apps/plugin-updater";
 import { emit, useEventValue } from "@/lib/events";
 import { log } from "@/lib/util/log";
 import { getSettings } from "@/store/settings";
 import { saveSession } from "@/store/session";
 import { openMapWindowIds } from "@/lib/window";
-import { errText } from "@/lib/util/util";
 
 type Phase = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "error";
 
@@ -25,7 +23,6 @@ let state: UpdateState = {
 	error: null,
 	dismissed: false,
 };
-let pendingUpdate: Update | null = null;
 
 function set(patch: Partial<UpdateState>) {
 	state = { ...state, ...patch };
@@ -35,31 +32,11 @@ function set(patch: Partial<UpdateState>) {
 const DISMISS_KEY = "mma-update-dismissed-version";
 
 export async function checkForUpdate() {
-	set({ phase: "checking", error: null });
-	try {
-		const { check } = await import("@tauri-apps/plugin-updater");
-		const update = await check();
-		if (update) {
-			pendingUpdate = update;
-			log.info(`[updater] update available: v${update.version}`);
-			set({
-				phase: "available",
-				version: update.version,
-				notes: update.body ?? "",
-				dismissed: localStorage.getItem(DISMISS_KEY) === update.version,
-			});
-		} else {
-			set({ phase: "up-to-date", version: null });
-		}
-	} catch (e) {
-		log.warn("[updater] check failed:", e);
-		set({ phase: "error", error: errText(e) });
-	}
+	// MMA-CN releases are distributed directly and must not consume upstream MMA updates.
+	set({ phase: "up-to-date", version: null, error: null });
 }
 
-// Updating never fires onCloseRequested (the installer kills the app
-// inside downloadAndInstall), so snapshot the session here or the post-update
-// restore reopens the stale list from the last normal quit.
+// Relaunches bypass the normal close flow, so persist the current session first.
 async function snapshotSessionForRestart() {
 	if (!getSettings().restoreSession) return;
 	try {
@@ -71,31 +48,8 @@ async function snapshotSessionForRestart() {
 	}
 }
 
-export async function installUpdate() {
-	if (!pendingUpdate) return;
-	if (state.phase === "downloading" || state.phase === "ready") return;
-	await snapshotSessionForRestart();
-	set({ phase: "downloading", percent: 0, error: null });
-	try {
-		let totalBytes = 0;
-		let downloadedBytes = 0;
-		await pendingUpdate.downloadAndInstall((event) => {
-			if (event.event === "Started" && event.data.contentLength) {
-				totalBytes = event.data.contentLength;
-			} else if (event.event === "Progress") {
-				downloadedBytes += event.data.chunkLength;
-				if (totalBytes > 0) {
-					set({ percent: Math.round((downloadedBytes / totalBytes) * 100) });
-				}
-			} else if (event.event === "Finished") {
-				set({ phase: "ready" });
-			}
-		});
-		set({ phase: "ready" });
-	} catch (e) {
-		log.error("[updater] install failed:", e);
-		set({ phase: "error", error: errText(e) });
-	}
+export function installUpdate() {
+	// No updater endpoint is configured for direct MMA-CN distributions.
 }
 
 export async function relaunchApp() {

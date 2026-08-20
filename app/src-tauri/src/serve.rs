@@ -25,7 +25,7 @@ pub fn run_server() {
         .setup(|app| {
             storage::init_paths(app.handle())?;
             storage::run_migrations()?;
-            register_web_schemes();
+            register_web_schemes(app.handle());
             let handle = app.handle().clone();
             WebviewWindowBuilder::new(
                 &handle,
@@ -67,7 +67,11 @@ fn qs(query: &str) -> String {
 
 /// The one app-facing hook: register each custom URI scheme handler with the
 /// plugin (same logic the desktop `register_uri_scheme_protocol` handlers use).
-fn register_web_schemes() {
+fn register_web_schemes(app: &tauri::AppHandle) {
+    let coverage_app = app.clone();
+    register_scheme("mma-tencent-archive", move |req: SchemeRequest| {
+        relay(crate::tencent_coverage::response(&coverage_app, &req.query))
+    });
     register_scheme("mma-buf", |req: SchemeRequest| {
         let path = percent_encoding::percent_decode_str(&req.path)
             .decode_utf8_lossy()

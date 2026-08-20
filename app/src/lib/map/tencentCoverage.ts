@@ -1,32 +1,36 @@
 import { PMTiles, type RangeResponse, type Source } from "pmtiles";
+import { coverageError } from "@/lib/map/coverageDebug";
+import { schemeBase } from "@/lib/util/util";
 
-// This file is copied to Vite's output unchanged and is therefore available in
-// both the desktop bundle and the web-serve build without a startup download.
-export const TENCENT_COVERAGE_ARCHIVE_URL = "/tencent-lines.pmtiles";
+// The backend serves exact byte ranges from the vendored archive, avoiding the
+// frontend asset resolver, which excludes this large binary from --serve builds.
+export const TENCENT_COVERAGE_ARCHIVE_URL = `${schemeBase("mma-tencent-archive")}range`;
 
 class BundledTencentCoverageSource implements Source {
-	private completeArchive: ArrayBuffer | null = null;
-
 	getKey(): string {
 		return TENCENT_COVERAGE_ARCHIVE_URL;
 	}
 
 	async getBytes(offset: number, length: number, signal?: AbortSignal): Promise<RangeResponse> {
-		if (this.completeArchive) {
-			return { data: this.completeArchive.slice(offset, offset + length) };
+		const url = `${TENCENT_COVERAGE_ARCHIVE_URL}?offset=${offset}&length=${length}`;
+		try {
+			const response = await fetch(url, { signal });
+			const data = await response.arrayBuffer();
+			if (!response.ok) {
+				throw new Error(`Bundled Tencent coverage returned HTTP ${response.status}`);
+			}
+			if (data.byteLength !== length) {
+				throw new Error(
+					`Bundled Tencent coverage returned ${data.byteLength} bytes, expected ${length}`,
+				);
+			}
+			return { data };
+		} catch (error) {
+			if (!signal?.aborted) {
+				coverageError("tencent", `local archive request failed (${offset}, ${length})`, error);
+			}
+			throw error;
 		}
-		const response = await fetch(TENCENT_COVERAGE_ARCHIVE_URL, {
-			signal,
-			headers: { Range: `bytes=${offset}-${offset + length - 1}` },
-		});
-		if (!response.ok) throw new Error(`Bundled Tencent coverage returned HTTP ${response.status}`);
-		const data = await response.arrayBuffer();
-		if (response.status === 206) return { data };
-
-		// Tauri's asset resolver and the web-serve bridge can answer a range request
-		// with the complete local asset. Retain it once and serve subsequent slices.
-		this.completeArchive = data;
-		return { data: data.slice(offset, offset + length) };
 	}
 }
 

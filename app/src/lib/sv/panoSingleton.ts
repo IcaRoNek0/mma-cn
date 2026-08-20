@@ -10,13 +10,18 @@ import { getMapState, setActiveLocation, addLocations, fetchLocation } from "@/s
 import {
 	getPanoramaProvider,
 	fallbackPanoramaMetadata,
+	headingToViewerYaw,
 	isPanoSource,
+	panoramaYawOrigin,
 	type PanoramaMetadata,
 	type PanoSource,
+	viewerYawToHeading,
 } from "@/lib/pano";
 import { seenSkipNext } from "@/lib/seen/seen";
 import { getLocal } from "@/lib/hooks/useLocalStorage";
 import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
+import { getSettings, normalizeInputSensitivity } from "@/store/settings";
+import { subscribe } from "@/lib/events";
 
 interface ListenerHandle {
 	remove(): void;
@@ -33,6 +38,7 @@ interface AdapterInternals {
 
 const HIGH_RES_THRESHOLD = 0.01;
 const HIGH_RES_ZOOM = 0.02;
+const PSV_BASE_MOVE_SPEED = 2.2;
 export const PSV_TILE_CONCURRENCY = 8;
 
 function thumbnailUrl(metadata: PanoramaMetadata): string | undefined {
@@ -66,13 +72,15 @@ export class PsvPanoramaController {
 	private source: PanoSource = "baidu_pano";
 	private listeners = new Map<string, Set<() => void>>();
 	private progressiveCleanup: () => void = () => {};
+	private yawOriginHeading = 0;
 	private generation = 0;
 
 	constructor() {
 		this.viewer = new Viewer({
 			container: singletonDiv,
 			adapter: EquirectangularTilesAdapter,
-			moveSpeed: 2.2,
+			moveSpeed:
+				PSV_BASE_MOVE_SPEED * normalizeInputSensitivity(getSettings().panoRotateSensitivity),
 			moveInertia: 0.3,
 			zoomSpeed: 2.5,
 			defaultZoomLvl: 0,
@@ -82,6 +90,12 @@ export class PsvPanoramaController {
 		adapter.queue.concurency = PSV_TILE_CONCURRENCY;
 		this.viewer.addEventListener(events.PositionUpdatedEvent.type, () => this.emit("pov_changed"));
 		this.viewer.addEventListener(events.ZoomUpdatedEvent.type, () => this.emit("zoom_changed"));
+		subscribe("settings:changed", () => {
+			this.viewer.setOption(
+				"moveSpeed",
+				PSV_BASE_MOVE_SPEED * normalizeInputSensitivity(getSettings().panoRotateSensitivity),
+			);
+		});
 	}
 
 	private emit(event: string) {
@@ -179,14 +193,26 @@ export class PsvPanoramaController {
 				tileProvider.getTileUrl(metadata.panoId, col, row, tileLevels[level]?.level ?? level),
 			baseUrl: thumbnailUrl(metadata),
 		};
-		await this.viewer.setPanorama(panorama, {
-			position: {
-				yaw: (location.heading * Math.PI) / 180,
-				pitch: (location.pitch * Math.PI) / 180,
-			},
-			zoom: tileLevels.length > 1 ? 0 : targetZoom,
-			transition: false,
-		});
+		const previousYawOriginHeading = this.yawOriginHeading;
+		const yawOriginHeading = panoramaYawOrigin(
+			metadata.source,
+			metadata.heading,
+			metadata.northOffset,
+		);
+		this.yawOriginHeading = yawOriginHeading;
+		try {
+			await this.viewer.setPanorama(panorama, {
+				position: {
+					yaw: headingToViewerYaw(location.heading, yawOriginHeading),
+					pitch: (location.pitch * Math.PI) / 180,
+				},
+				zoom: tileLevels.length > 1 ? 0 : targetZoom,
+				transition: false,
+			});
+		} catch (error) {
+			if (generation === this.generation) this.yawOriginHeading = previousYawOriginHeading;
+			throw error;
+		}
 		if (generation !== this.generation) return metadata;
 		this.metadata = metadata;
 		this.source = metadata.source;
@@ -213,14 +239,14 @@ export class PsvPanoramaController {
 	getPov(): google.maps.StreetViewPov {
 		const position = this.viewer.getPosition();
 		return {
-			heading: ((position.yaw * 180) / Math.PI + 360) % 360,
+			heading: viewerYawToHeading(position.yaw, this.yawOriginHeading),
 			pitch: (position.pitch * 180) / Math.PI,
 		};
 	}
 
 	setPov(pov: google.maps.StreetViewPov) {
 		this.viewer.rotate({
-			yaw: (pov.heading * Math.PI) / 180,
+			yaw: headingToViewerYaw(pov.heading, this.yawOriginHeading),
 			pitch: (pov.pitch * Math.PI) / 180,
 		});
 	}

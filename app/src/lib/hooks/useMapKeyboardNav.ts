@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { getSettings } from "@/store/settings";
+import { getSettings, normalizeInputSensitivity } from "@/store/settings";
 import { parseHotkey, matchesKey, isEditableElement } from "@/lib/hooks/useHotkey";
 import { getBinding } from "@/lib/util/hotkeys";
 import type { MapHost } from "@/lib/map/host";
@@ -51,7 +51,7 @@ export function useMapKeyboardNav(host: MapHost | null) {
 			if (nav.held.has("panUp")) dy -= (s.mapPanSpeed * dt) / slow;
 			if (nav.held.has("panDown")) dy += (s.mapPanSpeed * dt) / slow;
 
-			const zoomStep = (0.02 * dt) / slow;
+			const zoomStep = (0.02 * normalizeInputSensitivity(s.mapZoomSensitivity) * dt) / slow;
 			if (nav.held.has("mapZoomIn")) nav.zoom += zoomStep;
 			if (nav.held.has("mapZoomOut")) nav.zoom = Math.max(1, nav.zoom - zoomStep);
 

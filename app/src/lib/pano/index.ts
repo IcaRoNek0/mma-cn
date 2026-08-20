@@ -4,6 +4,7 @@ import type { PanoramaProvider, PanoSource } from "./types";
 
 export * from "./types";
 export * from "./coords";
+export * from "./orientation";
 export { BaiduPanoramaProvider } from "./baidu";
 export { TencentPanoramaProvider, tencentTileLevels } from "./tencent";
 

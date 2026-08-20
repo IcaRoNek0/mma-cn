@@ -112,6 +112,8 @@ describe("Tencent panorama metadata", () => {
 		);
 
 		const metadata = await new TencentPanoramaProvider().getMetadata("current");
+		expect(metadata.heading).toBe(90);
+		expect(metadata.northOffset).toBe(90);
 		expect(metadata.links.map((link) => link.panoId)).toEqual(["previous", "next"]);
 		expect(metadata.address).toBe("test road");
 	});
@@ -123,7 +125,10 @@ describe("Baidu panorama metadata", () => {
 		const [x, y] = gcj02ToBd09Mc(original);
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => new Response(JSON.stringify({ content: { id: "hidden", x: x * 100, y: y * 100 } }))),
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ content: { id: "hidden", x: x * 100, y: y * 100 } })),
+			),
 		);
 
 		const result = await new BaiduPanoramaProvider().findNearest(original, 13);
@@ -168,6 +173,8 @@ describe("Baidu panorama metadata", () => {
 		);
 
 		const metadata = await new BaiduPanoramaProvider().getMetadata("baidu-current");
+		expect(metadata.heading).toBe(135);
+		expect(metadata.northOffset).toBe(15);
 		expect(metadata.position.lng).toBeCloseTo(original.lng, 5);
 		expect(metadata.position.lat).toBeCloseTo(original.lat, 5);
 		expect(metadata.links).toEqual([{ panoId: "baidu-next", heading: 180 }]);

@@ -1,0 +1,173 @@
+.qqcoverage-page {
+	position: fixed;
+	inset: 0;
+	background: #e9e6dc;
+	color: #17212b;
+	font-family: "IBM Plex Mono", "Noto Sans Mono", monospace;
+}
+
+.qqcoverage-map {
+	position: absolute;
+	inset: 0;
+}
+
+.qqcoverage-header {
+	position: absolute;
+	top: 18px;
+	left: 18px;
+	right: 18px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	pointer-events: none;
+}
+
+.qqcoverage-header > div,
+.qqcoverage-header a {
+	border: 1px solid rgb(23 33 43 / 24%);
+	background: rgb(255 252 242 / 92%);
+	box-shadow: 0 8px 28px rgb(23 33 43 / 16%);
+	backdrop-filter: blur(10px);
+}
+
+.qqcoverage-header > div {
+	display: grid;
+	gap: 2px;
+	padding: 10px 14px;
+}
+
+.qqcoverage-header strong {
+	font-size: 15px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.qqcoverage-header span {
+	font-size: 11px;
+	color: #52606d;
+}
+
+.qqcoverage-header a {
+	padding: 9px 12px;
+	color: inherit;
+	font-size: 12px;
+	text-decoration: none;
+	pointer-events: auto;
+}
+
+.qqcoverage-status {
+	position: absolute;
+	top: 94px;
+	left: 18px;
+	display: grid;
+	min-width: 250px;
+	border: 1px solid rgb(23 33 43 / 24%);
+	background: rgb(255 252 242 / 92%);
+	box-shadow: 0 8px 28px rgb(23 33 43 / 16%);
+	backdrop-filter: blur(10px);
+}
+
+.qqcoverage-status > div {
+	display: flex;
+	justify-content: space-between;
+	gap: 18px;
+	padding: 8px 11px;
+	border-bottom: 1px solid rgb(23 33 43 / 12%);
+	font-size: 11px;
+}
+
+.qqcoverage-status > div:last-child {
+	border-bottom: 0;
+}
+
+.qqcoverage-status span {
+	color: #66727e;
+}
+
+.qqcoverage-status b {
+	font-weight: 600;
+}
+
+.qqcoverage-log {
+	position: absolute;
+	right: 18px;
+	bottom: 18px;
+	width: min(580px, calc(100vw - 36px));
+	max-height: min(42vh, 390px);
+	overflow: auto;
+	border: 1px solid rgb(23 33 43 / 24%);
+	background: rgb(17 25 33 / 94%);
+	box-shadow: 0 14px 38px rgb(17 25 33 / 28%);
+	color: #e9f0f5;
+	font-size: 11px;
+}
+
+.qqcoverage-log h2 {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	margin: 0;
+	padding: 9px 11px;
+	background: #0f171e;
+	color: #69d1ff;
+	font-size: 11px;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+}
+
+.qqcoverage-log > p {
+	margin: 0;
+	padding: 12px;
+	color: #96a4af;
+}
+
+.qqcoverage-log-row {
+	display: grid;
+	grid-template-columns: 72px 150px 1fr;
+	gap: 8px;
+	padding: 6px 10px;
+	border-top: 1px solid rgb(255 255 255 / 7%);
+	line-height: 1.4;
+}
+
+.qqcoverage-log-row time {
+	color: #7f909e;
+}
+
+.qqcoverage-log-row span {
+	color: #f4cc70;
+}
+
+.qqcoverage-log-row code {
+	overflow-wrap: anywhere;
+	color: #b8d7e8;
+	font: inherit;
+}
+
+@media (max-width: 700px) {
+	.qqcoverage-header {
+		top: 10px;
+		left: 10px;
+		right: 10px;
+	}
+
+	.qqcoverage-status {
+		top: 84px;
+		left: 10px;
+	}
+
+	.qqcoverage-log {
+		right: 10px;
+		bottom: 10px;
+		width: calc(100vw - 20px);
+		max-height: 36vh;
+	}
+
+	.qqcoverage-log-row {
+		grid-template-columns: 64px 1fr;
+	}
+
+	.qqcoverage-log-row code {
+		grid-column: 1 / -1;
+	}
+}

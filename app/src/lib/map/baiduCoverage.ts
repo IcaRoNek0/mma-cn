@@ -1,5 +1,6 @@
 import type { AddProtocolAction } from "maplibre-gl";
 import { gcj02ToBd09Mc } from "@/lib/pano/coords";
+import { coverageDebug, coverageError } from "@/lib/map/coverageDebug";
 
 const TILE_SIZE = 256;
 const MAX_SOURCE_REQUESTS = 12;
@@ -57,14 +58,23 @@ async function bitmap(url: string, signal: AbortSignal): Promise<ImageBitmap> {
 		let lastError: unknown;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
+				coverageDebug("baidu", "source tile request", { url, attempt: attempt + 1 });
 				const response = await fetch(url, { signal, cache: "force-cache" });
+				coverageDebug("baidu", "source tile response", {
+					url,
+					status: response.status,
+					contentType: response.headers.get("content-type"),
+				});
 				if (!response.ok) {
 					throw new Error(`Baidu coverage tile returned HTTP ${response.status}`);
 				}
-				return await createImageBitmap(await response.blob());
+				const blob = await response.blob();
+				coverageDebug("baidu", "source tile decoded", { url, bytes: blob.size });
+				return await createImageBitmap(blob);
 			} catch (error) {
 				if (signal.aborted) throw error;
 				lastError = error;
+				coverageError("baidu", `source tile attempt ${attempt + 1} failed`, error);
 			}
 		}
 		throw lastError;
@@ -81,7 +91,10 @@ async function renderBaiduCoverageTile(
 	z: number,
 	signal: AbortSignal,
 ): Promise<ImageBitmap> {
-	if (!baiduCoverageTileIntersectsChina(x, y, z)) return transparentTile();
+	if (!baiduCoverageTileIntersectsChina(x, y, z)) {
+		coverageDebug("baidu", "MapLibre tile skipped outside China", { z, x, y });
+		return transparentTile();
+	}
 	const tileCount = 2 ** z;
 	const canonicalX = ((x % tileCount) + tileCount) % tileCount;
 	const topLeft = inverseWebMercator([canonicalX * TILE_SIZE, y * TILE_SIZE], z);
@@ -101,6 +114,18 @@ async function renderBaiduCoverageTile(
 	const minY = Math.floor(bottomRightTile[1]);
 	const cols = maxX - minX + 1;
 	const rows = maxY - minY + 1;
+	coverageDebug("baidu", "MapLibre tile mapped to Baidu source tiles", {
+		z,
+		x,
+		y,
+		baiduZoom,
+		minX,
+		maxX,
+		minY,
+		maxY,
+		cols,
+		rows,
+	});
 	if (cols <= 0 || rows <= 0 || cols > 8 || rows > 8) {
 		throw new Error(`Unexpected Baidu coverage crop ${cols}x${rows} at z${z}`);
 	}
@@ -154,6 +179,7 @@ async function renderBaiduCoverageTile(
 		TILE_SIZE,
 		TILE_SIZE,
 	);
+	coverageDebug("baidu", "MapLibre tile rendered", { z, x, y });
 	return output.transferToImageBitmap();
 }
 
@@ -161,5 +187,13 @@ export const baiduCoverageProtocol: AddProtocolAction = async (params, abortCont
 	const match = params.url.match(/^mma-baidu:\/\/tiles\/(-?\d+)\/(-?\d+)\/(-?\d+)/);
 	if (!match) throw new Error(`Invalid Baidu coverage URL: ${params.url}`);
 	const [, z, x, y] = match.map(Number);
-	return { data: await renderBaiduCoverageTile(x, y, z, abortController.signal) };
+	coverageDebug("baidu", "protocol request", { z, x, y, url: params.url });
+	try {
+		const data = await renderBaiduCoverageTile(x, y, z, abortController.signal);
+		coverageDebug("baidu", "protocol response", { z, x, y, width: data.width, height: data.height });
+		return { data };
+	} catch (error) {
+		coverageError("baidu", `protocol failed z=${z} x=${x} y=${y}`, error);
+		throw error;
+	}
 };

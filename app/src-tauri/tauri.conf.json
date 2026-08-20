@@ -1,8 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "Map Making App",
+	"productName": "MMA-CN",
 	"version": "0.8.3",
-	"identifier": "app.map-making.local",
+	"identifier": "fun.tuxun.mmacn",
 	"build": {
 		"frontendDist": "../dist",
 		"devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
 	"app": {
 		"windows": [
 			{
-				"title": "Map Making App",
+				"title": "MMA-CN",
 				"width": 1400,
 				"height": 900,
 				"resizable": true,
@@ -26,18 +26,20 @@
 			"csp": null
 		}
 	},
-	"plugins": {
-		"updater": {
-			"endpoints": [
-				"https://github.com/ccmdi/mma/releases/latest/download/latest.json"
-			],
-			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGODZEODg4QjQ2MzhBQjkKUldTNWltTzBpTmlHcjhxRWpqN2t3TGpkeVVxSjNodFU2Qng3eDBoL004aHJQTHUrT0Fjd2NkOTYK"
-		}
-	},
 	"bundle": {
 		"active": true,
-		"targets": "all",
-		"createUpdaterArtifacts": true,
+		"targets": ["nsis"],
+		"createUpdaterArtifacts": false,
+		"resources": {
+			"resources/tencent-lines.pmtiles": "tencent-lines.pmtiles"
+		},
+		"windows": {
+			"nsis": {
+				"installMode": "currentUser",
+				"languages": ["SimpChinese", "English"],
+				"compression": "lzma"
+			}
+		},
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",

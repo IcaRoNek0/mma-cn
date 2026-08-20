@@ -64,6 +64,9 @@ import {
 	BORDER_DETAILS,
 	SUBDIVISION_DETAILS,
 	PREVIEW_ASPECT_RATIOS,
+	INPUT_SENSITIVITY_MIN,
+	INPUT_SENSITIVITY_MAX,
+	INPUT_SENSITIVITY_STEP,
 } from "@/store/settings";
 import { formatBinding, buildComboString } from "@/lib/hooks/useHotkey";
 import { cmd } from "@/lib/commands";
@@ -454,6 +457,20 @@ function StreetViewBody() {
 					/>
 				}
 			/>
+			<SettingRow
+				label={t("Pano rotation sensitivity")}
+				description={t("Adjusts mouse and touch drag rotation speed.")}
+				control={
+					<SettingSlider
+						value={s.panoRotateSensitivity}
+						min={INPUT_SENSITIVITY_MIN}
+						max={INPUT_SENSITIVITY_MAX}
+						step={INPUT_SENSITIVITY_STEP}
+						onChange={(v) => setSetting("panoRotateSensitivity", v)}
+						format={(v) => `${v}x`}
+					/>
+				}
+			/>
 
 			<GroupHeading>{t("Display")}</GroupHeading>
 			<SettingRow setting="showRoadLabels" label={t("Show road labels")} />
@@ -524,6 +541,20 @@ function MapBody() {
 						max={20}
 						step={1}
 						onChange={(v) => setSetting("mapPanSpeed", v)}
+					/>
+				}
+			/>
+			<SettingRow
+				label={t("Map zoom sensitivity")}
+				description={t("Adjusts wheel, trackpad, touch, and keyboard zoom speed.")}
+				control={
+					<SettingSlider
+						value={s.mapZoomSensitivity}
+						min={INPUT_SENSITIVITY_MIN}
+						max={INPUT_SENSITIVITY_MAX}
+						step={INPUT_SENSITIVITY_STEP}
+						onChange={(v) => setSetting("mapZoomSensitivity", v)}
+						format={(v) => `${v}x`}
 					/>
 				}
 			/>
@@ -1255,7 +1286,12 @@ const SECTIONS: Section[] = [
 		icon: mdiApplicationOutline,
 		Body: ApplicationBody,
 	},
-	{ id: "integrations", title: msg("Integrations"), icon: mdiPuzzleOutline, Body: IntegrationsBody },
+	{
+		id: "integrations",
+		title: msg("Integrations"),
+		icon: mdiPuzzleOutline,
+		Body: IntegrationsBody,
+	},
 	{ id: "advanced", title: msg("Advanced"), icon: mdiWrenchOutline, Body: AdvancedBody },
 ];
 

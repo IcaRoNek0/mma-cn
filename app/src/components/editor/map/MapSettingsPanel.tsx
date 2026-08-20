@@ -8,11 +8,11 @@ import {
 	VECTOR_STYLE_KEYS,
 	VECTOR_STYLE_LABELS,
 } from "@/lib/geo/mapStyles";
-import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { DEFAULT_PREFS, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiChevronDown, mdiCogOutline } from "@mdi/js";
 import type { MapTypeKey, MarkerStyle, PanoProviderKey } from "@/types";
-import { petalTileUrl } from "@/lib/map/chinaBasemap";
+import { activeCoverageOpacity, petalTileUrl } from "@/lib/map/chinaBasemap";
 import { ColorPicker } from "@/components/primitives/ColorPicker";
 import { useClickOutside } from "@/lib/hooks/useClickOutside";
 import { useStableHandler } from "@/lib/hooks/useStableHandler";
@@ -90,9 +90,10 @@ function SettingsPopup({ layerConfig: e }: { layerConfig: LayerConfig }) {
 				/>
 				<SwitchRow
 					className="layer-config__item"
-					checked
-					disabled
-					onChange={() => {}}
+					checked={activeCoverageOpacity(p.svOpacity) > 0}
+					onChange={(visible) =>
+						setPref("svOpacity")(visible ? DEFAULT_PREFS.svOpacity : 0)
+					}
 					label={t("Street View")}
 				/>
 				<SwitchRow

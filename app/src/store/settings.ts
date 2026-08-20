@@ -95,6 +95,15 @@ export const PREVIEW_ASPECT_RATIOS = {
 	"32 / 9": "32:9",
 	free: msg("Free"),
 } as const;
+export const INPUT_SENSITIVITY_MIN = 0.25;
+export const INPUT_SENSITIVITY_MAX = 3;
+export const INPUT_SENSITIVITY_STEP = 0.25;
+
+export function normalizeInputSensitivity(value: unknown): number {
+	const number = typeof value === "number" ? value : Number.NaN;
+	if (!Number.isFinite(number)) return 1;
+	return Math.min(INPUT_SENSITIVITY_MAX, Math.max(INPUT_SENSITIVITY_MIN, number));
+}
 
 export type Language = keyof typeof LANGUAGES;
 export type MovementMode = keyof typeof MOVEMENT_MODES;
@@ -158,7 +167,9 @@ const DEFAULTS = {
 	enableSeenThumbnails: true,
 	seenResolution: "medium" as SeenResolution,
 	mapPanSpeed: 6,
+	mapZoomSensitivity: 1,
 	panoLookSpeed: 3,
+	panoRotateSensitivity: 1,
 	slowModifier: 4,
 	showFps: false,
 	mapListFields: ["locationCount"] as MapListField[],

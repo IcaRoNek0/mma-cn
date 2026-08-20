@@ -2,3 +2,4 @@
 
 mma-source/** linguist-vendored
 app/public/opensv/** linguist-vendored
+app/src-tauri/resources/*.pmtiles filter=lfs diff=lfs merge=lfs -text

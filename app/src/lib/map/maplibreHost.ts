@@ -5,20 +5,28 @@
 // 256px, so googleZoom = maplibreZoom + 1. The host contract is Google-scale;
 // every camera call converts at the boundary.
 //
-// SV tiles: MapLibre raster sources take URL templates, not functions, so the
-// source uses a fake `mma-sv://{z}/{x}/{y}` template and `transformRequest`
-// rewrites each request through the current SV tile source.
+// China coverage uses provider-specific paths: Baidu raster tiles use a
+// main-thread custom protocol, while Tencent PMTiles are decoded and rendered
+// through a dedicated deck.gl overlay.
 
 import * as maplibregl from "maplibre-gl";
 import { type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
-import { Protocol } from "pmtiles";
 import { baiduCoverageProtocol } from "@/lib/map/baiduCoverage";
-import { chinaBasemapStyle } from "@/lib/map/chinaBasemap";
-import { bundledTencentCoverage, TENCENT_COVERAGE_ARCHIVE_URL } from "@/lib/map/tencentCoverage";
+import {
+	activeChinaPanoProvider,
+	activeCoverageOpacity,
+	activeCoverageProviders,
+	chinaBasemapStyle,
+	COVERAGE_LAYER_PREFIX,
+} from "@/lib/map/chinaBasemap";
+import { TencentCoverageOverlay } from "@/lib/map/tencentCoverageOverlay";
+import { coverageDebug, coverageError } from "@/lib/map/coverageDebug";
 import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { getSettings, normalizeInputSensitivity } from "@/store/settings";
+import { subscribe } from "@/lib/events";
 import type { LatLng, Bounds } from "@/types";
 import type {
 	MapHost,
@@ -31,9 +39,9 @@ import type {
 } from "@/lib/map/host";
 
 const ZOOM_OFFSET = 1;
-const BAIDU_COVERAGE_SOURCE = "mma-cn-coverage-baidu";
-const TENCENT_COVERAGE_SOURCE = "mma-cn-coverage-tencent";
-const COVERAGE_LAYER_PREFIX = "mma-cn-coverage";
+const MAX_HOST_ZOOM = 18.4;
+const TRACKPAD_ZOOM_RATE = 1 / 100;
+const WHEEL_ZOOM_RATE = 1 / 450;
 
 const PREFETCH_MARGIN = 128;
 
@@ -41,14 +49,8 @@ const PREFETCH_MARGIN = 128;
 // vector tiles don't, so the basemap outruns SV coverage without this.
 maplibregl.setMaxParallelImageRequests(64);
 
-const protocolState = globalThis as typeof globalThis & { __mmaCnProtocols?: boolean };
-if (!protocolState.__mmaCnProtocols) {
-	const pmtiles = new Protocol();
-	pmtiles.add(bundledTencentCoverage());
-	maplibregl.addProtocol("pmtiles", pmtiles.tile);
-	maplibregl.addProtocol("mma-baidu", baiduCoverageProtocol);
-	protocolState.__mmaCnProtocols = true;
-}
+maplibregl.addProtocol("mma-baidu", baiduCoverageProtocol);
+coverageDebug("map", "coverage protocol registered", { baidu: "mma-baidu://" });
 
 type MlEventName = "mousemove" | "mousedown" | "mouseup" | "mouseout" | "zoom" | "move" | "load";
 
@@ -126,7 +128,9 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 	readonly kind = "maplibre" as const;
 	readonly map: maplibregl.Map;
 	private overlays = new Set<MapLibreDeckOverlay>();
+	private readonly tencentCoverage: TencentCoverageOverlay;
 	private prefs: MapEmbedPrefs;
+	private unsubscribeSettings: () => void = () => {};
 
 	private outer: HTMLElement;
 	private mapDiv: HTMLDivElement;
@@ -143,11 +147,11 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 		const camera = opts.camera ?? { center: { lat: 0, lng: 0 }, zoom: 2 };
 		this.map = new maplibregl.Map({
 			container: this.mapDiv,
-			style: chinaBasemapStyle(),
+			style: chinaBasemapStyle(prefs),
 			center: [camera.center.lng, camera.center.lat],
 			zoom: camera.zoom - ZOOM_OFFSET,
 			minZoom: 0,
-			maxZoom: 21,
+			maxZoom: MAX_HOST_ZOOM - ZOOM_OFFSET,
 			maxPitch: 0,
 			dragRotate: false,
 			pitchWithRotate: false,
@@ -156,12 +160,47 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 			fadeDuration: 0,
 			maxTileCacheZoomLevels: 10,
 		});
+		this.tencentCoverage = new TencentCoverageOverlay(this.map, ZOOM_OFFSET, () =>
+			this.getBounds(),
+		);
 		this.map.touchZoomRotate.disableRotation();
+		this.applyZoomSensitivity();
+		this.unsubscribeSettings = subscribe("settings:changed", () => this.applyZoomSensitivity());
 		this.map.keyboard.disable();
 		// Cursor comes from a CSS class so handleMapHover's inline pointer/"" toggling
 		// layers over it (inline "" must fall back to crosshair, not the engine default).
 		this.map.getCanvas().classList.add("mma-vector-canvas");
-		this.map.on("style.load", () => this.addCoverageLayers());
+		coverageDebug("map", "host created", {
+			provider: activeChinaPanoProvider(prefs.panoProvider),
+			opacity: activeCoverageOpacity(prefs.svOpacity),
+			panoramas: prefs.svPanoramas,
+			zoom: camera.zoom,
+		});
+		this.map.on("style.load", () => {
+			this.syncCoverageLayers();
+			this.debugCoverageState("style.load");
+		});
+		this.map.on("moveend", () => void this.tencentCoverage.refresh());
+		this.map.on("sourcedataloading", (event) => {
+			if (event.sourceId?.startsWith(COVERAGE_LAYER_PREFIX)) {
+				coverageDebug("map", "source loading", { sourceId: event.sourceId });
+			}
+		});
+		this.map.on("sourcedata", (event) => {
+			if (event.sourceId?.startsWith(COVERAGE_LAYER_PREFIX)) {
+				coverageDebug("map", "source data", {
+					sourceId: event.sourceId,
+					sourceDataType: event.sourceDataType,
+					isSourceLoaded: event.isSourceLoaded,
+				});
+			}
+		});
+		this.map.on("error", (event) => {
+			const sourceId = (event as { sourceId?: unknown }).sourceId;
+			if (typeof sourceId === "string" && sourceId.startsWith(COVERAGE_LAYER_PREFIX)) {
+				coverageError("map", `source error: ${sourceId}`, event.error);
+			}
+		});
 
 		this.map.on("contextmenu", (e) => {
 			e.preventDefault();
@@ -184,113 +223,53 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 		return this.map;
 	}
 
-	private addCoverageLayers() {
-		if (!this.map.isStyleLoaded()) return;
-		if (!this.map.getSource(BAIDU_COVERAGE_SOURCE)) {
-			this.map.addSource(BAIDU_COVERAGE_SOURCE, {
-				type: "raster",
-				tiles: ["mma-baidu://tiles/{z}/{x}/{y}"],
-				tileSize: 256,
-				minzoom: 0,
-				maxzoom: 20,
-			});
-		}
-		if (!this.map.getLayer(`${COVERAGE_LAYER_PREFIX}-baidu`)) {
-			this.map.addLayer({
-				id: `${COVERAGE_LAYER_PREFIX}-baidu`,
-				type: "raster",
-				source: BAIDU_COVERAGE_SOURCE,
-				paint: {
-					"raster-opacity": 0,
-					"raster-hue-rotate": 140,
-					"raster-saturation": 1,
-					"raster-contrast": 0.25,
-					"raster-resampling": "nearest",
-					"raster-fade-duration": 0,
-				},
-			});
-		}
+	private applyZoomSensitivity() {
+		const sensitivity = normalizeInputSensitivity(getSettings().mapZoomSensitivity);
+		this.map.scrollZoom.setZoomRate(TRACKPAD_ZOOM_RATE * sensitivity);
+		this.map.scrollZoom.setWheelZoomRate(WHEEL_ZOOM_RATE * sensitivity);
+		this.map.touchZoomRotate.setZoomRate(sensitivity);
+	}
 
-		if (!this.map.getSource(TENCENT_COVERAGE_SOURCE)) {
-			this.map.addSource(TENCENT_COVERAGE_SOURCE, {
-				type: "vector",
-				url: `pmtiles://${TENCENT_COVERAGE_ARCHIVE_URL}`,
-				minzoom: 0,
-				maxzoom: 12,
-			});
-		}
-		for (const sourceLayer of ["sv", "ccf"]) {
-			const casingId = `${COVERAGE_LAYER_PREFIX}-tencent-${sourceLayer}-casing`;
-			if (!this.map.getLayer(casingId)) {
-				this.map.addLayer({
-					id: casingId,
-					type: "line",
-					source: TENCENT_COVERAGE_SOURCE,
-					"source-layer": sourceLayer,
-					layout: { "line-cap": "round", "line-join": "round" },
-					paint: { "line-color": "#bac8ff", "line-opacity": 0 },
-				});
-			}
-			const lineId = `${COVERAGE_LAYER_PREFIX}-tencent-${sourceLayer}`;
-			if (!this.map.getLayer(lineId)) {
-				this.map.addLayer({
-					id: lineId,
-					type: "line",
-					source: TENCENT_COVERAGE_SOURCE,
-					"source-layer": sourceLayer,
-					layout: { "line-cap": "round", "line-join": "round" },
-					paint: { "line-color": this.prefs.svColor, "line-opacity": 0 },
-				});
-			}
-		}
-		this.syncCoverageLayers();
+	private debugCoverageState(reason: string) {
+		const baiduId = `${COVERAGE_LAYER_PREFIX}-baidu`;
+		const tencent = this.tencentCoverage.getDebugState();
+		coverageDebug("map", `state (${reason})`, {
+			provider: activeChinaPanoProvider(this.prefs.panoProvider),
+			opacity: activeCoverageOpacity(this.prefs.svOpacity),
+			panoramas: this.prefs.svPanoramas,
+			zoom: this.getZoom(),
+			styleLoaded: this.map.isStyleLoaded(),
+			baiduSource: Boolean(this.map.getSource(`${COVERAGE_LAYER_PREFIX}-baidu`)),
+			baiduLayer: Boolean(this.map.getLayer(baiduId)),
+			baiduVisibility: this.map.getLayer(baiduId)
+				? this.map.getLayoutProperty(baiduId, "visibility")
+				: null,
+			tencentOverlayActive: tencent.active,
+			tencentFeatures: tencent.features,
+			tencentDataZoom: tencent.dataZoom,
+		});
 	}
 
 	private syncCoverageLayers() {
-		const provider = this.prefs.panoProvider ?? "baidu";
-		const opacity = this.prefs.svOpacity;
-		const baiduVisible = provider === "baidu" ? "visible" : "none";
-		const tencentVisible = provider === "tencent" ? "visible" : "none";
-		const baidu = this.map.getLayer(`${COVERAGE_LAYER_PREFIX}-baidu`);
-		if (baidu) {
-			this.map.setLayoutProperty(`${COVERAGE_LAYER_PREFIX}-baidu`, "visibility", baiduVisible);
-			this.map.setPaintProperty(`${COVERAGE_LAYER_PREFIX}-baidu`, "raster-opacity", opacity);
+		const provider = activeChinaPanoProvider(this.prefs.panoProvider);
+		const opacity = activeCoverageOpacity(this.prefs.svOpacity);
+		const active = activeCoverageProviders(this.prefs.panoProvider, this.prefs.svOpacity);
+		const baiduId = `${COVERAGE_LAYER_PREFIX}-baidu`;
+		if (this.map.getLayer(baiduId)) {
+			this.map.setLayoutProperty(baiduId, "visibility", active.baidu ? "visible" : "none");
+			this.map.setPaintProperty(baiduId, "raster-opacity", opacity);
 		}
-		for (const sourceLayer of ["sv", "ccf"]) {
-			const casingId = `${COVERAGE_LAYER_PREFIX}-tencent-${sourceLayer}-casing`;
-			const lineId = `${COVERAGE_LAYER_PREFIX}-tencent-${sourceLayer}`;
-			if (this.map.getLayer(casingId)) {
-				this.map.setLayoutProperty(casingId, "visibility", tencentVisible);
-				this.map.setPaintProperty(casingId, "line-opacity", opacity * 0.9);
-				this.map.setPaintProperty(casingId, "line-width", [
-					"interpolate",
-					["linear"],
-					["zoom"],
-					0,
-					this.prefs.svThickness === "high" ? 7 : 5,
-					8,
-					this.prefs.svThickness === "high" ? 5 : 4,
-					14,
-					this.prefs.svThickness === "high" ? 5 : 4,
-				]);
-			}
-			if (this.map.getLayer(lineId)) {
-				this.map.setLayoutProperty(lineId, "visibility", tencentVisible);
-				this.map.setPaintProperty(lineId, "line-color", this.prefs.svColor);
-				this.map.setPaintProperty(lineId, "line-opacity", opacity);
-				this.map.setPaintProperty(lineId, "line-width", [
-					"interpolate",
-					["linear"],
-					["zoom"],
-					0,
-					this.prefs.svThickness === "high" ? 4 : 3,
-					8,
-					this.prefs.svThickness === "high" ? 3 : 2,
-					14,
-					this.prefs.svThickness === "high" ? 3 : 2,
-				]);
-			}
-		}
+		this.tencentCoverage.setPreferences({
+			active: active.tencent,
+			opacity,
+			color: this.prefs.svColor,
+			thin: this.prefs.svThickness === "high",
+		});
+		coverageDebug("map", "coverage provider synchronized", {
+			provider,
+			baiduActive: active.baidu,
+			tencentActive: active.tencent,
+		});
 	}
 
 	getZoom() {
@@ -394,8 +373,16 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 
 	applyPrefs(prefs: MapEmbedPrefs, _opts: BasemapOpts) {
 		this.prefs = prefs;
-		if (!this.map.isStyleLoaded()) return;
+		if (!this.map.isStyleLoaded()) {
+			coverageDebug("map", "preferences queued before style load", {
+				provider: activeChinaPanoProvider(prefs.panoProvider),
+				opacity: activeCoverageOpacity(prefs.svOpacity),
+				panoramas: prefs.svPanoramas,
+			});
+			return;
+		}
 		this.syncCoverageLayers();
+		this.debugCoverageState("applyPrefs");
 	}
 
 	resize() {
@@ -403,7 +390,9 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 	}
 
 	destroy() {
+		this.unsubscribeSettings();
 		for (const o of [...this.overlays]) o.finalize();
+		this.tencentCoverage.destroy();
 		this.map.remove();
 		this.mapDiv.remove();
 	}

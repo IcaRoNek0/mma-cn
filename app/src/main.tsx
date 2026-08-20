@@ -19,6 +19,12 @@ import "@/api";
 import "@/store/commandDefs";
 
 async function boot() {
+	if (window.location.pathname === "/qqcoverage") {
+		const { QQCoveragePage } = await import("@/diagnostics/QQCoveragePage");
+		createRoot(document.getElementById("root")!).render(<QQCoveragePage />);
+		return;
+	}
+
 	// react-scan must load before the React root renders. Dev-only and flag-gated, so the
 	// whole branch tree-shakes out of production builds.
 	if (import.meta.env.DEV && import.meta.env.VITE_REACT_SCAN) {

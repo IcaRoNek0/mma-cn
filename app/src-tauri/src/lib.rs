@@ -58,6 +58,7 @@ mod sync_engine;
 mod sync_geoguessr;
 mod sync_keying;
 mod sync_map_making;
+mod tencent_coverage;
 #[cfg(test)]
 mod test_util;
 mod vcs;
@@ -728,6 +729,13 @@ pub fn run() {
         default_hook(info);
     }));
     let builder = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("mma-tencent-archive", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            let query = req.uri().query().unwrap_or_default().to_string();
+            respond_async(responder, move || {
+                crate::tencent_coverage::response(&app, &query)
+            });
+        })
         .register_asynchronous_uri_scheme_protocol("mma-buf", |_ctx, req, responder| {
             let raw = percent_encoding::percent_decode_str(req.uri().path())
                 .decode_utf8_lossy()
