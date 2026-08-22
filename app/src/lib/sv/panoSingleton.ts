@@ -35,6 +35,25 @@ const HIGH_RES_THRESHOLD = 0.01;
 const HIGH_RES_ZOOM = 0.02;
 export const PSV_TILE_CONCURRENCY = 8;
 
+function thumbnailUrl(metadata: PanoramaMetadata): string | undefined {
+	const panoId = encodeURIComponent(metadata.panoId);
+	if (metadata.source === "baidu_pano") {
+		return `https://mapsv0.bdimg.com/?qt=pdata&sid=${panoId}&pos=0_0&z=1`;
+	}
+	if (metadata.source === "qq_pano") {
+		const seed = Number.parseInt(metadata.panoId.slice(-1), 10) || 0;
+		const server = (seed % 4) + 1;
+		return `https://sv${server}.map.qq.com/thumb?from=web&svid=${panoId}`;
+	}
+	return undefined;
+}
+
+function viewerTileLevels(metadata: PanoramaMetadata) {
+	if (metadata.source !== "qq_pano") return metadata.tileLevels;
+	const high = metadata.tileLevels.find((level) => level.level === 1);
+	return high ? [high] : metadata.tileLevels;
+}
+
 export const singletonDiv = (() => {
 	const element = document.createElement("div");
 	Object.assign(element.style, { width: "100%", height: "100%", background: "#000" });
@@ -144,7 +163,8 @@ export class PsvPanoramaController {
 		const generation = ++this.generation;
 		this.progressiveCleanup();
 		const targetZoom = Math.max(0, Math.min(100, location.zoom * 20));
-		const levels = metadata.tileLevels.map((level, index, all) => ({
+		const tileLevels = viewerTileLevels(metadata);
+		const levels = tileLevels.map((level, index, all) => ({
 			zoomRange: [
 				index === 0 ? 0 : HIGH_RES_THRESHOLD,
 				index === all.length - 1 ? 100 : HIGH_RES_THRESHOLD,
@@ -156,19 +176,15 @@ export class PsvPanoramaController {
 		const panorama: EquirectangularMultiTilesPanorama = {
 			levels,
 			tileUrl: (col, row, level) =>
-				tileProvider.getTileUrl(
-					metadata.panoId,
-					col,
-					row,
-					metadata.tileLevels[level]?.level ?? level,
-				),
+				tileProvider.getTileUrl(metadata.panoId, col, row, tileLevels[level]?.level ?? level),
+			baseUrl: thumbnailUrl(metadata),
 		};
 		await this.viewer.setPanorama(panorama, {
 			position: {
 				yaw: (location.heading * Math.PI) / 180,
 				pitch: (location.pitch * Math.PI) / 180,
 			},
-			zoom: metadata.tileLevels.length > 1 ? 0 : targetZoom,
+			zoom: tileLevels.length > 1 ? 0 : targetZoom,
 			transition: false,
 		});
 		if (generation !== this.generation) return metadata;
@@ -176,7 +192,7 @@ export class PsvPanoramaController {
 		this.source = metadata.source;
 		this.emit("pano_changed");
 		this.emit("links_changed");
-		if (metadata.tileLevels.length > 1) {
+		if (tileLevels.length > 1) {
 			this.progressiveCleanup = this.promoteHighResolution(generation, targetZoom);
 		} else {
 			this.emit("status_changed");

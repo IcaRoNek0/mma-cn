@@ -25,9 +25,6 @@ pub fn run_server() {
         .setup(|app| {
             storage::init_paths(app.handle())?;
             storage::run_migrations()?;
-            if let Err(error) = crate::tencent_coverage::ensure_cache() {
-                log::warn!("[startup] Tencent coverage cache unavailable: {error}");
-            }
             register_web_schemes();
             let handle = app.handle().clone();
             WebviewWindowBuilder::new(

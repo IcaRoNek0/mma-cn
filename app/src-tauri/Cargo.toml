@@ -102,3 +102,7 @@ tauri-specta = { path = "crates/tauri-specta" }
 specta = { path = "crates/specta/specta" }
 specta-macros = { path = "crates/specta/specta-macros" }
 specta-typescript = { path = "crates/specta/specta-typescript" }
+
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "linker=clang", "-C", "link-arg=-fuse-ld=mold"]

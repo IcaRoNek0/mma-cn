@@ -36,6 +36,3 @@ export function chinaBasemapStyle(): StyleSpecification {
 		],
 	};
 }
-
-export const TENCENT_COVERAGE_URL =
-	import.meta.env.VITE_TENCENT_COVERAGE_URL?.trim() || "https://qq-map.netlify.app/lines.pmtiles";

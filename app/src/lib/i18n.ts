@@ -7,6 +7,7 @@ export interface PluralForms {
 
 export type MessageSource = string | PluralForms;
 export type MessageParams = Record<string, string | number>;
+export type MessageKey = string;
 type CatalogEntry = string | Record<string, string>;
 
 const catalogs = import.meta.glob<{ default: Record<string, CatalogEntry> }>("../locales/*.json");
@@ -30,6 +31,11 @@ export async function initLocale(code: string): Promise<void> {
 
 export function getLocale(): string {
 	return locale;
+}
+
+/** Compatibility hook for core plugins written against the v9 i18n API. */
+export function useT() {
+	return { t, locale: getLocale() } as const;
 }
 
 /** Marks a display string that lives in a data table so the extractor sees it. Identity at

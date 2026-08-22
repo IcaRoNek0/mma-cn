@@ -1,68 +1,35 @@
-import { FetchSource, PMTiles, type RangeResponse, type Source } from "pmtiles";
-import { cmd } from "@/lib/commands";
-import { log } from "@/lib/util/log";
+import { PMTiles, type RangeResponse, type Source } from "pmtiles";
 
-export const TENCENT_COVERAGE_ARCHIVE_KEY = "mma-tencent-coverage";
+// This file is copied to Vite's output unchanged and is therefore available in
+// both the desktop bundle and the web-serve build without a startup download.
+export const TENCENT_COVERAGE_ARCHIVE_URL = "/tencent-lines.pmtiles";
 
-/** PMTiles source backed by the startup-prepared Rust cache, with the remote
- * archive retained as a fallback if startup download is unavailable. */
-export class CachedTencentCoverageSource implements Source {
-	private readonly remote: FetchSource;
-	private localState: "unknown" | "downloading" | "ready" | "unavailable" = "unknown";
-
-	constructor(remoteUrl: string) {
-		this.remote = new FetchSource(remoteUrl);
-	}
+class BundledTencentCoverageSource implements Source {
+	private completeArchive: ArrayBuffer | null = null;
 
 	getKey(): string {
-		return TENCENT_COVERAGE_ARCHIVE_KEY;
+		return TENCENT_COVERAGE_ARCHIVE_URL;
 	}
 
-	private async startLocalCache(): Promise<void> {
-		if (this.localState !== "unknown") return;
-		try {
-			if (await cmd.tencentCoverageIsCached()) {
-				this.localState = "ready";
-				return;
-			}
-			this.localState = "downloading";
-			void cmd
-				.tencentCoveragePrepare()
-				.then(() => {
-					this.localState = "ready";
-				})
-				.catch((error) => {
-					this.localState = "unavailable";
-					log.warn("Tencent coverage cache download failed; keeping the remote archive", error);
-				});
-		} catch (error) {
-			this.localState = "unavailable";
-			log.warn("Tencent coverage cache check failed; keeping the remote archive", error);
+	async getBytes(offset: number, length: number, signal?: AbortSignal): Promise<RangeResponse> {
+		if (this.completeArchive) {
+			return { data: this.completeArchive.slice(offset, offset + length) };
 		}
-	}
+		const response = await fetch(TENCENT_COVERAGE_ARCHIVE_URL, {
+			signal,
+			headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+		});
+		if (!response.ok) throw new Error(`Bundled Tencent coverage returned HTTP ${response.status}`);
+		const data = await response.arrayBuffer();
+		if (response.status === 206) return { data };
 
-	async getBytes(
-		offset: number,
-		length: number,
-		signal?: AbortSignal,
-		etag?: string,
-	): Promise<RangeResponse> {
-		await this.startLocalCache();
-		if (this.localState === "ready") {
-			try {
-				const bytes = await cmd.tencentCoverageRead(offset, length);
-				signal?.throwIfAborted();
-				return { data: Uint8Array.from(bytes).buffer as ArrayBuffer };
-			} catch (error) {
-				if (signal?.aborted) throw error;
-				this.localState = "unavailable";
-				log.warn("Tencent coverage local cache unavailable; using the remote archive", error);
-			}
-		}
-		return this.remote.getBytes(offset, length, signal, etag);
+		// Tauri's asset resolver and the web-serve bridge can answer a range request
+		// with the complete local asset. Retain it once and serve subsequent slices.
+		this.completeArchive = data;
+		return { data: data.slice(offset, offset + length) };
 	}
 }
 
-export function cachedTencentCoverage(remoteUrl: string): PMTiles {
-	return new PMTiles(new CachedTencentCoverageSource(remoteUrl));
+export function bundledTencentCoverage(): PMTiles {
+	return new PMTiles(new BundledTencentCoverageSource());
 }

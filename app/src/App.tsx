@@ -38,6 +38,7 @@ import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import "@/plugins";
 import { t } from "@/lib/i18n";
+import { useEvent } from "@/lib/events";
 
 // Dynamic import (deck.gl/luma.gl out of the initial bundle) WITHOUT React.lazy/Suspense —
 // a Suspense boundary makes React 19 render the editor in a low-priority lane (~260ms/open).
@@ -113,6 +114,10 @@ function AppChrome() {
 	const [showSettings, setShowSettings] = useState(false);
 	const [showPlugins, setShowPlugins] = useState(false);
 	const [manualSearchOpen, setManualSearchOpen] = useState(false);
+	const settingsOpenVersion = useEvent("settings:open");
+	useEffect(() => {
+		if (settingsOpenVersion > 0) setShowSettings(true);
+	}, [settingsOpenVersion]);
 
 	useHotkey(useBinding("toggleStats"), () => setShowStats((s) => !s));
 	useHotkey(useBinding("openManualSearch"), () => setManualSearchOpen((v) => !v));

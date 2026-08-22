@@ -39,6 +39,7 @@ const EVENT_DEFS = {
 	"render:selection": event<SelectionBitmaskPayload>(),
 	"map-list:changed": event<void>(),
 	"settings:changed": event<void>(),
+	"settings:open": event<void>(),
 	"fullscreen:changed": event<void>(),
 	"plugins:changed": event<void>(),
 	"hotkeys:changed": event<void>(),

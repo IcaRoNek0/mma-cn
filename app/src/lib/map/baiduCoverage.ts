@@ -71,12 +71,8 @@ async function bitmap(url: string, signal: AbortSignal): Promise<ImageBitmap> {
 	});
 }
 
-async function canvasPng(canvas: OffscreenCanvas): Promise<ArrayBuffer> {
-	return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
-}
-
-async function transparentTile(): Promise<ArrayBuffer> {
-	return canvasPng(new OffscreenCanvas(TILE_SIZE, TILE_SIZE));
+async function transparentTile(): Promise<ImageBitmap> {
+	return createImageBitmap(new OffscreenCanvas(TILE_SIZE, TILE_SIZE));
 }
 
 async function renderBaiduCoverageTile(
@@ -84,7 +80,7 @@ async function renderBaiduCoverageTile(
 	y: number,
 	z: number,
 	signal: AbortSignal,
-): Promise<ArrayBuffer> {
+): Promise<ImageBitmap> {
 	if (!baiduCoverageTileIntersectsChina(x, y, z)) return transparentTile();
 	const tileCount = 2 ** z;
 	const canonicalX = ((x % tileCount) + tileCount) % tileCount;
@@ -158,11 +154,11 @@ async function renderBaiduCoverageTile(
 		TILE_SIZE,
 		TILE_SIZE,
 	);
-	return canvasPng(output);
+	return output.transferToImageBitmap();
 }
 
 export const baiduCoverageProtocol: AddProtocolAction = async (params, abortController) => {
-	const match = params.url.match(/^mma-baidu:\/\/tiles\/(\d+)\/(\d+)\/(\d+)/);
+	const match = params.url.match(/^mma-baidu:\/\/tiles\/(-?\d+)\/(-?\d+)\/(-?\d+)/);
 	if (!match) throw new Error(`Invalid Baidu coverage URL: ${params.url}`);
 	const [, z, x, y] = match.map(Number);
 	return { data: await renderBaiduCoverageTile(x, y, z, abortController.signal) };

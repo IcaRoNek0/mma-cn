@@ -12,13 +12,6 @@ export const commands = {
 	writeTempFile: (name: string, content: string) => __TAURI_INVOKE<string>("write_temp_file", { name, content }),
 	/**  Read a file from disk as UTF-8 text. Used by JS to read temp files and plugin sources. */
 	readFile: (path: string) => __TAURI_INVOKE<string>("read_file", { path }),
-	tencentCoverageIsCached: () => __TAURI_INVOKE<boolean>("tencent_coverage_is_cached"),
-	/**
-	 *  Download the Tencent PMTiles archive if it is not already cached.
-	 */
-	tencentCoveragePrepare: () => __TAURI_INVOKE<null>("tencent_coverage_prepare"),
-	/**  Read one byte range from a locally cached copy of the Tencent coverage archive. */
-	tencentCoverageRead: (offset: number, length: number) => __TAURI_INVOKE<number[]>("tencent_coverage_read", { offset, length }),
 	appReady: () => __TAURI_INVOKE<number>("app_ready"),
 	/**  Return the platform-specific app data directory path (e.g., `%LOCALAPPDATA%/app.map-making.local`). */
 	getAppDataDir: () => __TAURI_INVOKE<string>("get_app_data_dir"),

@@ -21,13 +21,6 @@ declare const commands: {
     writeTempFile: (name: string, content: string) => Promise<string>;
     /**  Read a file from disk as UTF-8 text. Used by JS to read temp files and plugin sources. */
     readFile: (path: string) => Promise<string>;
-    tencentCoverageIsCached: () => Promise<boolean>;
-    /**
-     *  Download the Tencent PMTiles archive if it is not already cached.
-     */
-    tencentCoveragePrepare: () => Promise<null>;
-    /**  Read one byte range from a locally cached copy of the Tencent coverage archive. */
-    tencentCoverageRead: (offset: number, length: number) => Promise<number[]>;
     appReady: () => Promise<number>;
     /**  Return the platform-specific app data directory path (e.g., `%LOCALAPPDATA%/app.map-making.local`). */
     getAppDataDir: () => Promise<string>;
@@ -3109,6 +3102,7 @@ declare const EVENT_DEFS: {
     "render:selection": SelectionBitmaskPayload;
     "map-list:changed": void;
     "settings:changed": void;
+    "settings:open": void;
     "fullscreen:changed": void;
     "plugins:changed": void;
     "hotkeys:changed": void;

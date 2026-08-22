@@ -1,0 +1,1519 @@
+/* GeoGuessr Game plugin — www.geoguessr.com layout replica */
+
+:root {
+	--gg-bg: #101216;
+	--gg-panel: rgba(24, 28, 36, 0.92);
+	--gg-panel-light: rgba(40, 44, 52, 0.85);
+	--gg-border: rgba(255, 255, 255, 0.08);
+	--gg-accent: #00bcd4;
+	--gg-accent-purple: #7950e5;
+	--gg-text: #f0f0f5;
+	--gg-muted: #888;
+	--gg-success: #22c55e;
+	--gg-danger: #e94560;
+	--gg-warn: #f59e0b;
+	--gg-radius: 10px;
+	--gg-radius-sm: 6px;
+	--gg-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+	--gg-font: "Segoe UI", system-ui, -apple-system, sans-serif;
+	--gg-hud-btn-size: 2.5rem;
+}
+
+/* ---- Full-screen overlay ---- */
+.gg-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 10000;
+	font-family: var(--gg-font);
+	color: var(--gg-text);
+	display: flex;
+	flex-direction: column;
+}
+.gg-overlay__panel {
+	flex: 1;
+	overflow: auto;
+	padding: 0.75rem;
+	background: var(--gg-bg);
+}
+
+.gg-end-dialog {
+	width: min(28rem, calc(100vw - 2rem));
+}
+.gg-end-dialog__body {
+	margin: 0 0 1rem;
+	color: var(--text-2);
+	line-height: 1.45;
+}
+.gg-end-dialog__actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5rem;
+}
+.gg-sidebar__map-name {
+	font-weight: 600;
+	color: var(--gg-accent);
+}
+.gg-sidebar__actions {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding: 0.5rem 0;
+}
+.gg-sidebar__ongoing-row {
+	display: flex;
+	align-items: center;
+	gap: 1rem;
+	font-size: 0.8rem;
+	padding: 0.45rem 0.35rem;
+	border-bottom: 1px solid var(--gg-border);
+	min-width: 0;
+}
+.gg-sidebar__ongoing-row:last-child {
+	border-bottom: none;
+}
+.gg-sidebar__ongoing-map {
+	font-weight: 600;
+	flex: 0 1 auto;
+	max-width: 42%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+.gg-sidebar__ongoing-meta {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+	flex: 1 1 auto;
+	min-width: 0;
+	flex-wrap: nowrap;
+}
+.gg-sidebar__ongoing-sep {
+	color: var(--gg-muted);
+	flex-shrink: 0;
+}
+.gg-sidebar__ongoing-mode,
+.gg-sidebar__ongoing-rounds,
+.gg-sidebar__ongoing-time {
+	flex-shrink: 0;
+	color: var(--gg-muted);
+	white-space: nowrap;
+}
+.gg-sidebar__ongoing-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.15rem;
+	margin-left: auto;
+	flex-shrink: 0;
+}
+.gg-sidebar__ongoing-icon-btn {
+	appearance: none;
+	border: none;
+	background: transparent;
+	color: var(--gg-text);
+	padding: 0.2rem;
+	border-radius: 4px;
+	cursor: pointer;
+	display: inline-grid;
+	place-items: center;
+	opacity: 0.85;
+}
+.gg-sidebar__ongoing-icon-btn:hover:not(:disabled) {
+	background: rgba(255, 255, 255, 0.08);
+	opacity: 1;
+}
+.gg-sidebar__ongoing-icon-btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.gg-sidebar__ongoing-row.is-current {
+	outline: 1px solid rgba(0, 188, 212, 0.45);
+	border-radius: 6px;
+}
+.gg-sidebar__ongoing-empty {
+	margin: 0;
+	font-size: 0.85rem;
+	color: var(--gg-muted);
+	line-height: 1.4;
+}
+
+/* Plugin sidebar: ensure body scrolls when many collapsible sections are open */
+.gg-plugin-sidebar.plugin-sidebar .plugin-sidebar__body {
+	overflow-y: auto;
+	min-height: 0;
+	overscroll-behavior: contain;
+}
+.gg-plugin-sidebar .plugin-section {
+	flex-shrink: 0;
+}
+
+/* ====================== ROUND LAYOUT ====================== */
+.gg-round {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	overflow: hidden;
+	background: #000;
+}
+
+/* ====================== TOP HUD ====================== */
+.gg-round__top {
+	position: absolute;
+	top: 0.75rem;
+	right: 4rem;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	gap: 0;
+	padding: 0.75rem 0 0;
+	pointer-events: none;
+}
+.gg-round__top > * {
+	pointer-events: auto;
+}
+
+/* ---- Slanted status bar ---- */
+.gg-status {
+	display: inline-flex;
+	align-items: stretch;
+	overflow: hidden;
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+	background: var(--gg-accent-purple);
+}
+.gg-status__inner {
+	display: flex;
+	align-items: center;
+	gap: 0;
+	padding: 0.55rem 1.1rem;
+	background: var(--gg-accent-purple);
+}
+.gg-status__item {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	padding: 0 0.75rem;
+	border-right: 1px solid rgba(255, 255, 255, 0.2);
+	line-height: 1.2;
+}
+.gg-status__item:last-child {
+	border-right: none;
+}
+.gg-status__label {
+	font-size: 0.68rem;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	opacity: 0.85;
+}
+.gg-status__value {
+	font-size: 1.1rem;
+	font-weight: 700;
+}
+.gg-status__slash {
+	padding: 0 0.55rem;
+	opacity: 0.65;
+}
+.gg-status__item--timer .gg-status__value {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Timer inside status bar */
+.gg-timer--embedded {
+	margin: 0;
+	padding: 0;
+	border: none;
+	background: transparent;
+	box-shadow: none;
+	font-size: 1.1rem;
+	font-weight: 700;
+	min-width: 3.5ch;
+	letter-spacing: 0.04em;
+	color: #fff;
+	text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+urgent .gg-timer--embedded.gg-timer--urgent {
+	background: transparent;
+	animation: gg-pulse 0.8s ease infinite;
+	color: #ffb4a2;
+	text-shadow: 0 0 12px rgba(255, 100, 80, 0.65);
+}
+
+@keyframes gg-pulse {
+	50% {
+		opacity: 0.6;
+	}
+}
+
+/* ---- Close button (top right) ---- */
+.gg-round__close {
+	position: absolute;
+	top: 0.75rem;
+	right: 1rem;
+	z-index: 15;
+	appearance: none;
+	border: none;
+	background: rgba(0, 0, 0, 0.75);
+	backdrop-filter: blur(8px);
+	color: var(--gg-muted);
+	cursor: pointer;
+	padding: 0.35rem;
+	border-radius: 8px;
+	width: 2.25rem;
+	height: 2.25rem;
+	display: grid;
+	place-items: center;
+}
+.gg-round__close:hover {
+	background: rgba(0, 0, 0, 1);
+	color: #fff;
+}
+
+/* ====================== PANO (full background) ====================== */
+.gg-pano-wrap {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+}
+.gg-pano-wrap .gg-pano {
+	position: absolute;
+	inset: 0;
+}
+.gg-pano-compass {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	pointer-events: none;
+}
+.gg-pano-compass .compass-tape {
+	z-index: 4;
+}
+
+.gg-pano {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+}
+.gg-pano__host {
+	width: 100%;
+	height: 100%;
+}
+.gg-pano__nmpz-shield {
+	position: absolute;
+	inset: 0;
+	z-index: 3;
+	cursor: default;
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+	padding-bottom: 2rem;
+	pointer-events: auto;
+	background: transparent;
+}
+.gg-pano__error {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.75);
+	color: var(--gg-danger);
+	padding: 1rem;
+	text-align: center;
+}
+
+/* ====================== CONTROLS (right side) ====================== */
+.gg-controls {
+	position: absolute;
+	left: 1.5rem;
+	bottom: 2rem;
+	z-index: 5;
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	pointer-events: none;
+	align-items: flex-start;
+}
+.gg-controls__col {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	pointer-events: auto;
+}
+.gg-controls__compass {
+	pointer-events: auto;
+	align-self: flex-start;
+}
+.gg-compass-control-host .embed-controls__control {
+	position: relative !important;
+	inset: auto !important;
+}
+.gg-compass-control-host .map-control--transparent {
+	background: transparent;
+	border: none;
+	padding: 0;
+}
+.gg-compass-control-host .compass-control {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+.gg-compass-control-host .compass-control__button {
+	width: var(--gg-hud-btn-size);
+	height: var(--gg-hud-btn-size);
+	border-radius: 50%;
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	background: rgba(0, 0, 0, 0.55);
+	backdrop-filter: blur(10px);
+	cursor: pointer;
+	display: grid;
+	place-items: center;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+	padding: 0;
+}
+.gg-compass-control-host .compass-control__link {
+	display: none;
+}
+
+.gg-controls__btn {
+	width: var(--gg-hud-btn-size);
+	height: var(--gg-hud-btn-size);
+	border-radius: var(--gg-radius-sm);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgba(0, 0, 0, 0.55);
+	backdrop-filter: blur(10px);
+	color: #fff;
+	display: grid;
+	place-items: center;
+	cursor: pointer;
+	pointer-events: auto;
+	transition:
+		background 0.15s,
+		border-color 0.15s,
+		transform 0.1s;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.gg-controls__btn:hover:not(:disabled) {
+	background: rgba(0, 0, 0, 0.75);
+	transform: scale(1.05);
+}
+.gg-controls__btn:active:not(:disabled) {
+	transform: scale(0.95);
+}
+.gg-controls__btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+	pointer-events: none;
+}
+.gg-controls__btn--active {
+	border-color: var(--gg-accent);
+	background: rgba(0, 188, 212, 0.2);
+}
+.gg-controls__btn--ghost {
+	opacity: 0.3;
+	pointer-events: none;
+}
+
+/* ====================== GUESS MAP (GeoGuessr gameUI_1 parity) ====================== */
+.gg-game-guess-map {
+	position: absolute;
+	right: 0.75rem;
+	bottom: 0.75rem;
+	z-index: 5;
+	pointer-events: none;
+}
+.gg-game-guess-map > * {
+	pointer-events: auto;
+}
+
+.gg-guess-map__root {
+	--control-height: 2rem;
+	--button-gutter: 0.35rem;
+	--inactive-width: 16vw;
+	--inactive-height: 24vh;
+	--width: var(--inactive-width);
+	--height: var(--inactive-height);
+	display: flex;
+	flex-direction: column;
+	width: var(--width);
+	height: var(--height);
+	transition:
+		width 0.25s ease 0.12s,
+		height 0.25s ease 0.12s,
+		opacity 0.2s ease;
+	opacity: 0.5;
+}
+.gg-guess-map__root.is-active {
+	--width: var(--active-width);
+	--height: var(--active-height);
+	opacity: 1;
+	transition:
+		width 0.2s ease,
+		height 0.2s ease,
+		opacity 0.15s ease;
+}
+.gg-guess-map--size-1 {
+	--active-width: 24vw;
+	--active-height: 32vh;
+}
+.gg-guess-map--size-2 {
+	--active-width: 36vw;
+	--active-height: 48vh;
+}
+.gg-guess-map--size-3 {
+	--active-width: 48vw;
+	--active-height: 64vh;
+}
+.gg-guess-map--size-4 {
+	--active-width: 72vw;
+	--active-height: 84vh;
+}
+
+.gg-guess-map__controls {
+	flex: 0 0 auto;
+	width: 7.5rem;
+	height: var(--control-height);
+	margin-top: calc(-1 * var(--control-height));
+	display: none;
+	background: rgba(0, 0, 0, 0.5);
+	border-top-left-radius: 0.25rem;
+	border-top-right-radius: 0.25rem;
+	font-size: 0;
+	white-space: nowrap;
+}
+.gg-guess-map__root.is-active .gg-guess-map__controls {
+	display: inline-flex;
+	align-items: center;
+}
+
+.gg-guess-map__control {
+	width: 1.25rem;
+	height: 1.25rem;
+	display: inline-grid;
+	place-items: center;
+	margin: 0.25rem;
+	padding: 0;
+	border: 0;
+	outline: none;
+	background: #fff;
+	border-radius: 100%;
+	cursor: pointer;
+	user-select: none;
+	color: #111;
+	vertical-align: top;
+}
+.gg-guess-map__control:first-child {
+	margin-left: 0.5rem;
+}
+.gg-guess-map__control:last-child {
+	margin-right: 0.5rem;
+}
+.gg-guess-map__control svg {
+	width: 70%;
+	height: 70%;
+}
+.gg-guess-map__control:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.gg-guess-map__control--sticky svg {
+	transform: rotate(90deg);
+	transition: transform 0.1s ease;
+}
+.gg-guess-map__control--sticky.is-active svg {
+	transform: rotate(0deg);
+}
+
+.gg-guess-map__canvas-wrap {
+	position: relative;
+	border-radius: 0.25rem;
+	overflow: hidden;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+.gg-guess-map__root.is-active .gg-guess-map__canvas-wrap--active-bar {
+	border-top-left-radius: 0;
+}
+
+.gg-guess-map__zoom {
+	width: 3rem;
+	position: absolute;
+	top: 0.25rem;
+	left: 0.25rem;
+	z-index: 1;
+}
+.gg-guess-map__zoom-btn {
+	width: 1.25rem;
+	height: 1.25rem;
+	display: inline-grid;
+	place-items: center;
+	margin: 0.25rem;
+	padding: 0;
+	border: 0;
+	outline: none;
+	background: #fff;
+	border-radius: 100%;
+	cursor: pointer;
+	user-select: none;
+	color: #111;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+	vertical-align: top;
+}
+.gg-guess-map__zoom-btn:first-child {
+	margin-bottom: 0.1rem;
+}
+.gg-guess-map__zoom-btn:last-child {
+	margin-top: 0.1rem;
+}
+.gg-guess-map__zoom-btn svg {
+	width: 90%;
+	height: 90%;
+}
+.gg-guess-map__zoom-btn--disabled,
+.gg-guess-map__zoom-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* The canvas fills its wrap via absolute inset — not percentage sizing — so it
+   never depends on an intermediate flex/percentage-height chain resolving
+   correctly. The host-mount div (created in GuessMap.tsx/ReplayMap.tsx) is
+   already `position:absolute;inset:0` inline, so it fills this in turn; each
+   map engine (Google Maps takes over the mount div directly, MapLibre appends
+   its own oversized prefetch layer inside it) manages its own inner sizing. */
+.gg-guess-map__canvas {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+}
+.gg-guess-map__canvas-wrap--result {
+	position: absolute;
+	inset: 0;
+	border-radius: 0;
+}
+
+.gg-guess-map__guess-btn-wrap {
+	flex: 0 0 auto;
+	margin-top: var(--button-gutter);
+	position: relative;
+}
+.gg-guess-map__guess-btn {
+	width: 100%;
+	border: none;
+	border-radius: 0.25rem;
+	padding: 0.65rem 0.75rem;
+	background: #74b816;
+	color: #fff;
+	font-weight: 700;
+	font-size: 1rem;
+	line-height: 1rem;
+	cursor: pointer;
+	transition: transform 0.1s ease;
+}
+.gg-guess-map__guess-btn:not(:disabled):hover {
+	transform: scale(1.02);
+}
+.gg-guess-map__guess-btn--disabled,
+.gg-guess-map__guess-btn:disabled {
+	font-size: 1rem;
+	line-height: 1rem;
+	opacity: 0.55;
+	cursor: default;
+	transform: none;
+}
+.gg-guess-map__guess-btn-label {
+	display: block;
+	text-align: center;
+}
+
+/* ====================== ROUND RESULT (full-screen map + bottom bar, gameUI_2) ====================== */
+.gg-pano-wrap--hidden {
+	visibility: hidden;
+	pointer-events: none;
+}
+
+.gg-round--result .gg-controls {
+	display: none;
+}
+
+/* Play: transparent slot so GuessMap keeps its floating corner positioning. */
+.gg-guess-map-slot {
+	display: contents;
+}
+
+/* Result: map fills the top; result bar sits as a real flex footer (not an overlay). */
+.gg-round--result .gg-round-result {
+	position: absolute;
+	inset: 0;
+	z-index: 8;
+	display: flex;
+	flex-direction: column;
+	pointer-events: auto;
+	animation: gg-result-in 0.35s ease;
+}
+.gg-round--result .gg-round-result__map {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+	background: #1a1d24;
+}
+.gg-round--result .gg-game-guess-map--result {
+	position: absolute;
+	inset: 0;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	z-index: 0;
+	pointer-events: auto;
+	padding: 0;
+}
+.gg-round--result .gg-game-guess-map--result .gg-guess-map__root {
+	width: 100%;
+	height: 100%;
+	opacity: 1;
+	transition: none;
+}
+.gg-round--result .gg-game-guess-map--result .gg-guess-map__canvas-wrap {
+	flex: 1;
+	min-height: 0;
+	height: 100%;
+	border-radius: 0;
+	border: none;
+}
+
+.gg-round-result {
+	position: absolute;
+	inset: 0;
+	z-index: 8;
+	display: flex;
+	flex-direction: column;
+	pointer-events: auto;
+	animation: gg-result-in 0.35s ease;
+}
+
+.gg-round-result__map {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+	background: #1a1d24;
+}
+
+.gg-round-result__round-badge {
+	position: absolute;
+	top: 0;
+	right: 0;
+	z-index: 2;
+	background: rgba(0, 0, 0, 0.75);
+	color: #fff;
+	font-size: 0.8rem;
+	font-weight: 600;
+	padding: 0.35rem 0.75rem;
+	clip-path: polygon(0.5rem 0, 100% 0, 100% 100%, 0 100%);
+}
+
+.gg-round-result__bar {
+	flex-shrink: 0;
+	background: rgba(12, 14, 18, 0.94);
+	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	padding: 1.25rem 1.5rem 1.5rem;
+	backdrop-filter: blur(10px);
+}
+
+.gg-round-result__bar-inner {
+	max-width: 960px;
+	margin: 0 auto;
+	display: grid;
+	grid-template-columns: 1fr minmax(200px, 2fr) 1fr;
+	align-items: center;
+	gap: 1rem;
+}
+
+.gg-round-result__distance-value {
+	display: flex;
+	align-items: baseline;
+	justify-content: center;
+	gap: 0.35rem;
+	line-height: 1;
+}
+
+/* GeoGuessr shadow-text (gameUI_2) */
+.gg-shadow-text {
+	--gg-shadow-font: 2.5rem;
+	user-select: none;
+	color: #fff;
+	font-weight: 800;
+	margin: 0;
+	line-height: 1;
+}
+.gg-shadow-text--positive {
+	text-shadow:
+		0 0.25rem 0 rgba(0, 0, 0, 0.5),
+		0.125rem 0.125rem 0.5rem rgba(33, 150, 243, 0.55),
+		0 -0.25rem 0.5rem rgba(0, 188, 212, 0.5),
+		-0.25rem 0.5rem 0.5rem rgba(64, 224, 208, 0.45),
+		0 0.375rem 2rem rgba(121, 80, 229, 0.55),
+		0 0 1.5rem rgba(161, 155, 217, 0.65),
+		0.25rem 0.25rem 1rem rgba(147, 112, 219, 0.35);
+}
+.gg-shadow-text--negative {
+	text-shadow:
+		0 0.25rem 0 rgba(255, 152, 0, 0.85),
+		0.125rem 0.125rem 0.5rem rgba(244, 67, 54, 0.55),
+		0 -0.25rem 0.5rem rgba(255, 152, 0, 0.5),
+		-0.25rem 0.5rem 0.5rem rgba(255, 235, 59, 0.45),
+		0 0.375rem 2rem rgba(244, 67, 54, 0.55),
+		0 0 1.5rem rgba(244, 67, 54, 0.55),
+		0.25rem 0.25rem 1rem rgba(255, 193, 7, 0.45);
+}
+.gg-shadow-text--md {
+	font-size: calc(var(--gg-shadow-font) * 1.2);
+}
+
+.gg-round-result__label {
+	margin: 0.4rem 0 0;
+	font-size: 0.9 rem;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--gg-muted);
+	text-align: center;
+}
+
+.gg-round-result__center {
+	text-align: center;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.gg-round-result__streak {
+	font-size: 0.9rem;
+	font-weight: 600;
+	color: var(--gg-text);
+	line-height: 1.35;
+	max-width: 100%;
+	white-space: nowrap;
+}
+
+.gg-round-result__actions {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.55rem;
+	margin-top: 0.35rem;
+}
+
+.gg-round-result__space {
+	margin: 0;
+	font-size: 0.8rem;
+	color: var(--gg-muted);
+}
+
+.gg-round-result__points {
+	text-align: center;
+}
+
+@media (max-width: 768px) {
+	.gg-round-result__bar-inner {
+		grid-template-columns: 1fr 1fr;
+		grid-template-areas:
+			"distance points"
+			"center center";
+	}
+	.gg-round-result__distance {
+		grid-area: distance;
+	}
+	.gg-round-result__points {
+		grid-area: points;
+	}
+	.gg-round-result__center {
+		grid-area: center;
+	}
+}
+
+/* Result settlement chrome (ResultOverlay) */
+.gg-result {
+	position: absolute;
+	inset: 0;
+	z-index: 8;
+	display: grid;
+	grid-template-columns: 520px 1fr;
+	pointer-events: none;
+	animation: gg-result-in 0.4s ease;
+}
+@keyframes gg-result-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+/* Left: result map */
+.gg-result__map {
+	background: #1a1d24;
+	border-right: 2px solid rgba(255, 255, 255, 0.08);
+	pointer-events: auto;
+	position: relative;
+	display: flex;
+	flex-direction: column;
+}
+.gg-result__map-canvas {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+}
+.gg-result__round-badge {
+	position: absolute;
+	top: 0;
+	right: 0;
+	z-index: 2;
+	background: rgba(0, 0, 0, 0.7);
+	color: var(--gg-muted);
+	font-size: 0.75rem;
+	padding: 0.25rem 0.6rem;
+	border-radius: 0 0 0 6px;
+	clip-path: polygon(0 0, 100% 0, 100% 100%, 0.6rem 100%);
+}
+
+/* Center info overlay on the right pane */
+.gg-result__info {
+	pointer-events: auto;
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 9;
+	background: rgba(16, 18, 22, 0.92);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: var(--gg-radius);
+	padding: 2rem 2.5rem;
+	text-align: center;
+	box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+	backdrop-filter: blur(12px);
+	min-width: 320px;
+}
+.gg-result__score {
+	font-size: 3.5rem;
+	font-weight: 800;
+	color: var(--gg-accent);
+	line-height: 1.1;
+	margin: 0.25rem 0;
+}
+.gg-result__sub {
+	font-size: 1rem;
+	color: var(--gg-muted);
+	margin-bottom: 0.3rem;
+}
+.gg-result__place {
+	font-size: 1rem;
+	color: var(--gg-text);
+	margin-bottom: 0.5rem;
+	font-weight: 500;
+}
+.gg-result__streaks {
+	font-size: 0.85rem;
+	color: var(--gg-muted);
+	line-height: 1.6;
+	margin-bottom: 1rem;
+}
+.gg-result__actions {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.5rem;
+}
+.gg-result__kbd-hint {
+	font-size: 0.7rem;
+	color: var(--gg-muted);
+}
+
+.gg-kbd {
+	display: inline-block;
+	font-size: 0.75em;
+	padding: 0.1em 0.4em;
+	border-radius: 3px;
+	background: rgba(255, 255, 255, 0.1);
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	vertical-align: middle;
+	margin: 0 0.1em;
+}
+
+.gg-result__backdrop {
+	position: relative;
+	pointer-events: none;
+	overflow: hidden;
+}
+
+/* ====================== SUMMARY / ANALYTICS ====================== */
+.gg-summary {
+	width: min(1680px, 96vw);
+	max-width: 100%;
+	height: 96vh;
+	margin: 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	padding: 0.5rem;
+}
+.gg-summary__hero {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 1rem 2rem;
+	padding: 0.5rem 0.75rem;
+	background: var(--gg-panel);
+	border: 1px solid var(--gg-border);
+	border-radius: var(--gg-radius);
+}
+.gg-summary__hero-main {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+}
+.gg-summary__hero-meta {
+	text-align: right;
+	min-width: 12rem;
+}
+.gg-summary__label {
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--gg-muted);
+	font-size: 1rem;
+	font-weight: 600;
+}
+.gg-summary__score {
+	font-size: clamp(2.5rem, 5vw, 3.75rem);
+	font-weight: 800;
+	color: var(--gg-accent);
+	line-height: 1.05;
+}
+.gg-summary__streak,
+.gg-summary__map {
+	color: var(--gg-text);
+	margin-top: 0.25rem;
+	font-size: 1rem;
+}
+.gg-summary__map {
+	color: var(--gg-muted);
+	font-size: 0.95rem;
+}
+.gg-summary__body {
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) minmax(400px, 1fr);
+	gap: 1rem;
+	align-items: stretch;
+	height: 100%;
+}
+.gg-summary__rounds {
+	background: var(--gg-panel);
+	border: 1px solid var(--gg-border);
+	border-radius: var(--gg-radius);
+	overflow: auto;
+	max-height: 100%;
+}
+.gg-summary__row {
+	display: grid;
+	grid-template-columns: 2.5rem 4.5rem 5rem 1fr auto auto auto;
+	gap: 0.75rem;
+	padding: 0.65rem 1rem;
+	border-bottom: 1px solid var(--gg-border);
+	align-items: center;
+	font-size: 0.9rem;
+}
+.gg-summary__row:last-child {
+	border-bottom: none;
+}
+.gg-summary__row-n {
+	color: var(--gg-muted);
+}
+.gg-summary__row-score {
+	font-weight: 700;
+	color: var(--gg-accent);
+}
+.gg-summary__row-dist {
+	font-size: 0.75rem;
+	font-weight: 500;
+	color: var(--gg-muted);
+}
+.gg-summary__row-streak.is-hit {
+	color: var(--gg-success);
+}
+.gg-summary__row-streak.is-miss {
+	color: var(--gg-danger);
+}
+.gg-summary__row-tag {
+	display: flex;
+	justify-content: flex-end;
+}
+.gg-summary__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	justify-content: center;
+	align-items: center;
+}
+
+/* ====================== ADD TAG ====================== */
+.gg-add-tag-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.4rem;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgba(0, 0, 0, 0.45);
+	color: var(--gg-text);
+	cursor: pointer;
+	transition:
+		background 0.15s,
+		border-color 0.15s,
+		transform 0.1s;
+}
+.gg-add-tag-btn:hover:not(:disabled) {
+	background: rgba(0, 0, 0, 0.7);
+	border-color: rgba(255, 255, 255, 0.22);
+}
+.gg-add-tag-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+.gg-add-tag-btn--result {
+	padding: 0.4rem 0.85rem;
+	border-radius: var(--gg-radius-sm);
+	font-size: 0.85rem;
+	font-weight: 600;
+	backdrop-filter: blur(8px);
+}
+.gg-add-tag-btn--result svg {
+	width: 1rem;
+	height: 1rem;
+}
+.gg-add-tag-btn--summary-row {
+	width: 1.85rem;
+	height: 1.85rem;
+	border-radius: var(--gg-radius-sm);
+	padding: 0;
+	flex-shrink: 0;
+}
+.gg-add-tag-btn--summary-row svg {
+	width: 1rem;
+	height: 1rem;
+}
+.gg-add-tag-btn--summary-bulk {
+	padding: 0.55rem 0.95rem;
+	border-radius: var(--gg-radius-sm);
+	font-size: 0.9rem;
+	font-weight: 600;
+	background: rgba(0, 188, 212, 0.12);
+	border-color: rgba(0, 188, 212, 0.35);
+	color: var(--gg-accent);
+}
+.gg-add-tag-btn--summary-bulk:hover:not(:disabled) {
+	background: rgba(0, 188, 212, 0.22);
+	border-color: var(--gg-accent);
+}
+.gg-add-tag-btn--summary-bulk svg {
+	width: 1.05rem;
+	height: 1.05rem;
+}
+
+.gg-add-tag-dialog {
+	width: min(26rem, calc(100vw - 2rem));
+}
+.gg-add-tag-dialog__form {
+	display: flex;
+	flex-direction: column;
+	gap: 0.85rem;
+	padding-top: 0.35rem;
+}
+.gg-add-tag-dialog__section {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+.gg-add-tag-dialog__label {
+	font-size: 0.75rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-3, var(--gg-muted));
+}
+.gg-add-tag-dialog__chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+	max-height: 9rem;
+	overflow: auto;
+}
+.gg-add-tag-dialog__chip {
+	border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+	background: var(--surface-3, rgba(255, 255, 255, 0.06));
+	color: var(--text-1, var(--gg-text));
+	border-radius: 999px;
+	padding: 0.25rem 0.65rem;
+	font-size: 0.8rem;
+	cursor: pointer;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.gg-add-tag-dialog__chip:hover:not(:disabled) {
+	background: var(--surface-4, rgba(255, 255, 255, 0.1));
+}
+.gg-add-tag-dialog__chip:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.gg-add-tag-dialog__chip--recent {
+	border-color: rgba(0, 188, 212, 0.45);
+	background: rgba(0, 188, 212, 0.1);
+}
+.gg-add-tag-dialog__actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5rem;
+	margin-top: 0.25rem;
+}
+
+/* ====================== ANALYTICS ====================== */
+.gg-analytics {
+	max-width: 900px;
+	margin: 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
+}
+.gg-analytics__header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 1rem;
+}
+.gg-analytics__header h2 {
+	margin: 0;
+	font-size: 1.75rem;
+}
+.gg-analytics__sub {
+	color: var(--gg-muted);
+	font-size: 0.9rem;
+	margin: 0.25rem 0 0;
+}
+.gg-analytics__header-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+.gg-analytics__filter {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	font-size: 0.85rem;
+	color: var(--gg-muted);
+}
+.gg-analytics__cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+	gap: 0.75rem;
+}
+.gg-analytics__card {
+	background: var(--gg-panel);
+	border: 1px solid var(--gg-border);
+	border-radius: var(--gg-radius);
+	padding: 1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	box-shadow: var(--gg-shadow);
+}
+.gg-analytics__card-label {
+	font-size: 0.7rem;
+	color: var(--gg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.gg-analytics__card-value {
+	font-size: 1.5rem;
+	font-weight: 700;
+	color: var(--gg-accent);
+}
+.gg-analytics__section h3 {
+	margin: 0 0 0.75rem;
+	font-size: 1rem;
+}
+.gg-analytics__chart-wrap {
+	width: 100%;
+}
+.gg-analytics__chart-wrap svg.gg-analytics__chart {
+	width: 100%;
+	height: 240px;
+	display: block;
+	background: rgba(0, 0, 0, 0.2);
+	border-radius: 8px;
+	border: 1px solid var(--gg-border);
+}
+.gg-analytics__chart-empty {
+	height: 80px;
+	display: grid;
+	place-items: center;
+	color: var(--gg-muted);
+	border: 1px dashed var(--gg-border);
+	border-radius: 8px;
+}
+.gg-analytics__trend-filters {
+	display: flex;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+	margin-bottom: 0.75rem;
+}
+
+/* ── filter dropdown ── */
+.gg-trend-filter {
+	position: relative;
+}
+.gg-trend-filter__btn {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 0.8rem;
+	padding: 0.35rem 0.6rem;
+	background: var(--gg-panel);
+	color: var(--gg-muted);
+	border: 1px solid var(--gg-border);
+	border-radius: 6px;
+	cursor: pointer;
+	transition:
+		border-color 150ms,
+		color 150ms;
+	white-space: nowrap;
+	user-select: none;
+}
+.gg-trend-filter__btn:hover,
+.gg-trend-filter__btn--open {
+	border-color: var(--gg-accent);
+	color: var(--gg-text);
+}
+.gg-trend-filter__display {
+	max-width: 120px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.gg-trend-filter__chevron {
+	flex-shrink: 0;
+	opacity: 0.5;
+	transition: transform 150ms;
+}
+.gg-trend-filter__btn--open .gg-trend-filter__chevron {
+	transform: rotate(180deg);
+	opacity: 0.9;
+}
+.gg-trend-filter__menu {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	z-index: 20;
+	margin-top: 4px;
+	min-width: 140px;
+	max-height: 188px;
+	overflow-y: auto;
+	background: var(--gg-panel);
+	border: 1px solid var(--gg-border);
+	border-radius: 8px;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+	padding: 4px;
+}
+.gg-trend-filter__opt {
+	display: block;
+	width: 100%;
+	text-align: left;
+	font-size: 0.82rem;
+	padding: 0.38rem 0.65rem;
+	background: transparent;
+	color: var(--gg-text);
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.gg-trend-filter__opt:hover {
+	background: var(--gg-accent);
+	color: #fff;
+}
+.gg-trend-filter__opt--active {
+	background: rgba(var(--gg-accent-rgb, 0, 0, 0), 0.18);
+	color: var(--gg-accent);
+	font-weight: 600;
+}
+.gg-analytics__list {
+	background: var(--gg-panel);
+	border: 1px solid var(--gg-border);
+	border-radius: var(--gg-radius);
+	max-height: 320px;
+	overflow: auto;
+}
+.gg-analytics__row {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.55rem 0.9rem;
+	border-bottom: 1px solid var(--gg-border);
+	font-size: 0.9rem;
+}
+.gg-analytics__row:last-child {
+	border-bottom: none;
+}
+.gg-analytics__row-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	margin-left: auto;
+}
+.gg-analytics__flag {
+	width: 1.8rem;
+	text-align: center;
+}
+.gg-analytics__flag img {
+	display: block;
+	margin: 0 auto;
+}
+.gg-analytics__name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.gg-analytics__provider {
+	text-transform: capitalize;
+	font-weight: 600;
+}
+.gg-analytics__acc {
+	font-weight: 700;
+	min-width: 2.5rem;
+	text-align: right;
+}
+.gg-acc--green {
+	color: var(--gg-success);
+}
+.gg-acc--yellow {
+	color: #ffee58;
+}
+.gg-acc--orange {
+	color: var(--gg-warn);
+}
+.gg-acc--red {
+	color: var(--gg-danger);
+}
+.gg-analytics__meta {
+	color: var(--gg-muted);
+	font-size: 0.8rem;
+}
+.gg-analytics__delete {
+	appearance: none;
+	border: none;
+	background: transparent;
+	color: var(--gg-muted);
+	cursor: pointer;
+	font-size: 1.1rem;
+	line-height: 1;
+}
+.gg-analytics__delete:hover {
+	color: var(--gg-danger);
+}
+.gg-analytics__replay {
+	appearance: none;
+	border: 1px solid var(--gg-border);
+	border-radius: var(--gg-radius);
+	background: var(--gg-panel);
+	color: var(--gg-accent);
+	cursor: pointer;
+	font-size: 0.75rem;
+	padding: 0.15rem 0.5rem;
+	line-height: 1;
+}
+.gg-analytics__replay:hover {
+	background: var(--gg-accent);
+	color: #000;
+}
+.gg-analytics__footer {
+	display: flex;
+	justify-content: flex-end;
+}
+
+/* ====================== REPLAY MAP ====================== */
+.gg-replay-map {
+	width: 100%;
+	min-height: min(52vh, 520px);
+	height: 100%;
+	background: rgba(0, 0, 0, 0.25);
+	border-radius: var(--gg-radius);
+	border: 1px solid var(--gg-border);
+	overflow: hidden;
+	position: relative;
+}
+.gg-replay-map__canvas {
+	width: 100%;
+	height: 100%;
+	min-height: min(52vh, 520px);
+}
+.gg-replay-map__empty {
+	height: 80px;
+	display: grid;
+	place-items: center;
+	color: var(--gg-muted);
+}
+
+/* ====================== SUMMARY ROW CLICK ====================== */
+.gg-summary__row {
+	cursor: pointer;
+	transition: background 0.15s;
+}
+.gg-summary__row:hover {
+	background: rgba(255, 255, 255, 0.04);
+}
+.gg-summary__row.is-active {
+	background: rgba(var(--gg-accent-rgb, 0, 200, 255), 0.12);
+}
+
+/* ====================== RESPONSIVE ====================== */
+@media (max-width: 768px) {
+	.gg-guess-map--size-2 {
+		--active-width: 72vw;
+		--inactive-width: 36vw;
+	}
+	.gg-guess-map--size-3,
+	.gg-guess-map--size-4 {
+		--active-width: 90vw;
+		--inactive-width: 45vw;
+	}
+	.gg-guess-map__root {
+		--active-height: 32vh;
+		--inactive-height: 20vh;
+	}
+	.gg-round-result__bar-inner {
+		grid-template-columns: 1fr 1fr;
+	}
+	.gg-summary__row {
+		grid-template-columns: 2rem 3.5rem 4rem 1fr auto;
+		font-size: 0.8rem;
+	}
+	.gg-summary__body {
+		grid-template-columns: 1fr;
+		min-height: 0;
+	}
+	.gg-replay-map,
+	.gg-replay-map__canvas {
+		min-height: 280px;
+	}
+	.gg-summary__rounds {
+		max-height: 240px;
+	}
+}

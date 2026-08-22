@@ -58,7 +58,6 @@ mod sync_engine;
 mod sync_geoguessr;
 mod sync_keying;
 mod sync_map_making;
-mod tencent_coverage;
 #[cfg(test)]
 mod test_util;
 mod vcs;
@@ -581,9 +580,6 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         .commands(tauri_specta::collect_commands![
             write_temp_file,
             read_file,
-            tencent_coverage::tencent_coverage_is_cached,
-            tencent_coverage::tencent_coverage_prepare,
-            tencent_coverage::tencent_coverage_read,
             // --- Utility ---
             app_ready,
             get_app_data_dir,
@@ -948,10 +944,6 @@ pub fn run() {
         storage::init_paths(app.handle())?;
         storage::run_migrations()?;
         log::info!("[startup] migrations: {}ms", t.elapsed().as_millis());
-
-        if let Err(error) = tencent_coverage::ensure_cache() {
-            log::warn!("[startup] Tencent coverage cache unavailable: {error}");
-        }
 
         #[cfg(desktop)]
         {
