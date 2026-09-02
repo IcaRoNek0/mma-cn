@@ -6240,3 +6240,66 @@ div:has(> div.gmnoprint > div.gm-style-cc [title="Keyboard shortcuts"]) {
 .mma-vector-canvas {
 	cursor: crosshair;
 }
+
+.psv-move-markers {
+	pointer-events: none;
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+}
+.psv-move-marker {
+	pointer-events: all;
+	position: absolute;
+	width: 4.25rem;
+	height: 4.25rem;
+	padding: 0;
+	border: 2px solid #ffffffb8;
+	border-radius: 50%;
+	color: #fff;
+	background: transparent;
+	box-shadow: 0 8px 22px #0007;
+	cursor: pointer;
+	transform: translate(-50%, -50%) scale(var(--marker-scale, 1)) rotateX(56deg);
+	transform-origin: center;
+	transition:
+		background 120ms ease,
+		opacity 120ms ease,
+		filter 120ms ease;
+}
+.psv-move-marker::after {
+	content: "";
+	position: absolute;
+	inset: 0.45rem;
+	border: 1px solid #ffffff70;
+	border-radius: inherit;
+}
+.psv-move-marker svg {
+	position: relative;
+	z-index: 1;
+	width: 3rem;
+	height: 3rem;
+	filter: drop-shadow(0 2px 1px #0008);
+	transform: rotateX(-56deg);
+}
+.psv-move-marker:not(:disabled):hover,
+.psv-move-marker:not(:disabled):focus-visible {
+	background: transparent;
+	filter: brightness(1.18);
+	outline: 3px solid #ffffffd9;
+	outline-offset: 2px;
+}
+.psv-move-marker:disabled,
+.psv-move-markers.is-loading .psv-move-marker {
+	cursor: wait;
+	opacity: 0.45;
+}
+.psv-move-marker.is-hidden,
+.psv-move-markers.is-loading .psv-move-marker.is-hidden {
+	opacity: 0;
+}
+@media (max-width: 600px) {
+	.psv-move-marker {
+		width: 3.75rem;
+		height: 3.75rem;
+	}
+}

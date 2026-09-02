@@ -20,6 +20,8 @@ interface BaiduPanoNode {
 	PID?: string;
 	DIR?: number;
 	Order?: number;
+	X?: number;
+	Y?: number;
 }
 
 interface BaiduMetadataEntry {
@@ -33,7 +35,7 @@ interface BaiduMetadataEntry {
 	NorthDir?: number;
 	Pitch?: number;
 	Roads?: { IsCurrent?: number; Panos?: BaiduPanoNode[] }[];
-	Links?: { PID?: string; DIR?: number }[];
+	Links?: BaiduPanoNode[];
 	TimeLine?: { ID?: string; TimeLine?: string }[];
 }
 
@@ -46,33 +48,68 @@ function baiduTimeline(items: BaiduMetadataEntry["TimeLine"]): PanoramaVersion[]
 	return (items ?? []).flatMap((item) => {
 		if (!item.ID) return [];
 		const ym = item.TimeLine?.match(/^(\d{4})(\d{2})$/);
-		const date = ym ? new Date(Number(ym[1]), Number(ym[2]) - 1) : parsePanoDate(item.ID, "baidu_pano");
+		const date = ym
+			? new Date(Number(ym[1]), Number(ym[2]) - 1)
+			: parsePanoDate(item.ID, "baidu_pano");
 		return [{ panoId: item.ID, date }];
 	});
 }
 
+function baiduNodeLink(
+	meta: BaiduMetadataEntry,
+	node: BaiduPanoNode,
+	adjacent: boolean,
+): PanoramaLink | null {
+	if (!node.PID || node.PID === meta.ID) return null;
+	const hasCoordinates = [meta.X, meta.Y, node.X, node.Y].every(Number.isFinite);
+	if (!hasCoordinates) return { panoId: node.PID, heading: node.DIR, adjacent };
+	const dx = node.X! - meta.X!;
+	const dy = node.Y! - meta.Y!;
+	return {
+		panoId: node.PID,
+		heading: ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360,
+		position: bd09McToGcj02(node.X! / 100, node.Y! / 100),
+		adjacent,
+	};
+}
+
 function baiduLinks(meta: BaiduMetadataEntry): PanoramaLink[] {
 	const links = new Map<string, PanoramaLink>();
+	const addLink = (link: PanoramaLink | null) => {
+		if (!link) return;
+		const existing = links.get(link.panoId);
+		if (existing?.adjacent && !link.adjacent) return;
+		links.set(link.panoId, link);
+	};
+
 	for (const road of meta.Roads ?? []) {
 		if (!road.IsCurrent) continue;
-		for (const node of road.Panos ?? []) {
-			if (node.PID && node.PID !== meta.ID) {
-				links.set(node.PID, { panoId: node.PID, heading: node.DIR });
-			}
+		const nodes = road.Panos ?? [];
+		const current = nodes.find((node) => node.PID === meta.ID);
+		const currentOrder = Number(current?.Order);
+		for (const node of nodes) {
+			const order = Number(node.Order);
+			const adjacent =
+				Number.isFinite(currentOrder) &&
+				Number.isFinite(order) &&
+				Math.abs(order - currentOrder) === 1;
+			addLink(baiduNodeLink(meta, node, adjacent));
 		}
 	}
-	for (const link of meta.Links ?? []) {
-		if (link.PID && link.PID !== meta.ID) {
-			links.set(link.PID, { panoId: link.PID, heading: link.DIR });
-		}
-	}
+
+	// Links are explicit cross-road transitions and are always direct neighbours.
+	for (const node of meta.Links ?? []) addLink(baiduNodeLink(meta, node, true));
 	return [...links.values()];
 }
 
 export class BaiduPanoramaProvider implements PanoramaProvider {
 	readonly source = "baidu_pano" as const;
 
-	async findNearest(point: GcjPoint, zoom: number, signal?: AbortSignal): Promise<PanoSearchResult | null> {
+	async findNearest(
+		point: GcjPoint,
+		zoom: number,
+		signal?: AbortSignal,
+	): Promise<PanoSearchResult | null> {
 		try {
 			const [x, y] = gcj02ToBd09Mc(point);
 			const level = Math.min(17, Math.max(3, Math.round(zoom)));

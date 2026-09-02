@@ -34,12 +34,13 @@ export interface TencentMetadataResponse {
 		history?: { nodes?: { svid?: string }[] };
 		roads?: {
 			name?: string;
-			points?: { svid?: string; x?: number; y?: number; order?: number }[];
+			points?: { svid?: string; x?: number; y?: number; order?: number | string }[];
 		}[];
 		vpoints?: {
 			svid?: string;
 			link?: { svid?: string; x?: number; y?: number }[];
 		}[];
+		all_scenes?: { svid?: string; x?: number; y?: number }[];
 		tile?: {
 			definitions?: {
 				id?: string;
@@ -112,36 +113,77 @@ function headingBetween(
 	to: { x?: number; y?: number },
 ): number | undefined {
 	if (![from.x, from.y, to.x, to.y].every(Number.isFinite)) return undefined;
-	return (Math.atan2(to.x! - from.x!, to.y! - from.y!) * 180) / Math.PI;
+	return ((Math.atan2(to.x! - from.x!, to.y! - from.y!) * 180) / Math.PI + 360) % 360;
+}
+
+const WEB_MERCATOR_METERS_PER_DEGREE = 111_319.49077777778;
+
+function mercatorToGcjPoint(point: { x?: number; y?: number }): GcjPoint | undefined {
+	if (![point.x, point.y].every(Number.isFinite)) return undefined;
+	const lng = point.x! / WEB_MERCATOR_METERS_PER_DEGREE;
+	const lat =
+		(360 / Math.PI) *
+			Math.atan(Math.exp((point.y! / WEB_MERCATOR_METERS_PER_DEGREE) * (Math.PI / 180))) -
+		90;
+	return { lng, lat };
 }
 
 function tencentLinks(data: TencentMetadataResponse): PanoramaLink[] {
 	const current = data.detail?.basic?.svid;
 	const currentPoint = data.detail?.basic ?? {};
 	const links = new Map<string, PanoramaLink>();
+	const addLink = (link: PanoramaLink) => {
+		if (!link.panoId || link.panoId === current) return;
+		const existing = links.get(link.panoId);
+		if (existing?.adjacent && !link.adjacent) return;
+		links.set(link.panoId, link);
+	};
+
 	for (const road of data.detail?.roads ?? []) {
 		const points = road.points ?? [];
 		const currentIndex = points.findIndex((point) => point.svid === current);
 		if (currentIndex < 0) continue;
-		for (const point of [points[currentIndex - 1], points[currentIndex + 1]]) {
-			if (!point?.svid) continue;
-			links.set(point.svid, {
+		const currentOrder = Number(points[currentIndex].order);
+		for (const [index, point] of points.entries()) {
+			if (!point.svid) continue;
+			const order = Number(point.order);
+			const adjacent =
+				Number.isFinite(currentOrder) && Number.isFinite(order)
+					? Math.abs(order - currentOrder) === 1
+					: Math.abs(index - currentIndex) === 1;
+			addLink({
 				panoId: point.svid,
 				heading: headingBetween(currentPoint, point),
 				label: road.name,
+				position: mercatorToGcjPoint(point),
+				adjacent,
 			});
 		}
 	}
+
+	// vpoints describe explicit junction transitions, analogous to Baidu Links.
 	for (const vertex of data.detail?.vpoints ?? []) {
 		if (vertex.svid !== current) continue;
 		for (const link of vertex.link ?? []) {
-			if (link.svid && link.svid !== current) {
-				links.set(link.svid, {
-					panoId: link.svid,
-					heading: headingBetween(currentPoint, link),
-				});
-			}
+			if (!link.svid) continue;
+			addLink({
+				panoId: link.svid,
+				heading: headingBetween(currentPoint, link),
+				position: mercatorToGcjPoint(link),
+				adjacent: true,
+			});
 		}
+	}
+
+	// Keep all_scenes navigable, but do not expose non-adjacent scenes as markers.
+	for (const scene of data.detail?.all_scenes ?? []) {
+		if (!scene.svid) continue;
+		addLink({
+			panoId: scene.svid,
+			heading: headingBetween(currentPoint, scene),
+			position: mercatorToGcjPoint(scene),
+			adjacent: false,
+		});
 	}
 	return [...links.values()];
 }

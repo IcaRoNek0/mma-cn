@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 const pano = vi.hoisted(() => ({
+	move: vi.fn(async () => true),
 	setPano: vi.fn(),
 	setPov: vi.fn(),
 	getPov: () => ({ heading: 0, pitch: 0, zoom: 1 }),
@@ -44,6 +45,7 @@ const waitFrames = async (n: number) => {
 };
 
 beforeEach(() => {
+	pano.move.mockClear();
 	pano.setPano.mockClear();
 	pano.setPov.mockClear();
 });
@@ -52,21 +54,21 @@ describe("usePanoNavigation movement-mode gates", () => {
 	it("move hotkey navigates in moving mode", () => {
 		const unmount = mount("moving");
 		press("ArrowUp", { shiftKey: true });
-		expect(pano.setPano).toHaveBeenCalledWith("next");
+		expect(pano.move).toHaveBeenCalledWith("forward");
 		unmount();
 	});
 
 	it("move hotkey is a no-op in no-move mode", () => {
 		const unmount = mount("no-move");
 		press("ArrowUp", { shiftKey: true });
-		expect(pano.setPano).not.toHaveBeenCalled();
+		expect(pano.move).not.toHaveBeenCalled();
 		unmount();
 	});
 
 	it("move hotkey is a no-op in nmpz mode", () => {
 		const unmount = mount("nmpz");
 		press("ArrowUp", { shiftKey: true });
-		expect(pano.setPano).not.toHaveBeenCalled();
+		expect(pano.move).not.toHaveBeenCalled();
 		unmount();
 	});
 

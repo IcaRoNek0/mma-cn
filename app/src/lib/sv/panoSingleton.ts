@@ -17,6 +17,7 @@ import {
 	type PanoSource,
 	viewerYawToHeading,
 } from "@/lib/pano";
+import { movementCandidates, selectMoveLink, type PanoMoveDirection } from "@/lib/pano/movement";
 import { seenSkipNext } from "@/lib/seen/seen";
 import { getLocal } from "@/lib/hooks/useLocalStorage";
 import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
@@ -25,6 +26,16 @@ import { subscribe } from "@/lib/events";
 
 interface ListenerHandle {
 	remove(): void;
+}
+
+export interface PsvMoveMarker {
+	panoId: string;
+	heading: number;
+	distance: number;
+	x: number;
+	y: number;
+	scale: number;
+	visible: boolean;
 }
 
 interface AdapterInternals {
@@ -74,6 +85,8 @@ export class PsvPanoramaController {
 	private progressiveCleanup: () => void = () => {};
 	private yawOriginHeading = 0;
 	private generation = 0;
+	private navigationHistory: string[] = [];
+	private navigationLoading = false;
 
 	constructor() {
 		this.viewer = new Viewer({
@@ -152,7 +165,11 @@ export class PsvPanoramaController {
 		};
 	}
 
-	async load(location: Location, panoId = location.panoId): Promise<PanoramaMetadata> {
+	async load(
+		location: Location,
+		panoId = location.panoId,
+		options: { transition?: boolean; resetHistory?: boolean } = {},
+	): Promise<PanoramaMetadata> {
 		if (!panoId) throw new Error("This location does not have a panorama ID");
 		const sourceValue = location.extra?.source;
 		if (!isPanoSource(sourceValue))
@@ -207,7 +224,8 @@ export class PsvPanoramaController {
 					pitch: (location.pitch * Math.PI) / 180,
 				},
 				zoom: tileLevels.length > 1 ? 0 : targetZoom,
-				transition: false,
+				transition: options.transition ?? false,
+				speed: options.transition ? 300 : undefined,
 			});
 		} catch (error) {
 			if (generation === this.generation) this.yawOriginHeading = previousYawOriginHeading;
@@ -216,6 +234,10 @@ export class PsvPanoramaController {
 		if (generation !== this.generation) return metadata;
 		this.metadata = metadata;
 		this.source = metadata.source;
+		if (options.resetHistory) {
+			this.navigationHistory = [];
+			this.emit("navigation_changed");
+		}
 		this.emit("pano_changed");
 		this.emit("links_changed");
 		if (tileLevels.length > 1) {
@@ -226,10 +248,122 @@ export class PsvPanoramaController {
 		return metadata;
 	}
 
-	setPano(panoId: string) {
+	private currentLocationSnapshot(): Location | null {
 		const active = getMapState().activeLocation;
-		if (!active) return;
-		void this.load({ ...active, extra: { ...active.extra, source: this.source } }, panoId);
+		if (!active || !this.metadata) return null;
+		const pov = this.getPov();
+		return {
+			...active,
+			lat: this.metadata.position.lat,
+			lng: this.metadata.position.lng,
+			heading: pov.heading,
+			pitch: pov.pitch,
+			zoom: this.getZoom(),
+			panoId: this.metadata.panoId,
+			extra: { ...active.extra, source: this.source },
+		};
+	}
+
+	private async navigateToPano(panoId: string, transition: boolean): Promise<boolean> {
+		if (this.navigationLoading || !panoId || panoId === this.metadata?.panoId) return false;
+		const location = this.currentLocationSnapshot();
+		if (!location) return false;
+		this.navigationLoading = true;
+		this.emit("navigation_changed");
+		try {
+			await this.load(location, panoId, { transition });
+			return true;
+		} finally {
+			this.navigationLoading = false;
+			this.emit("navigation_changed");
+		}
+	}
+
+	setPano(panoId: string) {
+		void this.navigateToPano(panoId, false)
+			.then((changed) => {
+				if (changed) {
+					this.navigationHistory = [];
+					this.emit("navigation_changed");
+				}
+			})
+			.catch(() => {});
+	}
+
+	getMoveTarget(direction: PanoMoveDirection) {
+		if (!this.metadata) return null;
+		return selectMoveLink(
+			this.metadata.links,
+			this.metadata.position,
+			this.getPov().heading,
+			direction,
+			this.navigationHistory.at(-1),
+		);
+	}
+
+	async move(direction: PanoMoveDirection): Promise<boolean> {
+		const target = this.getMoveTarget(direction);
+		return target ? this.moveTo(target.panoId) : false;
+	}
+
+	async moveTo(panoId: string): Promise<boolean> {
+		if (this.navigationLoading || !this.metadata) return false;
+		if (!this.metadata.links.some((link) => link.panoId === panoId)) return false;
+		const previousPanoId = this.metadata.panoId;
+		const historyTarget = this.navigationHistory.at(-1);
+		const changed = await this.navigateToPano(panoId, true);
+		if (!changed) return false;
+		if (panoId === historyTarget) this.navigationHistory.pop();
+		else this.navigationHistory.push(previousPanoId);
+		this.emit("navigation_changed");
+		return true;
+	}
+
+	getMoveMarkers(): PsvMoveMarker[] {
+		if (!this.metadata) return [];
+		return movementCandidates(this.metadata.links, this.metadata.position).flatMap(
+			({ link, distance, pitch, visible }) => {
+				const position = {
+					yaw: headingToViewerYaw(link.heading!, this.yawOriginHeading),
+					pitch,
+				};
+				if (!this.viewer.dataHelper.isPointVisible(position)) return [];
+				const point = this.viewer.dataHelper.sphericalCoordsToViewerCoords(position);
+				return [
+					{
+						panoId: link.panoId,
+						heading: link.heading!,
+						distance,
+						x: point.x,
+						y: point.y,
+						scale: 0.55 + 0.45 * (1 - distance / 100),
+						visible,
+					},
+				];
+			},
+		);
+	}
+
+	async goBack(): Promise<boolean> {
+		if (this.navigationLoading) return false;
+		const target = this.navigationHistory.at(-1);
+		if (!target) return false;
+		const changed = await this.navigateToPano(target, true);
+		if (changed) this.navigationHistory.pop();
+		this.emit("navigation_changed");
+		return changed;
+	}
+
+	canGoBack(): boolean {
+		return !this.navigationLoading && this.navigationHistory.length > 0;
+	}
+
+	isNavigationLoading(): boolean {
+		return this.navigationLoading;
+	}
+
+	getMetadata(): PanoramaMetadata | null {
+		return this.metadata;
 	}
 
 	getPano(): string {
@@ -293,6 +427,7 @@ export class PsvPanoramaController {
 	}
 	resize() {
 		this.viewer.autoSize();
+		this.emit("size_changed");
 	}
 }
 
@@ -310,7 +445,7 @@ export function clearSingletonPano() {
 export async function applyLocationPanorama(location: Location, panoId?: string) {
 	const panorama = getPanorama();
 	panorama.setVisible(true);
-	const metadata = await panorama.load(location, panoId);
+	const metadata = await panorama.load(location, panoId, { resetHistory: true });
 	panorama.focus();
 	return metadata;
 }

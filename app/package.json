@@ -104,5 +104,8 @@
 		"vite": "^8.2.1",
 		"vitest": "^4.1.10",
 		"webdriverio": "^9.27.1"
+	},
+	"optionalDependencies": {
+		"@rollup/rollup-linux-arm64-gnu": "^4.62.5"
 	}
 }

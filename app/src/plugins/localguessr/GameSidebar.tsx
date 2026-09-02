@@ -55,7 +55,10 @@ export function GameSidebar({ onClose }: { onClose: () => void }) {
 	const config: GameConfig = {
 		...DEFAULT_GAME_CONFIG,
 		...stored,
-		movementMode: stored?.movementMode === "nmpz" ? "nmpz" : "no-move",
+		movementMode:
+			stored?.movementMode === "moving" || stored?.movementMode === "nmpz"
+				? stored.movementMode
+				: "no-move",
 		streakMode: normalizeStreakMode(stored?.streakMode as string | undefined),
 		maxDistance:
 			typeof stored?.maxDistance === "number" && stored.maxDistance > 0 ? stored.maxDistance : null,
@@ -197,6 +200,7 @@ export function GameSidebar({ onClose }: { onClose: () => void }) {
 									value={config.movementMode}
 									onChange={(movementMode) => patch({ movementMode })}
 									options={[
+										{ value: "moving", label: t("Moving") },
 										{ value: "no-move", label: t("No Move") },
 										{ value: "nmpz", label: t("NMPZ") },
 									]}

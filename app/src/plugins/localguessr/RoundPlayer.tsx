@@ -196,7 +196,7 @@ export function RoundPlayer({
 	);
 
 	const movementMode = active.config.movementMode;
-	const canMove = false;
+	const canMove = movementMode === "moving";
 
 	// Single keydown handler for all LocalGuessr hotkeys — blocks propagation
 	// to app-level listeners (useCommandHotkeys, etc.) via stopImmediatePropagation.

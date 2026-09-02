@@ -1,10 +1,90 @@
-import { memo, useEffect, useRef } from "react";
-import { mdiFullscreen, mdiFullscreenExit, mdiHome, mdiMinus, mdiPlus } from "@mdi/js";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+	mdiChevronUp,
+	mdiFullscreen,
+	mdiFullscreenExit,
+	mdiHome,
+	mdiLoading,
+	mdiMinus,
+	mdiPlus,
+} from "@mdi/js";
 import { Icon } from "@/components/primitives/Icon";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { useSettings } from "@/store/settings";
-import type { PsvPanoramaController } from "@/lib/sv/panoSingleton";
+import type { PsvMoveMarker, PsvPanoramaController } from "@/lib/sv/panoSingleton";
+import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
+
+export const PsvMoveControls = memo(function PsvMoveControls({
+	panorama,
+}: {
+	panorama: PsvPanoramaController;
+}) {
+	const [markers, setMarkers] = useState<PsvMoveMarker[]>(() => panorama.getMoveMarkers());
+	const [loading, setLoading] = useState(() => panorama.isNavigationLoading());
+
+	useEffect(() => {
+		let frame = 0;
+		const update = () => {
+			if (frame) return;
+			frame = requestAnimationFrame(() => {
+				frame = 0;
+				setLoading(panorama.isNavigationLoading());
+				setMarkers(panorama.getMoveMarkers());
+			});
+		};
+		const listeners = [
+			panorama.addListener("pov_changed", update),
+			panorama.addListener("zoom_changed", update),
+			panorama.addListener("links_changed", update),
+			panorama.addListener("navigation_changed", update),
+			panorama.addListener("size_changed", update),
+		];
+		update();
+		return () => {
+			if (frame) cancelAnimationFrame(frame);
+			listeners.forEach((listener) => listener.remove());
+		};
+	}, [panorama]);
+
+	const moveTo = useCallback(
+		(panoId: string) => {
+			void panorama.moveTo(panoId).catch((error: unknown) => {
+				toast(error instanceof Error ? error.message : t("Panorama failed to load"), 4000);
+			});
+		},
+		[panorama],
+	);
+
+	return (
+		<div className={`psv-move-markers${loading ? " is-loading" : ""}`} aria-live="polite">
+			{markers.map((marker) => (
+				<button
+					key={marker.panoId}
+					type="button"
+					className={`psv-move-marker${marker.visible ? "" : " is-hidden"}`}
+					disabled={loading}
+					tabIndex={marker.visible ? 0 : -1}
+					aria-hidden={!marker.visible}
+					onClick={() => moveTo(marker.panoId)}
+					aria-label={`${t("Move forward")} ${Math.round(marker.distance)}m`}
+					style={
+						{
+							left: marker.x,
+							top: marker.y,
+							"--marker-scale": marker.scale,
+						} as CSSProperties
+					}
+				>
+					<Icon
+						path={loading ? mdiLoading : mdiChevronUp}
+						className={loading ? "spin" : undefined}
+					/>
+				</button>
+			))}
+		</div>
+	);
+});
 
 export const PsvControls = memo(function PsvControls({
 	panorama,
@@ -29,6 +109,7 @@ export const PsvControls = memo(function PsvControls({
 
 	return (
 		<div className="embed-controls">
+			{settings.defaultMovementMode === "moving" && <PsvMoveControls panorama={panorama} />}
 			{settings.showFullscreenButton && (
 				<div className="embed-controls__control" style={{ inset: "0 0 auto auto" }}>
 					<div className="map-control map-control--button">
@@ -51,10 +132,16 @@ export const PsvControls = memo(function PsvControls({
 			{settings.showZoom && (
 				<div className="embed-controls__control" style={{ inset: "auto 0 0 auto" }}>
 					<div className="map-control map-control--button">
-						<button onClick={() => panorama.setZoom(panorama.getZoom() + 1)} aria-label={t("Zoom in")}>
+						<button
+							onClick={() => panorama.setZoom(panorama.getZoom() + 1)}
+							aria-label={t("Zoom in")}
+						>
 							<Icon path={mdiPlus} />
 						</button>
-						<button onClick={() => panorama.setZoom(panorama.getZoom() - 1)} aria-label={t("Zoom out")}>
+						<button
+							onClick={() => panorama.setZoom(panorama.getZoom() - 1)}
+							aria-label={t("Zoom out")}
+						>
 							<Icon path={mdiMinus} />
 						</button>
 					</div>

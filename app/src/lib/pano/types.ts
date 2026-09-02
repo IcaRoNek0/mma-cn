@@ -16,6 +16,10 @@ export interface PanoramaLink {
 	panoId: string;
 	heading?: number;
 	label?: string;
+	position?: GcjPoint;
+	distanceMeters?: number;
+	/** Only direct road neighbours and explicit junction links get a visible move marker. */
+	adjacent?: boolean;
 }
 
 export interface PanoramaVersion {
@@ -48,7 +52,11 @@ export interface PanoramaMetadata {
 
 export interface PanoramaProvider {
 	readonly source: PanoSource;
-	findNearest(point: GcjPoint, zoom: number, signal?: AbortSignal): Promise<PanoSearchResult | null>;
+	findNearest(
+		point: GcjPoint,
+		zoom: number,
+		signal?: AbortSignal,
+	): Promise<PanoSearchResult | null>;
 	getMetadata(panoId: string, signal?: AbortSignal): Promise<PanoramaMetadata>;
 	getTileUrl(panoId: string, col: number, row: number, level: number): string;
 }
@@ -79,13 +87,13 @@ export function fallbackPanoramaMetadata(
 			? [
 					{ level: 0, width: 2048, cols: 4, rows: 2, tileWidth: 512, tileHeight: 512 },
 					{ level: 1, width: 8192, cols: 16, rows: 8, tileWidth: 512, tileHeight: 512 },
-			  ]
+				]
 			: source === "qq_trekker"
 				? [{ level: 0, width: 3584, cols: 8, rows: 2, tileWidth: 896, tileHeight: 896 }]
 				: [
 						{ level: 0, width: 4096, cols: 8, rows: 4, tileWidth: 512, tileHeight: 512 },
 						{ level: 1, width: 8192, cols: 16, rows: 8, tileWidth: 512, tileHeight: 512 },
-				  ];
+					];
 	return {
 		panoId,
 		source,

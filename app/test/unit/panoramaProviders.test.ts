@@ -79,7 +79,36 @@ describe("Tencent panorama metadata", () => {
 		expect(() => tencentTileLevels({ detail: {} }, "qq_trekker")).toThrow(/hd tile definition/);
 	});
 
-	it("keeps only adjacent road panoramas as navigation links", async () => {
+	it("exposes nearby all_scenes panoramas for directional movement", async () => {
+		const payload = {
+			detail: {
+				addr: { x_lng: 116.4, y_lat: 39.9 },
+				basic: {
+					svid: "current",
+					x: 12_957_900,
+					y: 4_851_000,
+					level1: "8*16",
+				},
+				all_scenes: [
+					{ svid: "north", x: 12_957_900, y: 4_851_012 },
+					{ svid: "east", x: 12_957_912, y: 4_851_000 },
+				],
+			},
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify(payload))),
+		);
+
+		const metadata = await new TencentPanoramaProvider().getMetadata("current");
+		expect(metadata.links.map((link) => link.panoId)).toEqual(["north", "east"]);
+		expect(metadata.links[0].heading).toBe(0);
+		expect(metadata.links[1].heading).toBe(90);
+		expect(metadata.links.every((link) => link.position != null)).toBe(true);
+		expect(metadata.links.every((link) => link.adjacent === false)).toBe(true);
+	});
+
+	it("marks only adjacent road panoramas for visible movement", async () => {
 		const payload = {
 			detail: {
 				addr: { x_lng: 107.600322, y_lat: 37.549936 },
@@ -97,10 +126,10 @@ describe("Tencent panorama metadata", () => {
 					{
 						name: "test road",
 						points: [
-							{ svid: "far", x: 0, y: 100 },
-							{ svid: "previous", x: 50, y: 100 },
-							{ svid: "current", x: 100, y: 100 },
-							{ svid: "next", x: 150, y: 100 },
+							{ svid: "next", x: 150, y: 100, order: 3 },
+							{ svid: "far", x: 0, y: 100, order: 0 },
+							{ svid: "current", x: 100, y: 100, order: 2 },
+							{ svid: "previous", x: 50, y: 100, order: 1 },
 						],
 					},
 				],
@@ -114,7 +143,11 @@ describe("Tencent panorama metadata", () => {
 		const metadata = await new TencentPanoramaProvider().getMetadata("current");
 		expect(metadata.heading).toBe(90);
 		expect(metadata.northOffset).toBe(90);
-		expect(metadata.links.map((link) => link.panoId)).toEqual(["previous", "next"]);
+		const links = Object.fromEntries(metadata.links.map((link) => [link.panoId, link]));
+		expect(Object.keys(links).sort()).toEqual(["far", "next", "previous"]);
+		expect(links.previous.adjacent).toBe(true);
+		expect(links.next.adjacent).toBe(true);
+		expect(links.far.adjacent).toBe(false);
 		expect(metadata.address).toBe("test road");
 	});
 });
@@ -151,6 +184,44 @@ describe("Baidu panorama metadata", () => {
 		]);
 	});
 
+	it("keeps adjacent road nodes and derives their headings from coordinates", async () => {
+		const payload = {
+			content: [
+				{
+					ID: "current",
+					X: 1_295_877_000,
+					Y: 482_684_000,
+					Roads: [
+						{
+							IsCurrent: 1,
+							Panos: [
+								{ PID: "next", Order: 3, X: 1_295_878_000, Y: 482_684_000 },
+								{ PID: "far", Order: 0, X: 1_295_877_000, Y: 482_681_000 },
+								{ PID: "current", Order: 2, X: 1_295_877_000, Y: 482_684_000 },
+								{ PID: "previous", Order: 1, X: 1_295_877_000, Y: 482_683_000 },
+							],
+						},
+					],
+					Links: [{ PID: "junction", DIR: 45 }],
+				},
+			],
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify(payload))),
+		);
+
+		const metadata = await new BaiduPanoramaProvider().getMetadata("current");
+		const links = Object.fromEntries(metadata.links.map((link) => [link.panoId, link]));
+		expect(Object.keys(links).sort()).toEqual(["far", "junction", "next", "previous"]);
+		expect(links.previous.heading).toBe(180);
+		expect(links.next.heading).toBe(90);
+		expect(links.previous.adjacent).toBe(true);
+		expect(links.next.adjacent).toBe(true);
+		expect(links.far.adjacent).toBe(false);
+		expect(links.junction.adjacent).toBe(true);
+	});
+
 	it("converts provider coordinates back to GCJ-02 and exposes both tile levels", async () => {
 		const original = { lng: 116.397389, lat: 39.908722 };
 		const [x, y] = gcj02ToBd09Mc(original);
@@ -177,7 +248,7 @@ describe("Baidu panorama metadata", () => {
 		expect(metadata.northOffset).toBe(15);
 		expect(metadata.position.lng).toBeCloseTo(original.lng, 5);
 		expect(metadata.position.lat).toBeCloseTo(original.lat, 5);
-		expect(metadata.links).toEqual([{ panoId: "baidu-next", heading: 180 }]);
+		expect(metadata.links).toEqual([{ panoId: "baidu-next", heading: 180, adjacent: true }]);
 		expect(metadata.tileLevels.map((level) => [level.cols, level.rows])).toEqual([
 			[4, 2],
 			[16, 8],

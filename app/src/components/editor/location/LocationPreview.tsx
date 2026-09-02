@@ -1,12 +1,4 @@
-import {
-	memo,
-	useEffect,
-	useLayoutEffect,
-	useMemo,
-	useRef,
-	useState,
-	useCallback,
-} from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
 	LocationFlag,
 	VIRTUAL_FLAGS,
@@ -67,7 +59,12 @@ import {
 import { FullscreenMiniLocationPreview } from "./FullscreenMiniLocationPreview";
 import { getViewportLockInfo } from "@/lib/sv/viewportLock";
 import { useEvent } from "@/lib/events";
-import { singletonPano, singletonDiv, getPanorama, applyLocationPanorama } from "@/lib/sv/panoSingleton";
+import {
+	singletonPano,
+	singletonDiv,
+	getPanorama,
+	applyLocationPanorama,
+} from "@/lib/sv/panoSingleton";
 import { PanoDatePicker } from "./PanoDatePicker";
 import { useLocationHotkeys } from "./useLocationHotkeys";
 import { t } from "@/lib/i18n";
@@ -271,27 +268,32 @@ export function LocationPreview() {
 	useEffect(() => {
 		if (!location) return;
 		let cancelled = false;
+		const panorama = getPanorama();
+		const syncMetadata = () => {
+			if (cancelled) return;
+			const metadata = panorama.getMetadata();
+			const pos = panorama.getPosition();
+			if (!metadata || !pos) return;
+			setCurrentPano({ location: { pano: metadata.panoId, latLng: pos } });
+			setPanoDates(metadata.timeline.map((entry) => ({ pano: entry.panoId, date: entry.date })));
+			setPanoGeo({ address: metadata.address ?? "", countryCode: null });
+			setPanoAltitude(metadata.altitude ?? 0);
+			setPanoReady(true);
+		};
+		const panoListener = panorama.addListener("pano_changed", syncMetadata);
 		setCurrentPano(null);
 		setPanoDates([]);
 		setPanoReady(false);
 		applyLocationPanorama(location)
-			.then((metadata) => {
-				if (cancelled) return;
-				const pos = getPanorama().getPosition();
-				if (pos) {
-					setCurrentPano({ location: { pano: metadata.panoId, latLng: pos } });
-				}
-				setPanoDates(metadata.timeline.map((entry) => ({ pano: entry.panoId, date: entry.date })));
-				setPanoGeo({ address: metadata.address ?? "", countryCode: null });
-				setPanoAltitude(metadata.altitude ?? 0);
-				setPanoReady(true);
-			})
+			.then(syncMetadata)
 			.catch((error) => {
-				if (!cancelled) toast(error instanceof Error ? error.message : t("Panorama failed to load"), 4000);
+				if (!cancelled)
+					toast(error instanceof Error ? error.message : t("Panorama failed to load"), 4000);
 			});
 
 		return () => {
 			cancelled = true;
+			panoListener.remove();
 		};
 	}, [location?.id]);
 

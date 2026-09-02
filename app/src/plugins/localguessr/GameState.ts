@@ -11,7 +11,7 @@ function isoLocale(appLocale: string | undefined): string {
 }
 
 export type GamePhase = "config" | "playing" | "result" | "summary" | "analytics" | "replay";
-export type MovementMode = "no-move" | "nmpz";
+export type MovementMode = "moving" | "no-move" | "nmpz";
 export type RoundMode = "classic" | "infinite";
 export type TimerMode = "countdown" | "countup" | "off";
 export type StreakMode = "off" | "country" | "state";

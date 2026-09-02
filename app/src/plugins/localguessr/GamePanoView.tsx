@@ -15,6 +15,7 @@ import {
 	type PsvPanoramaController,
 } from "@/lib/sv/panoSingleton";
 import { t } from "@/lib/i18n";
+import { PsvMoveControls } from "@/components/editor/location/PsvControls";
 import { getPanoramaProvider } from "@/lib/pano";
 import type { MovementMode, RoundLocation } from "./GameState";
 
@@ -56,10 +57,11 @@ export const GamePanoView = forwardRef<
 		onPanorama?: (pano: PsvPanoramaController | null) => void;
 		onCanUndoChange?: (canUndo: boolean) => void;
 	}
->(function GamePanoView({ round, onReady, onPanorama, onCanUndoChange }, ref) {
+>(function GamePanoView({ round, movementMode, onReady, onPanorama, onCanUndoChange }, ref) {
 	const hostRef = useRef<HTMLDivElement>(null);
 	const [error, setError] = useState<string | null>(null);
 	const spawnRef = useRef(round);
+	const checkpointRef = useRef<{ panoId: string; heading: number; pitch: number } | null>(null);
 
 	const restoreSpawn = useCallback(() => {
 		const pano = getPanorama();
@@ -71,11 +73,34 @@ export const GamePanoView = forwardRef<
 		ref,
 		() => ({
 			returnToSpawn: restoreSpawn,
-			setCheckpoint: () => {},
-			returnToCheckpoint: () => {},
-			hasCheckpoint: () => false,
-			undoMove: () => {},
-			canUndoMove: () => false,
+			setCheckpoint: () => {
+				const pano = getPanorama();
+				const panoId = pano.getPano();
+				if (!panoId) return;
+				checkpointRef.current = { panoId, ...pano.getPov() };
+			},
+			returnToCheckpoint: () => {
+				const pano = getPanorama();
+				const checkpoint = checkpointRef.current;
+				if (!checkpoint) return;
+				if (pano.getPano() === checkpoint.panoId) {
+					pano.setPov({ heading: checkpoint.heading, pitch: checkpoint.pitch });
+					return;
+				}
+				const listener = pano.addListener("pano_changed", () => {
+					if (pano.getPano() !== checkpoint.panoId) return;
+					listener.remove();
+					pano.setPov({ heading: checkpoint.heading, pitch: checkpoint.pitch });
+				});
+				pano.setPano(checkpoint.panoId);
+			},
+			hasCheckpoint: () => checkpointRef.current != null,
+			undoMove: () => {
+				void getPanorama()
+					.goBack()
+					.catch(() => {});
+			},
+			canUndoMove: () => getPanorama().canGoBack(),
 			getPanorama,
 			supportsHideCar: () => false,
 		}),
@@ -86,7 +111,9 @@ export const GamePanoView = forwardRef<
 		const host = hostRef.current;
 		if (!host) return;
 		let cancelled = false;
+		let navigationListener: { remove(): void } | null = null;
 		spawnRef.current = round;
+		checkpointRef.current = null;
 		onReady?.(false);
 		onCanUndoChange?.(false);
 		setError(null);
@@ -107,7 +134,11 @@ export const GamePanoView = forwardRef<
 		})()
 			.then(() => {
 				if (cancelled) return;
-				onPanorama?.(getPanorama());
+				const panorama = getPanorama();
+				navigationListener = panorama.addListener("navigation_changed", () => {
+					onCanUndoChange?.(panorama.canGoBack());
+				});
+				onPanorama?.(panorama);
 				onReady?.(true);
 			})
 			.catch((err: unknown) => {
@@ -117,6 +148,7 @@ export const GamePanoView = forwardRef<
 			});
 		return () => {
 			cancelled = true;
+			navigationListener?.remove();
 			onPanorama?.(null);
 			onReady?.(false);
 			if (host.contains(singletonDiv)) host.removeChild(singletonDiv);
@@ -126,6 +158,12 @@ export const GamePanoView = forwardRef<
 	return (
 		<div className="gg-pano">
 			<div ref={hostRef} className="gg-pano__host" />
+			{movementMode === "moving" && !error && (
+				<div className="embed-controls">
+					<PsvMoveControls panorama={getPanorama()} />
+				</div>
+			)}
+			{movementMode === "nmpz" && <div className="gg-pano__nmpz-shield" aria-hidden="true" />}
 			{error && <div className="gg-pano__error">{error}</div>}
 		</div>
 	);

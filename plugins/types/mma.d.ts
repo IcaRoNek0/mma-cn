@@ -2616,7 +2616,9 @@ declare const DEFAULTS: {
     enableSeenThumbnails: boolean;
     seenResolution: SeenResolution;
     mapPanSpeed: number;
+    mapZoomSensitivity: number;
     panoLookSpeed: number;
+    panoRotateSensitivity: number;
     slowModifier: number;
     showFps: boolean;
     mapListFields: MapListField[];
@@ -3478,7 +3480,9 @@ declare const surface: {
         enableSeenThumbnails: boolean;
         seenResolution: SeenResolution;
         mapPanSpeed: number;
+        mapZoomSensitivity: number;
         panoLookSpeed: number;
+        panoRotateSensitivity: number;
         slowModifier: number;
         showFps: boolean;
         mapListFields: MapListField[];

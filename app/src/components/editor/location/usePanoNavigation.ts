@@ -68,22 +68,8 @@ export function usePanoNavigation(appSettings: AppSettings) {
 						if (action === "panoMoveForward" || action === "panoMoveBackward") {
 							if (!singletonPano) return;
 							if (getAppSettings().defaultMovementMode !== "moving") return;
-							const links = singletonPano
-								.getLinks()
-								?.filter((l): l is google.maps.StreetViewLink => l != null);
-							if (!links?.length) return;
-							const heading = singletonPano.getPov().heading;
-							const target = action === "panoMoveForward" ? heading : (heading + 180) % 360;
-							let best = links[0];
-							let bestDiff = 360;
-							for (const link of links) {
-								const diff = Math.abs(((link.heading! - target + 540) % 360) - 180);
-								if (diff < bestDiff) {
-									bestDiff = diff;
-									best = link;
-								}
-							}
-							if (best.pano) singletonPano.setPano(best.pano);
+							const direction = action === "panoMoveForward" ? "forward" : "backward";
+							void singletonPano.move(direction).catch(() => {});
 							e.preventDefault();
 							e.stopImmediatePropagation();
 							return;
