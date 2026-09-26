@@ -9,13 +9,14 @@ import {
 	tagIdOf,
 	tagSelector,
 	type SelectionPatch,
+	type SelectionPath,
 } from "@/store/selections";
 
-/** Edit an existing filter (or any selection) in place by key, preserving its
- *  position inside any AND/OR/Invert composite. Carries ghost state to the new key. */
-export function updateFilterSelection(oldKey: string, selector: Selector) {
+/** Edit an existing filter (or any selection) in place, preserving its position inside any
+ *  AND/OR/Invert composite. Carries ghost state to the new key. */
+export function updateFilterSelection(path: SelectionPath, selector: Selector) {
 	return applySelectionUpdate((sels, ghosted): SelectionPatch => {
-		const next = replaceSelection(sels, oldKey, selector);
+		const next = replaceSelection(sels, path, selector);
 		if (next.length !== sels.length) return { selections: next };
 		let migrated: Set<string> | null = null;
 		for (let i = 0; i < sels.length; i++) {

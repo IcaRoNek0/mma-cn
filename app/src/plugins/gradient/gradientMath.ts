@@ -2,7 +2,7 @@ import type { FieldDef, KeySpec, PartitionBucket, Selection } from "@/bindings.g
 import type { RGB } from "@/lib/util/color";
 import { ymOrdinal } from "@/lib/util/date";
 import { partitionLabel } from "@/lib/util/format";
-import { locationsKey } from "@/store/selections";
+import { buildSelection } from "@/store/selections";
 
 export function lerp(a: RGB, b: RGB, t: number): RGB {
 	return [
@@ -41,7 +41,7 @@ export function fieldScale(value: string, type: string | undefined): number | nu
 // color proportionally when every key has a numeric scale (e.g. months, numeric strings),
 // else by even spacing.
 //
-// Selection shape (`key` mirrors the engine's key, for setSelectionColors):
+// Selection shape:
 //   - unscoped numeric bin  -> live Filter `between` (re-evaluates against the whole map)
 //   - unscoped value group  -> live Filter `eq`
 //   - everything else       -> static Locations (projections can't be expressed as a Filter;
@@ -80,27 +80,18 @@ export function colorPartition(
 		}
 	}
 
-	return groups.map((g, i) => {
+	return groups.map((g, i): Selection => {
 		const color = gradientColor(stops, ts[i]);
 		if (!narrowed && g.bin) {
 			const [lo, hi] = g.bin;
-			return {
-				selector: { type: "Filter", field: fieldKey, test: { op: "between", lo: lo, hi: hi } },
-				key: `filter:${fieldKey}:between:${lo}:${hi}`,
-				color,
-			};
+			const test = { op: "between", lo, hi } as const;
+			return { ...buildSelection({ type: "Filter", field: fieldKey, test }), color };
 		}
 		if (!narrowed && eqFilter) {
-			return {
-				selector: { type: "Filter", field: fieldKey, test: { op: "eq", value: g.key } },
-				key: `filter:${fieldKey}:eq:${g.key}`,
-				color,
-			};
+			const test = { op: "eq", value: g.key } as const;
+			return { ...buildSelection({ type: "Filter", field: fieldKey, test }), color };
 		}
-		return {
-			selector: { type: "Locations", locations: g.ids, name: partitionLabel(g.key, spec) },
-			key: locationsKey(g.ids),
-			color,
-		};
+		const name = partitionLabel(g.key, spec);
+		return { ...buildSelection({ type: "Locations", locations: g.ids, name }), color };
 	});
 }

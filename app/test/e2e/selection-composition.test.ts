@@ -28,10 +28,7 @@ describe("Selection composition", () => {
 		const result = await withApi(async (api, tagId) => {
 			await api.addSelections([api.panoIdSelector(true)]); // 30 (flags=1, indices 0-29)
 			await api.addSelections([api.tagSelector(tagId)]); // 50 (indices 0-49)
-			const sels = api.getActiveSelections();
-			const key1 = sels[0].key;
-			const key2 = sels[1].key;
-			await api.applySelectionUpdate(api.composeSelections(key1, key2, "Intersection", null, null));
+			await api.applySelectionUpdate(api.composeSelections([0], [1], "Intersection"));
 			const after = api.getActiveSelections();
 			return {
 				selCount: after.length,
@@ -48,10 +45,7 @@ describe("Selection composition", () => {
 		const result = await withApi(async (api, tagId) => {
 			await api.addSelections([api.panoIdSelector(true)]); // 30
 			await api.addSelections([api.tagSelector(tagId)]); // 30 (indices 50-79)
-			const sels = api.getActiveSelections();
-			await api.applySelectionUpdate(
-				api.composeSelections(sels[0].key, sels[1].key, "Union", null, null),
-			);
+			await api.applySelectionUpdate(api.composeSelections([0], [1], "Union"));
 			const after = api.getActiveSelections();
 			return {
 				selCount: after.length,
@@ -68,17 +62,8 @@ describe("Selection composition", () => {
 		const result = await withApi(async (api, tagId) => {
 			await api.addSelections([api.panoIdSelector(true)]);
 			await api.addSelections([api.tagSelector(tagId)]);
-			const sels = api.getActiveSelections();
-			await api.applySelectionUpdate(
-				api.composeSelections(sels[0].key, sels[1].key, "Union", null, null),
-			);
-
-			const composite = api.getActiveSelections()[0];
-			const childKey =
-				"selections" in composite.selector ? composite.selector.selections[0].key : "";
-			const parentKey = composite.key;
-
-			await api.applySelectionUpdate(api.decomposeChild(parentKey, childKey));
+			await api.applySelectionUpdate(api.composeSelections([0], [1], "Union"));
+			await api.applySelectionUpdate(api.moveSelection([0, 0], [0], "after"));
 			const after = api.getActiveSelections();
 			return {
 				selCount: after.length,
@@ -94,41 +79,13 @@ describe("Selection composition", () => {
 			await api.addSelections([api.panoIdSelector(true)]);
 			await api.addSelections([api.tagSelector(tagId)]);
 			await api.addSelections([api.untaggedSelector()]);
-			const sels = api.getActiveSelections();
 
-			// Compose first two
-			await api.applySelectionUpdate(
-				api.composeSelections(sels[0].key, sels[1].key, "Union", null, null),
-			);
-			const compositeKey = api.getActiveSelections()[0].key;
-
-			// Now compose the third into the union
-			const third = api
-				.getActiveSelections()
-				.find(
-					(s) =>
-						s.selector.type === "Filter" &&
-						s.selector.field === "tags" &&
-						s.selector.test.op === "nothas",
-				);
-			if (third) {
-				await api.applySelectionUpdate(
-					api.composeSelections(third.key, compositeKey, "Union", null, compositeKey),
-				);
-			}
+			// Compose first two, then the third into the union
+			await api.applySelectionUpdate(api.composeSelections([0], [1], "Union"));
+			await api.applySelectionUpdate(api.composeSelections([1], [0], "Union"));
 
 			// Remove one child from composite
-			const composite = api
-				.getActiveSelections()
-				.find((s) => s.selector.type === "Union" || s.selector.type === "Intersection");
-			if (
-				composite &&
-				"selections" in composite.selector &&
-				composite.selector.selections.length > 0
-			) {
-				const childToRemove = composite.selector.selections[0].key;
-				await api.applySelectionUpdate(api.removeFromComposite(composite.key, childToRemove));
-			}
+			await api.applySelectionUpdate(api.removeSelectionAt([0, 0]));
 
 			return {
 				selCount: api.getActiveSelections().length,

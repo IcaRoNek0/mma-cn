@@ -29,7 +29,6 @@ export type UnaryType = "Invert";
 /** Composite variants that are flat n-ary groups. */
 export type GroupType = Exclude<CompositeType, UnaryType>;
 
-const COMPOSITE_TYPES = unionTuple<CompositeType>()(["Intersection", "Union", "Invert"]);
 const GROUP_TYPES = unionTuple<GroupType>()(["Intersection", "Union"]);
 export const UNARY_TYPES = unionTuple<UnaryType>()(["Invert"]);
 
@@ -448,15 +447,12 @@ export const addSelection =
 	(current: Selection[]): Selection[] =>
 		dedupe([...current, buildSelection(selector)]);
 
-/** Remove a selection by key. Composites unwrap their children back into the list. */
+/** Remove the top-level selection whose key is `key`. A removed group leaves its children behind in its place. */
 export const removeSelection =
 	(key: string) =>
 	(current: Selection[]): Selection[] => {
-		const idx = current.findIndex((s) => s.key === key);
-		if (idx === -1) return current;
-		const s = current[idx];
-		const children = isVariant(s.selector, COMPOSITE_TYPES) ? s.selector.selections : [];
-		return [...current.slice(0, idx), ...children, ...current.slice(idx + 1)];
+		const i = current.findIndex((s) => s.key === key);
+		return i === -1 ? current : removeSelectionAt([i])(current);
 	};
 
 /** Split selections into [matching the keys, everything else]. */
@@ -491,23 +487,15 @@ export const unionSelections =
 	(current: Selection[]) =>
 		composeSelectionGroup(current, keys, "Union");
 
-/** Invert targeted selections. Single target toggles in-place at any depth; multiple are wrapped in Union then Invert. */
+/** Invert targeted top-level selections. A single target toggles in place; several are wrapped in Union then Invert. */
 export const invertSelections =
 	(keys: string[] | null = null) =>
 	(current: Selection[]): Selection[] => {
 		if (current.length === 0) return current;
 		const targetKeys = keys ?? current.map((s) => s.key);
-		// single-target invert toggles in-place, nested children included
 		if (targetKeys.length === 1) {
-			const toggle = (m: Selection): Selection =>
-				m.selector.type === "Invert"
-					? m.selector.selections[0]
-					: buildSelection({ type: "Invert", selections: [m] });
-			for (let i = 0; i < current.length; i++) {
-				const inverted = transformInTree(current[i], targetKeys[0], toggle);
-				if (inverted) return spliceMerging(current, i, inverted);
-			}
-			return current;
+			const i = current.findIndex((s) => s.key === targetKeys[0]);
+			return i === -1 ? current : toggleInvert([i])(current);
 		}
 		const [targets, others] = partitionByKeys(current, targetKeys);
 		const flat = targets.flatMap((s) =>
@@ -534,247 +522,149 @@ export const toggleManualSelection =
 		return current.with(idx, next);
 	};
 
-/** Move selection `fromKey` before or after `toKey` in the list. */
-export const reorderSelections =
-	(fromKey: string, toKey: string, position: "before" | "after") =>
-	(current: Selection[]): Selection[] => {
-		const fromIdx = current.findIndex((s) => s.key === fromKey);
-		if (fromIdx === -1) return current;
-		const item = current[fromIdx];
-		const without = current.toSpliced(fromIdx, 1);
-		let toIdx = without.findIndex((s) => s.key === toKey);
-		if (toIdx === -1) return current;
-		if (position === "after") toIdx++;
-		return without.toSpliced(toIdx, 0, item);
-	};
+/** Where a selection sits: its index in the list, then its index among the children of each
+ *  selection it is nested in. */
+export type SelectionPath = readonly number[];
 
-/** Merge the dragged selection into the drop target as a composite, absorbing existing
- *  children of the same type. Handles nested cases across parent groups. */
-export const composeSelections =
-	(
-		dragKey: string,
-		dropKey: string,
-		mode: GroupType,
-		dragParent: string | null = null,
-		dropParent: string | null = null,
-	) =>
-	(current: Selection[]): Selection[] => {
-		if (dragParent && dropParent && dragParent === dropParent) {
-			return composeSiblings(current, dragParent, dragKey, dropKey, mode);
-		}
-		const sels = dragParent ? decomposeChild(dragParent, dragKey)(current) : current;
-		if (dropParent) return composeWithChild(sels, dragKey, dropParent, dropKey, mode);
-		const dragIdx = sels.findIndex((s) => s.key === dragKey);
-		const dropIdx = sels.findIndex((s) => s.key === dropKey);
-		if (dragIdx === -1 || dropIdx === -1 || dragIdx === dropIdx) return sels;
-		const drag = sels[dragIdx];
-		const drop = sels[dropIdx];
-
-		let children: Selection[];
-		if (isVariant(drop.selector, mode)) {
-			children = [...drop.selector.selections, drag];
-		} else {
-			children = [drop, drag];
-		}
-		const composite = buildSelection({ type: mode, selections: dedupe(children) });
-
-		return sels.filter((_, i) => i !== dragIdx).map((s) => (s.key === dropKey ? composite : s));
-	};
-
-// Unwrap a unary operator to the group it wraps, returning the group's selector plus a `rewrap`
-// that restores the operator; a plain group returns itself with an identity rewrap. Null when
-// there's no group to operate on.
-function unwrapUnary(
-	sel: Selection,
-): { selector: Variant<Selector, GroupType>; rewrap: (inner: Selection) => Selection } | null {
-	const unary = isVariant(sel.selector, UNARY_TYPES) ? sel.selector.type : null;
-	const selector = isVariant(sel.selector, UNARY_TYPES)
-		? sel.selector.selections[0].selector
-		: sel.selector;
-	if (!isVariant(selector, GROUP_TYPES)) return null;
-	return {
-		selector,
-		rewrap: (inner) => (unary ? buildSelection({ type: unary, selections: [inner] }) : inner),
-	};
+/** The selection at `path`, or undefined when nothing sits there. */
+export function selectionAt(list: Selection[], path: SelectionPath): Selection | undefined {
+	let node: Selection | undefined = list[path[0]];
+	for (const i of path.slice(1)) node = node && childSelections(node.selector)[i];
+	return node;
 }
 
-// Rebuild a composite around `next`: a group that drops to one child collapses to it, an empty
-// one is gone (null). `rewrap` keeps a unary wrapper (Invert) around whatever survives.
-function rebuildComposite(
-	type: GroupType,
-	rewrap: (inner: Selection) => Selection,
-	next: Selection[],
-): Selection | null {
-	if (next.length === 0) return null;
-	return rewrap(next.length === 1 ? next[0] : buildSelection({ type, selections: next }));
+const isWithin = (inner: SelectionPath, outer: SelectionPath) =>
+	outer.length <= inner.length && outer.every((i, depth) => inner[depth] === i);
+
+interface PathEdit {
+	path: SelectionPath;
+	edit: (node: Selection) => Selection[];
 }
 
-// `updated: null` means the composite is empty now and the caller must drop it. `dissolve` hoists a
-// removed group's children into the parent instead of taking them with it - a delete ungroups,
-// an extract must not (the child keeps its own children when it leaves).
-function removeChildFromComposite(
-	sel: Selection,
-	parentKey: string,
-	childKey: string,
-	dissolve: boolean,
-): { updated: Selection | null; removed: Selection } | null {
-	const grp = unwrapUnary(sel);
-	if (!grp) return null;
-	const { selector: composite, rewrap } = grp;
-	const children = composite.selections;
-	const rebuild = (next: Selection[]) => rebuildComposite(composite.type, rewrap, next);
-
-	if (sel.key === parentKey) {
-		const childIdx = children.findIndex((s) => s.key === childKey);
-		if (childIdx === -1) return null;
-		const child = children[childIdx];
-		const inlined =
-			dissolve && isVariant(child.selector, GROUP_TYPES) ? child.selector.selections : [];
-		return { updated: rebuild(children.toSpliced(childIdx, 1, ...inlined)), removed: child };
-	}
-
-	for (let i = 0; i < children.length; i++) {
-		const result = removeChildFromComposite(children[i], parentKey, childKey, dissolve);
-		if (result) {
-			const next = result.updated ? children.with(i, result.updated) : children.toSpliced(i, 1);
-			return { updated: rebuild(next), removed: result.removed };
-		}
-	}
-	return null;
+// Swap each edited node for what its edit returns, rebuilding the ancestors around it: a group
+// left with one member collapses to it, an emptied composite disappears, and a node that now
+// duplicates a sibling merges into that sibling. Edits must not nest inside one another.
+function spliceAt(list: Selection[], edits: PathEdit[]): Selection[] {
+	const byIndex = [...Map.groupBy(edits, (e) => e.path[0])].sort(([a], [b]) => b - a);
+	let out = list;
+	byIndex.forEach(([i, here], n) => {
+		const node = list[i];
+		if (!node) return;
+		const leaf = here.find((e) => e.path.length === 1);
+		const replacement = leaf ? leaf.edit(node) : rebuildAround(node, here);
+		if (replacement.length === 1 && replacement[0] === node) return;
+		const pending = new Set(byIndex.slice(n + 1).map(([j]) => j));
+		out = spliceMerging(out, i, replacement, pending);
+	});
+	return out;
 }
 
-// `extract` puts the child back at the top level; `delete` drops it, ungrouping a nested group's
-// children into the parent.
-function detachChild(
-	current: Selection[],
-	parentKey: string,
-	childKey: string,
-	mode: "extract" | "delete",
-): Selection[] {
-	for (let i = 0; i < current.length; i++) {
-		const result = removeChildFromComposite(current[i], parentKey, childKey, mode === "delete");
-		if (result) {
-			const out = result.updated ? current.with(i, result.updated) : current.toSpliced(i, 1);
-			if (mode === "extract") out.splice(result.updated ? i + 1 : i, 0, result.removed);
-			return out;
-		}
-	}
-	return current;
-}
-
-/** Pull a child out of a composite back into the top-level list, children and all. Parent collapses
- *  if only one child remains, and disappears if none do. */
-export const decomposeChild =
-	(parentKey: string, childKey: string) =>
-	(current: Selection[]): Selection[] =>
-		detachChild(current, parentKey, childKey, "extract");
-
-/** Remove a child from a composite, ungrouping any nested group's children into the parent. */
-export const removeFromComposite =
-	(parentKey: string, childKey: string) =>
-	(current: Selection[]): Selection[] =>
-		detachChild(current, parentKey, childKey, "delete");
-
-// Rewrite the children of the composite at `parentKey` in place. `edit` returning null leaves the
-// list untouched.
-function withComposite(
-	current: Selection[],
-	parentKey: string,
-	edit: (children: Selection[]) => Selection[] | null,
-): Selection[] {
-	const parentIdx = current.findIndex((s) => s.key === parentKey);
-	if (parentIdx === -1) return current;
-	const grp = unwrapUnary(current[parentIdx]);
-	if (!grp) return current;
-	const { selector: composite, rewrap } = grp;
-	const newChildren = edit(composite.selections);
-	if (!newChildren) return current;
-	return current.with(
-		parentIdx,
-		rewrap(buildSelection({ type: composite.type, selections: newChildren })),
+function rebuildAround(node: Selection, edits: PathEdit[]): Selection[] {
+	const children = childSelections(node.selector);
+	const next = spliceAt(
+		children,
+		edits.map((e) => ({ ...e, path: e.path.slice(1) })),
 	);
+	if (next === children) return [node];
+	if (isVariant(node.selector, GROUP_TYPES) && next.length <= 1) return next;
+	if (isVariant(node.selector, UNARY_TYPES) && next.length === 0) return [];
+	const rebuilt = buildSelection(withChildren(node.selector, next));
+	return [rebuilt.key === node.key ? { ...rebuilt, color: node.color } : rebuilt];
 }
 
-/** Compose two siblings inside the same parent group into a nested composite. */
-export function composeSiblings(
-	current: Selection[],
-	parentKey: string,
-	dragKey: string,
-	dropKey: string,
-	mode: GroupType,
+// Put `replacement` at `index`, dropping whatever of it already sits elsewhere in `list`: the
+// existing selection wins. Nodes at `pending` indices are about to be edited, so they don't count.
+function spliceMerging(
+	list: Selection[],
+	index: number,
+	replacement: Selection[],
+	pending: ReadonlySet<number>,
 ): Selection[] {
-	return withComposite(current, parentKey, (children) => {
-		const dragChild = children.find((s) => s.key === dragKey);
-		const dropChild = children.find((s) => s.key === dropKey);
-		if (!dragChild || !dropChild) return null;
-		const nested = buildSelection({ type: mode, selections: [dropChild, dragChild] });
-		return children.filter((s) => s.key !== dragKey).map((s) => (s.key === dropKey ? nested : s));
-	});
+	const kept = new Set(list.filter((_, j) => j !== index && !pending.has(j)).map((s) => s.key));
+	return list.toSpliced(index, 1, ...dedupe(replacement.filter((s) => !kept.has(s.key))));
 }
 
-/** Compose a top-level selection with a child inside a parent group. */
-export function composeWithChild(
-	current: Selection[],
-	dragKey: string,
-	parentKey: string,
-	childKey: string,
-	mode: GroupType,
-): Selection[] {
-	const dragIdx = current.findIndex((s) => s.key === dragKey);
-	if (dragIdx === -1) return current;
-	const drag = current[dragIdx];
+/** Invert the selection at `path` in place, or restore it when it is already inverted. */
+export const toggleInvert =
+	(path: SelectionPath) =>
+	(current: Selection[]): Selection[] =>
+		spliceAt(current, [
+			{
+				path,
+				edit: (node) => [
+					node.selector.type === "Invert"
+						? node.selector.selections[0]
+						: buildSelection({ type: "Invert", selections: [node] }),
+				],
+			},
+		]);
 
-	const next = withComposite(current, parentKey, (children) => {
-		const childIdx = children.findIndex((s) => s.key === childKey);
-		if (childIdx === -1) return null;
-		const nested = buildSelection({ type: mode, selections: [children[childIdx], drag] });
-		return children.with(childIdx, nested);
-	});
-	return next === current ? current : next.filter((_, i) => i !== dragIdx);
-}
+/** Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
+ *  `drop` when that already is one. Nothing happens when either contains the other. */
+export const composeSelections =
+	(drag: SelectionPath, drop: SelectionPath, mode: GroupType) =>
+	(current: Selection[]): Selection[] => {
+		const dragged = selectionAt(current, drag);
+		if (!dragged || !selectionAt(current, drop)) return current;
+		if (isWithin(drag, drop) || isWithin(drop, drag)) return current;
+		const merge = (target: Selection): Selection[] => [
+			buildSelection({
+				type: mode,
+				selections: dedupe(
+					isVariant(target.selector, mode)
+						? [...target.selector.selections, dragged]
+						: [target, dragged],
+				),
+			}),
+		];
+		return spliceAt(current, [
+			{ path: drag, edit: () => [] },
+			{ path: drop, edit: merge },
+		]);
+	};
 
-// Put `replaced` at `index` in `list`, enforcing unique keys: if the replacement collides with
-// another entry, drop it and keep the pre-existing one.
-function spliceMerging(list: Selection[], index: number, replaced: Selection): Selection[] {
-	if (list.some((s, j) => j !== index && s.key === replaced.key)) {
-		return list.filter((_, j) => j !== index);
-	}
-	return list.with(index, replaced);
-}
-
-// Find the node identified by `key` at any depth and replace it with `fn(matched)`, rebuilding
-// composite keys on the path. A group that drops to one child collapses to that child.
-function transformInTree(
-	sel: Selection,
-	key: string,
-	fn: (matched: Selection) => Selection,
-): Selection | null {
-	if (sel.key === key) return fn(sel);
-	if (!isVariant(sel.selector, COMPOSITE_TYPES)) return null;
-	const children = sel.selector.selections;
-	for (let i = 0; i < children.length; i++) {
-		const next = transformInTree(children[i], key, fn);
-		if (next) {
-			const newChildren = spliceMerging(children, i, next);
-			if (newChildren.length === 1 && !isVariant(sel.selector, UNARY_TYPES)) return newChildren[0];
-			return buildSelection({ type: sel.selector.type, selections: newChildren });
+/** Move the selection at `from` to just before or after the one at `to`, which must sit in the
+ *  list or directly in a group. Nothing happens when `to` is inside the moved selection. */
+export const moveSelection =
+	(from: SelectionPath, to: SelectionPath, position: "before" | "after") =>
+	(current: Selection[]): Selection[] => {
+		const moved = selectionAt(current, from);
+		if (!moved || !selectionAt(current, to) || isWithin(to, from)) return current;
+		const parent = to.length > 1 ? selectionAt(current, to.slice(0, -1)) : undefined;
+		if (parent && !isVariant(parent.selector, GROUP_TYPES)) return current;
+		const place = (rest: Selection[]) =>
+			position === "before" ? [moved, ...rest] : [...rest, moved];
+		if (isWithin(from, to)) {
+			const within = [0, ...from.slice(to.length)];
+			const lift = (target: Selection) =>
+				place(spliceAt([target], [{ path: within, edit: () => [] }]));
+			return spliceAt(current, [{ path: to, edit: lift }]);
 		}
-	}
-	return null;
-}
+		return spliceAt(current, [
+			{ path: from, edit: () => [] },
+			{ path: to, edit: (target) => place([target]) },
+		]);
+	};
 
-/** Replace the selection at `oldKey` (at any depth) with one built from `selector`. If the new
- *  key collides with an existing selection, the existing one wins and the replacement is dropped. */
+/** Remove the selection at `path`. A removed group leaves its children behind in its place. */
+export const removeSelectionAt =
+	(path: SelectionPath) =>
+	(current: Selection[]): Selection[] =>
+		spliceAt(current, [
+			{
+				path,
+				edit: (node) => (isVariant(node.selector, GROUP_TYPES) ? node.selector.selections : []),
+			},
+		]);
+
+/** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
+ *  the existing sibling wins and the replacement is dropped. */
 export function replaceSelection(
 	current: Selection[],
-	oldKey: string,
+	path: SelectionPath,
 	selector: Selector,
 ): Selection[] {
-	for (let i = 0; i < current.length; i++) {
-		const replaced = transformInTree(current[i], oldKey, () => buildSelection(selector));
-		if (replaced) return spliceMerging(current, i, replaced);
-	}
-	return current;
+	return spliceAt(current, [{ path, edit: () => [buildSelection(selector)] }]);
 }
 
 /** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
@@ -823,28 +713,29 @@ function validationStateLabel(state: ValidationState): string {
 	}
 }
 
-/** Update the colors of selections by matching keys from `entries`. */
-export const setSelectionColors =
-	(entries: Selection[]) =>
+/** Recolor the selection at `path`. */
+export const setSelectionColor =
+	(path: SelectionPath, color: RGB) =>
 	(current: Selection[]): Selection[] =>
-		entries.reduce((sels, entry) => {
-			const idx = sels.findIndex((s) => s.key === entry.key);
-			return idx === -1 ? sels : sels.with(idx, entry);
-		}, current);
+		spliceAt(current, [{ path, edit: (s) => [{ ...s, color }] }]);
 
 /** Rename a Polygon selection's display name. */
 export const setPolygonName =
-	(key: string, name: string) =>
-	(current: Selection[]): Selection[] => {
-		return current.map((s) => {
-			if (s.key !== key || s.selector.type !== "Polygon") return s;
-			const selector: Selector = {
-				...s.selector,
-				polygon: { ...s.selector.polygon, properties: { ...s.selector.polygon.properties, name } },
-			};
-			return { ...s, selector };
-		});
-	};
+	(path: SelectionPath, name: string) =>
+	(current: Selection[]): Selection[] =>
+		spliceAt(current, [
+			{
+				path,
+				edit: (s) => {
+					if (s.selector.type !== "Polygon") return [s];
+					const polygon = {
+						...s.selector.polygon,
+						properties: { ...s.selector.polygon.properties, name },
+					};
+					return [{ ...s, selector: { ...s.selector, polygon } }];
+				},
+			},
+		]);
 
 // Rewrite Filter `field` references in a selection tree: `from` -> `to`, or drop the
 // Filter when `to` is null. Composites collapse if emptied or unwrap to their sole survivor.

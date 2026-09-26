@@ -3394,43 +3394,44 @@ declare const has: (field: string) => Selector;
 declare const lacks: (field: string) => Selector;
 /** Append a new selection built from `selector`, deduplicating by key. @unstable */
 declare const addSelection: (selector: Selector) => (current: Selection[]) => Selection[];
-/** Remove a selection by key. Composites unwrap their children back into the list. @unstable */
+/** Remove the top-level selection whose key is `key`. A removed group leaves its children behind in its place. @unstable */
 declare const removeSelection: (key: string) => (current: Selection[]) => Selection[];
 /** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. @unstable */
 declare const intersectSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
 /** Merge the targeted selections (or all, when `keys` is null) into a single Union. @unstable */
 declare const unionSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
-/** Invert targeted selections. Single target toggles in-place at any depth; multiple are wrapped in Union then Invert. @unstable */
+/** Invert targeted top-level selections. A single target toggles in place; several are wrapped in Union then Invert. @unstable */
 declare const invertSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
 /** Add or remove a location from the Manual selection, creating it if needed. @unstable */
 declare const toggleManualSelection: (locationId: number) => (current: Selection[]) => Selection[];
-/** Move selection `fromKey` before or after `toKey` in the list. @unstable */
-declare const reorderSelections: (fromKey: string, toKey: string, position: "before" | "after") => (current: Selection[]) => Selection[];
-/** Merge the dragged selection into the drop target as a composite, absorbing existing
- *  children of the same type. Handles nested cases across parent groups. @unstable */
-declare const composeSelections: (dragKey: string, dropKey: string, mode: GroupType, dragParent?: string | null, dropParent?: string | null) => (current: Selection[]) => Selection[];
-/** Pull a child out of a composite back into the top-level list, children and all. Parent collapses
- *  if only one child remains, and disappears if none do. @unstable */
-declare const decomposeChild: (parentKey: string, childKey: string) => (current: Selection[]) => Selection[];
-/** Remove a child from a composite, ungrouping any nested group's children into the parent. @unstable */
-declare const removeFromComposite: (parentKey: string, childKey: string) => (current: Selection[]) => Selection[];
-/** Compose two siblings inside the same parent group into a nested composite. @unstable */
-declare function composeSiblings(current: Selection[], parentKey: string, dragKey: string, dropKey: string, mode: GroupType): Selection[];
-/** Compose a top-level selection with a child inside a parent group. @unstable */
-declare function composeWithChild(current: Selection[], dragKey: string, parentKey: string, childKey: string, mode: GroupType): Selection[];
-/** Replace the selection at `oldKey` (at any depth) with one built from `selector`. If the new
- *  key collides with an existing selection, the existing one wins and the replacement is dropped. @unstable */
-declare function replaceSelection(current: Selection[], oldKey: string, selector: Selector): Selection[];
+/** Where a selection sits: its index in the list, then its index among the children of each
+ *  selection it is nested in. @unstable */
+export type SelectionPath = readonly number[];
+/** The selection at `path`, or undefined when nothing sits there. @unstable */
+declare function selectionAt(list: Selection[], path: SelectionPath): Selection | undefined;
+/** Invert the selection at `path` in place, or restore it when it is already inverted. @unstable */
+declare const toggleInvert: (path: SelectionPath) => (current: Selection[]) => Selection[];
+/** Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
+ *  `drop` when that already is one. Nothing happens when either contains the other. @unstable */
+declare const composeSelections: (drag: SelectionPath, drop: SelectionPath, mode: GroupType) => (current: Selection[]) => Selection[];
+/** Move the selection at `from` to just before or after the one at `to`, which must sit in the
+ *  list or directly in a group. Nothing happens when `to` is inside the moved selection. @unstable */
+declare const moveSelection: (from: SelectionPath, to: SelectionPath, position: "before" | "after") => (current: Selection[]) => Selection[];
+/** Remove the selection at `path`. A removed group leaves its children behind in its place. @unstable */
+declare const removeSelectionAt: (path: SelectionPath) => (current: Selection[]) => Selection[];
+/** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
+ *  the existing sibling wins and the replacement is dropped. @unstable */
+declare function replaceSelection(current: Selection[], path: SelectionPath, selector: Selector): Selection[];
 /** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
  *  rather than the open map's tags. @unstable */
 declare function selectionDisplayName(sel: Selection, tagNames?: Record<number, string>): string;
 /** Display label for a tag name. In tree view with `truncateTagPaths` on, collapses
  *  the `/`-path to its shortest unique suffix; otherwise returns the name verbatim. @unstable */
 declare function displayTagName(name: string): string;
-/** Update the colors of selections by matching keys from `entries`. @unstable */
-declare const setSelectionColors: (entries: Selection[]) => (current: Selection[]) => Selection[];
+/** Recolor the selection at `path`. @unstable */
+declare const setSelectionColor: (path: SelectionPath, color: RGB) => (current: Selection[]) => Selection[];
 /** Rename a Polygon selection's display name. @unstable */
-declare const setPolygonName: (key: string, name: string) => (current: Selection[]) => Selection[];
+declare const setPolygonName: (path: SelectionPath, name: string) => (current: Selection[]) => Selection[];
 /** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. @unstable */
 declare const rewriteSelectionFields: (from: string, to: string | null) => (selections: Selection[]) => Selection[];
 
@@ -3446,6 +3447,8 @@ declare const selectionOps_OP_LABELS: typeof OP_LABELS;
 declare const selectionOps_SELECTIONS: typeof SELECTIONS;
 /** @unstable */
 export type selectionOps_SelectionPatch = SelectionPatch;
+/** @unstable */
+export type selectionOps_SelectionPath = SelectionPath;
 /** @unstable */
 export type selectionOps_SelectionState = SelectionState;
 /** @unstable */
@@ -3469,12 +3472,6 @@ declare const selectionOps_colorForKey: typeof colorForKey;
 /** @unstable */
 declare const selectionOps_composeSelections: typeof composeSelections;
 /** @unstable */
-declare const selectionOps_composeSiblings: typeof composeSiblings;
-/** @unstable */
-declare const selectionOps_composeWithChild: typeof composeWithChild;
-/** @unstable */
-declare const selectionOps_decomposeChild: typeof decomposeChild;
-/** @unstable */
 declare const selectionOps_displayTagName: typeof displayTagName;
 /** @unstable */
 declare const selectionOps_filterIsLocalTime: typeof filterIsLocalTime;
@@ -3493,17 +3490,17 @@ declare const selectionOps_lacks: typeof lacks;
 /** @unstable */
 declare const selectionOps_locationsKey: typeof locationsKey;
 /** @unstable */
+declare const selectionOps_moveSelection: typeof moveSelection;
+/** @unstable */
 declare const selectionOps_not: typeof not;
 /** @unstable */
 declare const selectionOps_panoIdOf: typeof panoIdOf;
 /** @unstable */
 declare const selectionOps_panoIdSelector: typeof panoIdSelector;
 /** @unstable */
-declare const selectionOps_removeFromComposite: typeof removeFromComposite;
-/** @unstable */
 declare const selectionOps_removeSelection: typeof removeSelection;
 /** @unstable */
-declare const selectionOps_reorderSelections: typeof reorderSelections;
+declare const selectionOps_removeSelectionAt: typeof removeSelectionAt;
 /** @unstable */
 declare const selectionOps_replaceSelection: typeof replaceSelection;
 /** @unstable */
@@ -3511,11 +3508,13 @@ declare const selectionOps_rewriteSelectionFields: typeof rewriteSelectionFields
 /** @unstable */
 declare const selectionOps_sampleIds: typeof sampleIds;
 /** @unstable */
+declare const selectionOps_selectionAt: typeof selectionAt;
+/** @unstable */
 declare const selectionOps_selectionDisplayName: typeof selectionDisplayName;
 /** @unstable */
 declare const selectionOps_setPolygonName: typeof setPolygonName;
 /** @unstable */
-declare const selectionOps_setSelectionColors: typeof setSelectionColors;
+declare const selectionOps_setSelectionColor: typeof setSelectionColor;
 /** @unstable */
 declare const selectionOps_tagIdOf: typeof tagIdOf;
 /** @unstable */
@@ -3524,6 +3523,8 @@ declare const selectionOps_tagSelector: typeof tagSelector;
 declare const selectionOps_toggleGhost: typeof toggleGhost;
 /** @unstable */
 declare const selectionOps_toggleGhostAll: typeof toggleGhostAll;
+/** @unstable */
+declare const selectionOps_toggleInvert: typeof toggleInvert;
 /** @unstable */
 declare const selectionOps_toggleManualSelection: typeof toggleManualSelection;
 /** @unstable */
@@ -3535,8 +3536,8 @@ declare const selectionOps_untaggedSelector: typeof untaggedSelector;
 /** @unstable */
 declare const selectionOps_withChildren: typeof withChildren;
 declare namespace selectionOps {
-  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_batch as batch, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_composeSiblings as composeSiblings, selectionOps_composeWithChild as composeWithChild, selectionOps_decomposeChild as decomposeChild, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_isolateGhostKeys as isolateGhostKeys, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeFromComposite as removeFromComposite, selectionOps_removeSelection as removeSelection, selectionOps_reorderSelections as reorderSelections, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_sampleIds as sampleIds, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColors as setSelectionColors, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withChildren as withChildren };
-  export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPatch as SelectionPatch, selectionOps_SelectionState as SelectionState, selectionOps_UnaryType as UnaryType };
+  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_batch as batch, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_isolateGhostKeys as isolateGhostKeys, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_sampleIds as sampleIds, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withChildren as withChildren };
+  export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPatch as SelectionPatch, selectionOps_SelectionPath as SelectionPath, selectionOps_SelectionState as SelectionState, selectionOps_UnaryType as UnaryType };
 }
 
 /** The engine-owned mirror: exactly the value slice Rust ships (`EngineValues`), with every field required. */
@@ -3880,9 +3881,9 @@ declare namespace store {
   export type { store_MapState as MapState, store_UiState as UiState };
 }
 
-/** Edit an existing filter (or any selection) in place by key, preserving its
- *  position inside any AND/OR/Invert composite. Carries ghost state to the new key. @unstable */
-declare function updateFilterSelection(oldKey: string, selector: Selector): Promise<void>;
+/** Edit an existing filter (or any selection) in place, preserving its position inside any
+ *  AND/OR/Invert composite. Carries ghost state to the new key. @unstable */
+declare function updateFilterSelection(path: SelectionPath, selector: Selector): Promise<void>;
 /** Toggle tag selections on or off for the given tags. @unstable */
 declare function toggleTagSelections(tagIds: number[]): void;
 /** Tag ids that currently have a top-level Tag selection active. @unstable */

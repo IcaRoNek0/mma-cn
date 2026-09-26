@@ -9,8 +9,7 @@ import type { FieldType, DatePart } from "@/bindings.consts";
 import { rgbCss, type RGB } from "@/lib/util/color";
 import { getFieldDef, getKnownFieldKeys } from "@/lib/data/fieldDefRegistry";
 import { usePickableFields, type FieldEntry } from "@/components/editor/map/FilterBuilder";
-import { applySelectionUpdate, getMapState, query, resetSelections } from "@/store/useMapStore";
-import { addSelection, batch, setSelectionColors } from "@/store/selections";
+import { applySelectionUpdate, getMapState, query } from "@/store/useMapStore";
 import { partitionKeyOptions, RANGE_ID } from "@/lib/data/fieldProjections";
 import { isNumericField, colorPartition } from "./gradientMath";
 import { useSelectorPick } from "@/store/selectorPick";
@@ -179,9 +178,7 @@ export function GradientSidebar({ onClose }: { onClose: () => void }) {
 			});
 			if (sels.length === 0) return;
 
-			await resetSelections();
-			await applySelectionUpdate(batch(addSelection)(sels.map((s) => s.selector)));
-			await applySelectionUpdate(setSelectionColors(sels));
+			await applySelectionUpdate(() => sels);
 		} finally {
 			setApplying(false);
 		}

@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useCallback, useRef } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import {
 	applySelectionUpdate,
 	createTags,
@@ -11,20 +11,18 @@ import {
 import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import { updateFilterSelection } from "@/store/selectionActions";
 import {
-	batch,
 	composeSelections,
-	decomposeChild,
 	filterIsLocalTime,
 	isolateGhost,
-	invertSelections,
-	removeFromComposite,
-	removeSelection,
-	reorderSelections,
+	moveSelection,
+	removeSelectionAt,
 	selectionDisplayName,
 	setPolygonName,
-	setSelectionColors,
+	setSelectionColor,
 	toggleGhost,
 	tagIdOf,
+	toggleInvert,
+	type SelectionPath,
 } from "@/store/selections";
 import { toast } from "@/lib/util/toast";
 import { downloadBlob } from "@/lib/util/util";
@@ -86,8 +84,7 @@ function pruneDistance(selection: Selection): number | null {
 
 // --- Mouse-based drag system (HTML5 DnD is broken in Tauri webview) ---
 interface DragState {
-	key: string;
-	parentKey: string | null;
+	path: SelectionPath;
 	startY: number;
 	altKey: boolean;
 }
@@ -117,13 +114,13 @@ function innerOf(selection: Selection): Selection {
 
 export const SelectionRow = memo(function SelectionRow({
 	selection,
+	path,
 	depth = 0,
-	parentKey,
 	inheritedGhost = false,
 }: {
 	selection: Selection;
+	path: SelectionPath;
 	depth?: number;
-	parentKey?: string | null;
 	inheritedGhost?: boolean;
 }) {
 	const map = useMapState((s) => s.map);
@@ -136,9 +133,7 @@ export const SelectionRow = memo(function SelectionRow({
 	const ghosted = useMapState(
 		(s) => inheritedGhost || (depth === 0 && s.ghostedSelections.has(selection.key)),
 	);
-	const onRemove = parentKey
-		? () => void applySelectionUpdate(removeFromComposite(parentKey, selection.key))
-		: () => void applySelectionUpdate(batch(removeSelection)([selection.key]));
+	const onRemove = () => void applySelectionUpdate(removeSelectionAt(path));
 	const [view, setView] = useState<"contextmenu" | "color">("contextmenu");
 	const [dropZone, setDropZone] = useState<"before" | "on" | "after" | null>(null);
 	const [editingFilter, setEditingFilter] = useState(false);
@@ -148,21 +143,15 @@ export const SelectionRow = memo(function SelectionRow({
 	const [renameDraft, setRenameDraft] = useState("");
 	const rowRef = useRef<HTMLDivElement>(null);
 	const drag = useDragState();
-	const isDragging = drag?.key === selection.key;
-	const isDropTarget = drag != null && drag.key !== selection.key;
-	const handleColorChange = useCallback(
-		(color: RGB) => {
-			void applySelectionUpdate(setSelectionColors([{ ...selection, color }]));
-		},
-		[selection.key],
-	);
+	const isDragging = drag?.path.join() === path.join();
+	const isDropTarget = drag != null && !isDragging;
+	const handleColorChange = (color: RGB) =>
+		void applySelectionUpdate(setSelectionColor(path, color));
 
 	const fieldEntries = useExtraFieldKeys();
 
 	const handleMouseDown = useItemDrag((e) => {
 		if ((e.target as HTMLElement).closest("button, [role='menu']")) return null;
-		const key = selection.key;
-		const pk = parentKey ?? null;
 		const startY = e.clientY;
 		const setAlt = (altKey: boolean) => {
 			if (activeDrag) activeDrag = { ...activeDrag, altKey };
@@ -170,7 +159,7 @@ export const SelectionRow = memo(function SelectionRow({
 		};
 		return {
 			onStart: (ev) => {
-				activeDrag = { key, parentKey: pk, startY, altKey: ev.altKey };
+				activeDrag = { path, startY, altKey: ev.altKey };
 				notifyDragListeners();
 			},
 			onMove: (ev) => setAlt(ev.altKey),
@@ -193,7 +182,7 @@ export const SelectionRow = memo(function SelectionRow({
 		return (dir: 1 | -1) => {
 			const next = stepFilterWindow(ft, p.test, dir, wallClock);
 			if (next) {
-				void updateFilterSelection(selection.key, { type: "Filter", field: p.field, test: next });
+				void updateFilterSelection(path, { type: "Filter", field: p.field, test: next });
 			}
 		};
 	})();
@@ -211,7 +200,7 @@ export const SelectionRow = memo(function SelectionRow({
 	};
 
 	const submitRename = () => {
-		void applySelectionUpdate(setPolygonName(selection.key, renameDraft));
+		void applySelectionUpdate(setPolygonName(path, renameDraft));
 		setRenaming(false);
 	};
 
@@ -254,17 +243,10 @@ export const SelectionRow = memo(function SelectionRow({
 		if (!isDropTarget || !drag || !dropZone) return;
 		if (dropZone === "on") {
 			void applySelectionUpdate(
-				composeSelections(
-					drag.key,
-					selection.key,
-					drag.altKey ? "Union" : "Intersection",
-					drag.parentKey,
-					parentKey ?? null,
-				),
+				composeSelections(drag.path, path, drag.altKey ? "Union" : "Intersection"),
 			);
 		} else {
-			if (drag.parentKey) void applySelectionUpdate(decomposeChild(drag.parentKey, drag.key));
-			void applySelectionUpdate(reorderSelections(drag.key, selection.key, dropZone));
+			void applySelectionUpdate(moveSelection(drag.path, path, dropZone));
 		}
 		setDropZone(null);
 	};
@@ -323,9 +305,7 @@ export const SelectionRow = memo(function SelectionRow({
 								</div>
 							) : (
 								<>
-									<MenuItem
-										onClick={() => void applySelectionUpdate(invertSelections([selection.key]))}
-									>
+									<MenuItem onClick={() => void applySelectionUpdate(toggleInvert(path))}>
 										{t("Invert selection")}
 									</MenuItem>
 									{selection.selector.type === "Filter" && (
@@ -416,7 +396,7 @@ export const SelectionRow = memo(function SelectionRow({
 					initial={filterPropsToSeed(selection.selector)}
 					submitLabel={t("Update filter")}
 					onSubmit={(field, test) =>
-						void updateFilterSelection(selection.key, { type: "Filter", field, test })
+						void updateFilterSelection(path, { type: "Filter", field, test })
 					}
 					onClose={() => setEditingFilter(false)}
 				/>
@@ -449,12 +429,12 @@ export const SelectionRow = memo(function SelectionRow({
 			{showChildren &&
 				(
 					inner.selector as Extract<Selection["selector"], { type: "Intersection" | "Union" }>
-				).selections.map((child) => (
+				).selections.map((child, i) => (
 					<SelectionRow
 						key={child.key}
 						selection={child}
+						path={selection === inner ? [...path, i] : [...path, 0, i]}
 						depth={depth + 1}
-						parentKey={selection.key}
 						inheritedGhost={ghosted}
 					/>
 				))}

@@ -269,8 +269,8 @@ function SelectionList() {
 	if (selections.length === 0) return null;
 	return (
 		<div className="selection-manager__selections">
-			{selections.map((sel) => (
-				<SelectionRow key={sel.key} selection={sel} />
+			{selections.map((sel, i) => (
+				<SelectionRow key={sel.key} selection={sel} path={[i]} />
 			))}
 		</div>
 	);

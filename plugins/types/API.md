@@ -3223,62 +3223,14 @@ Deterministic color derived from a selection key string.
 
 ```ts
 composeSelections(
-  dragKey: string,
-  dropKey: string,
+  drag: SelectionPath,
+  drop: SelectionPath,
   mode: GroupType,
-  dragParent?: string | null,
-  dropParent?: string | null,
 ): (current: Selection[]) => Selection[]
 ```
 
-Merge the dragged selection into the drop target as a composite, absorbing existing
-children of the same type. Handles nested cases across parent groups.
-
-### composeSiblings
-
-`unstable` · since v0.10.3
-
-```ts
-composeSiblings(
-  current: Selection[],
-  parentKey: string,
-  dragKey: string,
-  dropKey: string,
-  mode: GroupType,
-): Selection[]
-```
-
-Compose two siblings inside the same parent group into a nested composite.
-
-### composeWithChild
-
-`unstable` · since v0.10.3
-
-```ts
-composeWithChild(
-  current: Selection[],
-  dragKey: string,
-  parentKey: string,
-  childKey: string,
-  mode: GroupType,
-): Selection[]
-```
-
-Compose a top-level selection with a child inside a parent group.
-
-### decomposeChild
-
-`unstable` · since v0.4.0
-
-```ts
-decomposeChild(
-  parentKey: string,
-  childKey: string,
-): (current: Selection[]) => Selection[]
-```
-
-Pull a child out of a composite back into the top-level list, children and all. Parent collapses
-if only one child remains, and disappears if none do.
+Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
+`drop` when that already is one. Nothing happens when either contains the other.
 
 ### displayTagName
 
@@ -3333,7 +3285,7 @@ invertSelections(
 ): (current: Selection[]) => Selection[]
 ```
 
-Invert targeted selections. Single target toggles in-place at any depth; multiple are wrapped in Union then Invert.
+Invert targeted top-level selections. A single target toggles in place; several are wrapped in Union then Invert.
 
 ### isolateGhost
 
@@ -3382,6 +3334,21 @@ locationsKey(ids: number[]): string
 
 Key an id list by hashing it: the same ids in the same order give the same key.
 Order-sensitive, like the list it identifies. Key length is constant.
+
+### moveSelection
+
+`unstable` · unreleased
+
+```ts
+moveSelection(
+  from: SelectionPath,
+  to: SelectionPath,
+  position: "before" | "after",
+): (current: Selection[]) => Selection[]
+```
+
+Move the selection at `from` to just before or after the one at `to`, which must sit in the
+list or directly in a group. Nothing happens when `to` is inside the moved selection.
 
 ### not
 
@@ -3438,19 +3405,6 @@ panoIdSelector(on: boolean): Selector
 Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
 `Selector::pano_ids`), or the locations not pinned.
 
-### removeFromComposite
-
-`unstable` · since v0.10.3
-
-```ts
-removeFromComposite(
-  parentKey: string,
-  childKey: string,
-): (current: Selection[]) => Selection[]
-```
-
-Remove a child from a composite, ungrouping any nested group's children into the parent.
-
 ### removeSelection
 
 `unstable` · since v0.4.0
@@ -3459,21 +3413,17 @@ Remove a child from a composite, ungrouping any nested group's children into the
 removeSelection(key: string): (current: Selection[]) => Selection[]
 ```
 
-Remove a selection by key. Composites unwrap their children back into the list.
+Remove the top-level selection whose key is `key`. A removed group leaves its children behind in its place.
 
-### reorderSelections
+### removeSelectionAt
 
-`unstable` · since v0.10.3
+`unstable` · unreleased
 
 ```ts
-reorderSelections(
-  fromKey: string,
-  toKey: string,
-  position: "before" | "after",
-): (current: Selection[]) => Selection[]
+removeSelectionAt(path: SelectionPath): (current: Selection[]) => Selection[]
 ```
 
-Move selection `fromKey` before or after `toKey` in the list.
+Remove the selection at `path`. A removed group leaves its children behind in its place.
 
 ### replaceSelection
 
@@ -3482,13 +3432,13 @@ Move selection `fromKey` before or after `toKey` in the list.
 ```ts
 replaceSelection(
   current: Selection[],
-  oldKey: string,
+  path: SelectionPath,
   selector: Selector,
 ): Selection[]
 ```
 
-Replace the selection at `oldKey` (at any depth) with one built from `selector`. If the new
-key collides with an existing selection, the existing one wins and the replacement is dropped.
+Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
+the existing sibling wins and the replacement is dropped.
 
 ### rewriteSelectionFields
 
@@ -3513,6 +3463,19 @@ sampleIds(ids: number[], n: number): number[]
 
 Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped to
 `[0, ids.length]`, so an over-large count returns all ids. `ids` is not mutated.
+
+### selectionAt
+
+`unstable` · unreleased
+
+```ts
+selectionAt(
+  list: Selection[],
+  path: SelectionPath,
+): Selection | undefined
+```
+
+The selection at `path`, or undefined when nothing sits there.
 
 ### selectionDisplayName
 
@@ -3555,22 +3518,25 @@ Per-type descriptor for each selector variant: key derivation, display label, an
 
 ```ts
 setPolygonName(
-  key: string,
+  path: SelectionPath,
   name: string,
 ): (current: Selection[]) => Selection[]
 ```
 
 Rename a Polygon selection's display name.
 
-### setSelectionColors
+### setSelectionColor
 
-`unstable` · since v0.5.0
+`unstable` · since v0.4.0
 
 ```ts
-setSelectionColors(entries: Selection[]): (current: Selection[]) => Selection[]
+setSelectionColor(
+  path: SelectionPath,
+  color: RGB,
+): (current: Selection[]) => Selection[]
 ```
 
-Update the colors of selections by matching keys from `entries`.
+Recolor the selection at `path`.
 
 ### tagIdOf
 
@@ -3618,6 +3584,16 @@ toggleGhostAll(): (
 ```
 
 Ghost all selections, or clear all ghosts if every selection is already ghosted.
+
+### toggleInvert
+
+`unstable` · unreleased
+
+```ts
+toggleInvert(path: SelectionPath): (current: Selection[]) => Selection[]
+```
+
+Invert the selection at `path` in place, or restore it when it is already inverted.
 
 ### toggleManualSelection
 
@@ -3719,11 +3695,11 @@ Toggle tag selections on or off for the given tags.
 `unstable` · since v0.5.1
 
 ```ts
-updateFilterSelection(oldKey: string, selector: Selector): Promise<void>
+updateFilterSelection(path: SelectionPath, selector: Selector): Promise<void>
 ```
 
-Edit an existing filter (or any selection) in place by key, preserving its
-position inside any AND/OR/Invert composite. Carries ghost state to the new key.
+Edit an existing filter (or any selection) in place, preserving its position inside any
+AND/OR/Invert composite. Carries ghost state to the new key.
 
 ## SavedSelections
 
