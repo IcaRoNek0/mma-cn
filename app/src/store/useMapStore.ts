@@ -1112,6 +1112,8 @@ export async function checkoutCommit(commitId: string) {
 		commitResult = await cmd.storeCommit(state.mapId, msg);
 	} catch (e) {
 		log.error("[checkout] restore failed:", e);
+		// The reopened store holds no selections; push the listed ones back before surfacing.
+		await syncSelections().catch(() => {});
 		throw e;
 	}
 	const map = await cmd.storeGetMap(state.mapId);
