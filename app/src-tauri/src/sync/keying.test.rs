@@ -2,9 +2,10 @@ use super::*;
 use crate::sync::diff::compute_sync_plan;
 use crate::sync::SyncLocalPin;
 use crate::sync::{
-    local_to_normalized, sync_hash, IdentityModel, NormalizedSyncLocation, PushBatch, PushedId,
-    RemoteSnapshot,
+    local_to_normalized, sync_hash, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch,
+    PushedId, RemoteSnapshot,
 };
+use crate::types::shape::MapShape;
 use crate::types::AppResult;
 
 /// A remote whose raw shape is already the normalized contract, plus an optional real id for the
@@ -15,24 +16,38 @@ struct Raw {
     rid: Option<i64>,
 }
 
+const STABLE: ProviderSpec = ProviderSpec {
+    id: "test",
+    identity: IdentityModel::Stable,
+    shape: MapShape::MapMaking,
+};
+
+const POSITIONAL: ProviderSpec = ProviderSpec {
+    id: "test",
+    identity: IdentityModel::Positional,
+    shape: MapShape::MapMaking,
+};
+
+const POSITIONAL_GEOGUESSR: ProviderSpec = ProviderSpec {
+    shape: MapShape::GeoGuessr,
+    ..POSITIONAL
+};
+
 struct Fake {
-    identity: IdentityModel,
-    project_fn: Option<fn(NormalizedSyncLocation) -> NormalizedSyncLocation>,
+    spec: &'static ProviderSpec,
     include_fn: Option<fn(&SyncLocalPin) -> bool>,
 }
 
 impl Fake {
     fn stable() -> Self {
         Self {
-            identity: IdentityModel::Stable,
-            project_fn: None,
+            spec: &STABLE,
             include_fn: None,
         }
     }
     fn positional() -> Self {
         Self {
-            identity: IdentityModel::Positional,
-            project_fn: None,
+            spec: &POSITIONAL,
             include_fn: None,
         }
     }
@@ -40,26 +55,14 @@ impl Fake {
 
 impl SyncProvider for Fake {
     type Raw = Raw;
-    fn id(&self) -> &'static str {
-        "test"
-    }
-    fn identity(&self) -> IdentityModel {
-        self.identity
-    }
-    fn supports_tags(&self) -> bool {
-        true
+    fn spec(&self) -> &'static ProviderSpec {
+        self.spec
     }
     fn remote_id_of(&self, item: &Raw, index: usize) -> i64 {
         item.rid.unwrap_or(index as i64)
     }
     fn normalize(&self, item: &Raw) -> NormalizedSyncLocation {
         item.n.clone()
-    }
-    fn project(&self, n: NormalizedSyncLocation) -> NormalizedSyncLocation {
-        match self.project_fn {
-            Some(f) => f(n),
-            None => n,
-        }
     }
     fn include_local(&self, loc: &SyncLocalPin) -> bool {
         match self.include_fn {
@@ -349,12 +352,6 @@ fn positional_distrusts_bare_index_once_length_changed() {
 
 // --- keying: provider projection and filtering -----------------------------
 
-fn project_by_pano_flag(mut n: NormalizedSyncLocation) -> NormalizedSyncLocation {
-    n.pano_id = if n.flags & 1 != 0 { n.pano_id } else { None };
-    n.tags = vec![];
-    n
-}
-
 #[test]
 fn projection_erases_unrepresentable_fields() {
     // A pin carrying a panoId it does not load by. The remote reports panoId null; without
@@ -370,7 +367,7 @@ fn projection_erases_unrepresentable_fields() {
         n
     };
     let mut p = Fake::positional();
-    p.project_fn = Some(project_by_pano_flag);
+    p.spec = &POSITIONAL_GEOGUESSR;
     let mapping = vec![RemoteMappingRow {
         local_id: 10,
         remote_id: 0,

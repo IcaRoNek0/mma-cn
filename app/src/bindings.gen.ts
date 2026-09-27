@@ -2,7 +2,7 @@
 
 import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 import * as __TAURI_EVENT from "@tauri-apps/api/event";
-import type { CameraType, CapturePick, DatePart, FieldType, FirstSyncMode, IssueState, MergeWinner, RateCost, ResolutionSide, Sink } from "./bindings.consts";
+import type { CameraType, CapturePick, DatePart, FieldType, FirstSyncMode, IssueState, MapShape, MergeWinner, RateCost, ResolutionSide, Sink } from "./bindings.consts";
 
 /** Commands */
 export const commands = {
@@ -763,7 +763,8 @@ export type EngineValues = {
 export type ExportOpts = {
 	exportZoom: boolean,
 	exportUnpanned: boolean,
-	exportExtras: boolean,
+	/**  How much of the map the file keeps. */
+	shape: MapShape,
 	/**  Which locations to export. */
 	selector: Selector,
 	mapName: string,
@@ -1212,6 +1213,7 @@ export type MapSettings = {
 	/**  Which capture a bulk pin's resolve settles on; `null` keeps the pano as found. */
 	pinCapture?: CapturePick | null,
 };
+
 
 
 /**  A map the key holder can link to. */

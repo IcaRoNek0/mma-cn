@@ -87,6 +87,17 @@ export const IssueState = {
 } as const;
 export type IssueState = (typeof IssueState)[keyof typeof IssueState];
 
+/** How much of a map a destination keeps. Each shape keeps everything the one before it does. */
+export const MapShape = {
+	/** Coordinates, camera and pinned panoramas: what GeoGuessr stores. */
+	GeoGuessr: "geoguessr",
+	/** Adds tags, unpinned panoramas, capture months and location flags: what map-making.app stores. */
+	MapMaking: "mapMaking",
+	/** Everything this app stores, including custom fields. */
+	Local: "local",
+} as const;
+export type MapShape = (typeof MapShape)[keyof typeof MapShape];
+
 /** When a move target already holds a value, which side survives. */
 export const MergeWinner = {
 	/** The moved value replaces what the target already holds. */

@@ -1,5 +1,6 @@
 use super::*;
 use crate::sync::SyncLocalPin;
+use crate::types::shape::MapShape;
 use crate::types::{Location, LocationFlags};
 
 fn norm(over: impl FnOnce(&mut NormalizedSyncLocation)) -> NormalizedSyncLocation {
@@ -89,4 +90,41 @@ fn local_to_normalized_strips_virtual_flags_and_resolves_tags() {
     assert_eq!(n.flags, 1);
     assert_eq!(n.tags, vec!["alpha".to_string(), "zeta".to_string()]);
     assert_eq!(n.pano_id.as_deref(), Some("p"));
+}
+
+const PINNED: u32 = LocationFlags::LOAD_AS_PANO_ID.bits();
+const INFO: u32 = LocationFlags::INFORMATIONAL.bits();
+
+#[test]
+fn onto_geoguessr_drops_an_unpinned_pano() {
+    let n = norm(|n| n.pano_id = Some("p".into())).onto(MapShape::GeoGuessr);
+    assert_eq!(n.pano_id, None);
+    assert_eq!(n.flags, 0);
+}
+
+#[test]
+fn onto_geoguessr_keeps_only_pinning_and_no_tags() {
+    let once = norm(|n| {
+        n.pano_id = Some("p".into());
+        n.flags = PINNED | INFO;
+        n.tags = vec!["a".into(), "b".into()];
+    })
+    .onto(MapShape::GeoGuessr);
+    assert!(once.tags.is_empty());
+    assert_eq!(once.flags, PINNED);
+    assert_eq!(once.pano_id.as_deref(), Some("p"));
+    assert_eq!(
+        sync_key(&once),
+        sync_key(&once.clone().onto(MapShape::GeoGuessr))
+    );
+}
+
+#[test]
+fn onto_map_making_keeps_the_whole_contract() {
+    let n = norm(|n| {
+        n.pano_id = Some("p".into());
+        n.flags = INFO;
+        n.tags = vec!["a".into()];
+    });
+    assert_eq!(n.clone().onto(MapShape::MapMaking), n);
 }

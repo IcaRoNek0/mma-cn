@@ -1,9 +1,7 @@
 //! GeoGuessr sync provider: draft JSON codec, version concurrency, stored-size guard.
 //!
 //! A draft is one ordered array replaced wholesale, so identity is `Positional` (the index is
-//! the only handle) and the wire format is lossy (no tags, no "keep panoId but don't load it").
-//! [`GeoGuessrProvider::project`] erases exactly those distinctions on both sides so they never
-//! read as a difference.
+//! the only handle) and the wire format is [`MapShape::GeoGuessr`].
 
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +9,10 @@ use crate::net::geoguessr::{proxy_headers, upstream_url};
 use crate::net::proxy;
 use crate::store::storage;
 use crate::sync::{
-    IdentityModel, NormalizedSyncLocation, PushBatch, PushedId, RemoteSnapshot, SyncProvider,
+    has_pano, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch, PushedId,
+    RemoteSnapshot, SyncProvider,
 };
+use crate::types::shape::MapShape;
 use crate::types::{AppError, AppResult, ErrCode, LocationFlags};
 
 const LOAD_AS_PANO_ID: u32 = LocationFlags::LOAD_AS_PANO_ID.bits();
@@ -153,6 +153,12 @@ pub(crate) struct GeoGuessrProvider {
 }
 
 impl GeoGuessrProvider {
+    pub(crate) const SPEC: ProviderSpec = ProviderSpec {
+        id: "geoguessr",
+        identity: IdentityModel::Positional,
+        shape: MapShape::GeoGuessr,
+    };
+
     /// Build from the stored `_ncfa` session in the OS credential store.
     pub(crate) fn from_session() -> AppResult<Self> {
         let ncfa = storage::secret::get("geoguessr")?
@@ -161,24 +167,11 @@ impl GeoGuessrProvider {
     }
 }
 
-/// A pano id is present only when non-empty; hashes were defined under JS truthiness ("" = none).
-fn has_pano(pano: &Option<String>) -> bool {
-    pano.as_deref().is_some_and(|s| !s.is_empty())
-}
-
 impl SyncProvider for GeoGuessrProvider {
     type Raw = GgCoordinate;
 
-    fn id(&self) -> &'static str {
-        "geoguessr"
-    }
-
-    fn identity(&self) -> IdentityModel {
-        IdentityModel::Positional
-    }
-
-    fn supports_tags(&self) -> bool {
-        false
+    fn spec(&self) -> &'static ProviderSpec {
+        &Self::SPEC
     }
 
     fn remote_id_of(&self, _item: &GgCoordinate, index: usize) -> i64 {
@@ -186,7 +179,7 @@ impl SyncProvider for GeoGuessrProvider {
     }
 
     fn normalize(&self, item: &GgCoordinate) -> NormalizedSyncLocation {
-        self.project(NormalizedSyncLocation {
+        NormalizedSyncLocation {
             lat: item.lat,
             lng: item.lng,
             // Undo the north nudge so a round trip is stable.
@@ -204,27 +197,8 @@ impl SyncProvider for GeoGuessrProvider {
                 0
             },
             tags: vec![],
-        })
-    }
-
-    /// Erase the distinctions GeoGuessr's wire format cannot hold. Applied to both sides.
-    fn project(&self, n: NormalizedSyncLocation) -> NormalizedSyncLocation {
-        let pano_id = if n.flags & LOAD_AS_PANO_ID != 0 {
-            n.pano_id
-        } else {
-            None
-        };
-        let flags = if has_pano(&pano_id) {
-            LOAD_AS_PANO_ID
-        } else {
-            0
-        };
-        NormalizedSyncLocation {
-            pano_id,
-            flags,
-            tags: vec![],
-            ..n
         }
+        .onto(Self::SPEC.shape)
     }
 
     fn materialize(&self, n: &NormalizedSyncLocation) -> GgCoordinate {

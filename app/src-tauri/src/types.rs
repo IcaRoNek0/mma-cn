@@ -527,6 +527,7 @@ impl<T> From<PoisonError<T>> for AppError {
 }
 
 mod raw_extra;
+pub mod shape;
 
 #[cfg(test)]
 #[path = "types.test.rs"]

@@ -9,6 +9,7 @@ pub(crate) mod keying;
 pub(crate) mod map_making;
 pub(crate) mod remote_mapping;
 
+use crate::types::shape::{MapPart, MapShape};
 use crate::types::wire_str_enum;
 use crate::types::AppResult;
 use crate::types::{Location, LocationFlags};
@@ -34,6 +35,16 @@ pub enum IdentityModel {
     Positional,
 }
 
+/// What a sync provider is, declared once per provider.
+#[derive(Debug)]
+pub struct ProviderSpec {
+    /// The `provider` its links and mapping rows are stored under. Never changes once shipped.
+    pub id: &'static str,
+    pub identity: IdentityModel,
+    /// What the remote keeps of a map; local content is collapsed onto it before diffing.
+    pub shape: MapShape,
+}
+
 /// The syncable contract: the only fields that participate in diffing. Everything else is
 /// owned by exactly one side and would register as a phantom change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -49,6 +60,43 @@ pub struct NormalizedSyncLocation {
     pub flags: u32,
     /// Tag names, deduped and sorted. Empty for providers with no tag support.
     pub tags: Vec<String>,
+}
+
+impl NormalizedSyncLocation {
+    /// Collapse onto what `shape` keeps, so a distinction the other side cannot store never reads
+    /// as a difference. Without flag bits the only one left is pinning, set exactly when a
+    /// panorama remains.
+    pub fn onto(self, shape: MapShape) -> Self {
+        let pinned = self.flags & LocationFlags::LOAD_AS_PANO_ID.bits() != 0;
+        let pano_id = if pinned || shape.keeps(MapPart::UnpinnedPano) {
+            self.pano_id
+        } else {
+            None
+        };
+        let flags = if shape.keeps(MapPart::Flags) {
+            self.flags
+        } else if has_pano(&pano_id) {
+            LocationFlags::LOAD_AS_PANO_ID.bits()
+        } else {
+            0
+        };
+        let tags = if shape.keeps(MapPart::Tags) {
+            self.tags
+        } else {
+            vec![]
+        };
+        NormalizedSyncLocation {
+            pano_id,
+            flags,
+            tags,
+            ..self
+        }
+    }
+}
+
+/// A pano id is present only when non-empty; hashes were defined under JS truthiness ("" = none).
+pub fn has_pano(pano: &Option<String>) -> bool {
+    pano.as_deref().is_some_and(|s| !s.is_empty())
 }
 
 /// Stable identity for a synced location across runs: `L:<localId>` for mapped locations,
@@ -265,22 +313,13 @@ pub struct PushedId {
 pub trait SyncProvider {
     type Raw: Clone;
 
-    #[allow(dead_code, reason = "exercised by tests; no production caller")]
-    fn id(&self) -> &'static str;
-    fn identity(&self) -> IdentityModel;
-    fn supports_tags(&self) -> bool;
+    fn spec(&self) -> &'static ProviderSpec;
 
     /// Stable handle for a remote location: its own id when `Stable`, `index` when `Positional`.
     fn remote_id_of(&self, item: &Self::Raw, index: usize) -> i64;
 
-    /// Project a remote location onto the synced contract (already `project`ed).
+    /// Project a remote location onto the synced contract, already collapsed onto [`Self::shape`].
     fn normalize(&self, item: &Self::Raw) -> NormalizedSyncLocation;
-
-    /// Collapse a normalized location onto what this provider can store; applied to the
-    /// LOCAL side before diffing so an unstorable distinction never reads as a difference.
-    fn project(&self, n: NormalizedSyncLocation) -> NormalizedSyncLocation {
-        n
-    }
 
     /// Whether a local location participates in sync at all.
     fn include_local(&self, _pin: &SyncLocalPin) -> bool {

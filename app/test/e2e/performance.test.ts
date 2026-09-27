@@ -907,7 +907,7 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 				const options: ExportOpts = {
 					exportZoom: true,
 					exportUnpanned: true,
-					exportExtras: true,
+					shape: "local",
 					selector: { type: "Everything" },
 					mapName: map.name,
 					tagsJson: JSON.stringify(api.getTags()),

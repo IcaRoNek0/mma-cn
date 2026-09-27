@@ -1,6 +1,7 @@
 use super::*;
 use crate::sync::SyncLocalPin;
-use crate::sync::{sync_hash, IdentityModel, NormalizedSyncLocation, RemoteSnapshot};
+use crate::sync::{sync_hash, IdentityModel, NormalizedSyncLocation, ProviderSpec, RemoteSnapshot};
+use crate::types::shape::MapShape;
 use std::cell::{Cell, RefCell};
 
 // --- fixtures ---------------------------------------------------------------
@@ -78,27 +79,39 @@ struct Recorded {
 
 /// `stable` churns the remote id on every write (map-making.app does); `positional` replaces the
 /// whole document from `desired` and reports a handle for every entry carrying a local id.
+const STABLE: ProviderSpec = ProviderSpec {
+    id: "fake",
+    identity: IdentityModel::Stable,
+    shape: MapShape::MapMaking,
+};
+
+const POSITIONAL: ProviderSpec = ProviderSpec {
+    id: "fake",
+    identity: IdentityModel::Positional,
+    shape: MapShape::MapMaking,
+};
+
 struct Fake {
-    identity: IdentityModel,
+    spec: &'static ProviderSpec,
     items: RefCell<Vec<Raw>>,
     next_rid: Cell<i64>,
     pushes: RefCell<Vec<Recorded>>,
 }
 
 impl Fake {
-    fn new(identity: IdentityModel, initial: Vec<Raw>) -> Self {
+    fn new(spec: &'static ProviderSpec, initial: Vec<Raw>) -> Self {
         Self {
-            identity,
+            spec,
             items: RefCell::new(initial),
             next_rid: Cell::new(1000),
             pushes: RefCell::new(Vec::new()),
         }
     }
     fn stable(initial: Vec<Raw>) -> Self {
-        Self::new(IdentityModel::Stable, initial)
+        Self::new(&STABLE, initial)
     }
     fn positional(initial: Vec<Raw>) -> Self {
-        Self::new(IdentityModel::Positional, initial)
+        Self::new(&POSITIONAL, initial)
     }
     fn take_rid(&self) -> i64 {
         let r = self.next_rid.get();
@@ -128,17 +141,11 @@ impl Fake {
 
 impl SyncProvider for Fake {
     type Raw = Raw;
-    fn id(&self) -> &'static str {
-        "fake"
-    }
-    fn identity(&self) -> IdentityModel {
-        self.identity
-    }
-    fn supports_tags(&self) -> bool {
-        true
+    fn spec(&self) -> &'static ProviderSpec {
+        self.spec
     }
     fn remote_id_of(&self, item: &Raw, index: usize) -> i64 {
-        if self.identity == IdentityModel::Stable {
+        if self.spec.identity == IdentityModel::Stable {
             item.rid.expect("stable raw needs rid")
         } else {
             index as i64
@@ -170,7 +177,7 @@ impl SyncProvider for Fake {
         let mut out = Vec::new();
         {
             let mut items = self.items.borrow_mut();
-            if self.identity == IdentityModel::Positional {
+            if self.spec.identity == IdentityModel::Positional {
                 *items = batch.desired.iter().map(|d| d.item.clone()).collect();
                 for (i, d) in batch.desired.iter().enumerate() {
                     if let Some(local_id) = d.local_id {
@@ -847,14 +854,8 @@ struct ChunkedFake {
 
 impl SyncProvider for ChunkedFake {
     type Raw = Raw;
-    fn id(&self) -> &'static str {
-        "chunked"
-    }
-    fn identity(&self) -> IdentityModel {
-        IdentityModel::Stable
-    }
-    fn supports_tags(&self) -> bool {
-        true
+    fn spec(&self) -> &'static ProviderSpec {
+        &STABLE
     }
     fn remote_id_of(&self, item: &Raw, index: usize) -> i64 {
         item.rid.unwrap_or(index as i64)
@@ -968,14 +969,8 @@ impl PartialPushFake {
 
 impl SyncProvider for PartialPushFake {
     type Raw = Raw;
-    fn id(&self) -> &'static str {
-        "partial"
-    }
-    fn identity(&self) -> IdentityModel {
-        IdentityModel::Stable
-    }
-    fn supports_tags(&self) -> bool {
-        true
+    fn spec(&self) -> &'static ProviderSpec {
+        &STABLE
     }
     fn remote_id_of(&self, item: &Raw, _index: usize) -> i64 {
         item.rid.expect("stable raw needs rid")

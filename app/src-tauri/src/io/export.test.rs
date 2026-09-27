@@ -70,7 +70,7 @@ fn coord_hoists_country_state_and_nests_other_extra() {
     let co = CoordOpts {
         export_zoom: false,
         export_unpanned: true,
-        export_extras: true,
+        shape: MapShape::Local,
     };
     let v = location_to_coord(&l, &id_to_name, &co);
 
@@ -94,7 +94,7 @@ fn coord_keeps_zoom_and_pano_when_pinned() {
     let co = CoordOpts {
         export_zoom: true,
         export_unpanned: false,
-        export_extras: true,
+        shape: MapShape::Local,
     };
     let v = location_to_coord(&l, &id_to_name, &co);
 
@@ -114,7 +114,7 @@ fn unknown_tag_id_falls_back_to_stringified_id() {
     let co = CoordOpts {
         export_zoom: true,
         export_unpanned: false,
-        export_extras: true,
+        shape: MapShape::Local,
     };
     let v = location_to_coord(&l, &id_to_name, &co);
     assert_eq!(v["extra"]["tags"], json!(["7"]));
@@ -125,7 +125,7 @@ fn tag_meta_roundtrips_color_and_order() {
     let (tag_defs, _) = parse_tag_defs(
         r##"{"1": {"name": "red", "color": "#ff0000", "order": 3}, "2": {"name": "blue", "color": "#0000ff"}}"##,
     );
-    let meta = tag_color_meta(&tag_defs);
+    let meta = tag_color_meta(&tag_defs, MapShape::Local);
     assert_eq!(meta["red"]["color"], serde_json::json!([255, 0, 0]));
     assert_eq!(meta["red"]["order"], serde_json::json!(3));
     assert_eq!(meta["blue"]["color"], serde_json::json!([0, 0, 255]));
@@ -137,7 +137,7 @@ fn tag_meta_roundtrips_doclinks() {
     let (tag_defs, _) = parse_tag_defs(
         r##"{"1": {"name": "antenna", "color": "#ff0000", "doclinks": ["https://docs.google.com/document/d/abc/edit#heading=h.x"]}, "2": {"name": "plain", "color": "#0000ff", "doclinks": []}}"##,
     );
-    let meta = tag_color_meta(&tag_defs);
+    let meta = tag_color_meta(&tag_defs, MapShape::Local);
     assert_eq!(
         meta["antenna"]["doclinks"],
         serde_json::json!(["https://docs.google.com/document/d/abc/edit#heading=h.x"])

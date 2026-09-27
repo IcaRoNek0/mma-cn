@@ -6,6 +6,7 @@
 use super::parse::{parse_csv, parse_single_json};
 use crate::io::export::{csv_document, export_document, geojson_document, CoordOpts};
 use crate::store::engine::{self, record_name, record_order, ValueRecord};
+use crate::types::shape::{MapPart, MapShape};
 use crate::types::{Location, LocationFlags, RawExtra};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -163,6 +164,16 @@ fn catalog() -> Vec<Fixture> {
             fields: None,
         },
         Fixture {
+            name: "a capture month beside app data",
+            map_name: "Dated",
+            locations: vec![with_extra(
+                unpinned(2.0, 3.0, "DATED"),
+                &json!({ "panoDate": "2021-06", "note": "app only" }),
+            )],
+            tags: vec![],
+            fields: None,
+        },
+        Fixture {
             name: "heading zero stays zero without the unpanned tweak",
             map_name: "North",
             locations: vec![Location {
@@ -220,9 +231,43 @@ fn tags_json(tags: &[(u32, ValueRecord)]) -> String {
     Value::Object(m).to_string()
 }
 
+/// [`view`] less what `shape` drops. Country and state codes ride at the top level of every shape.
+fn shaped_view(l: &Location, names: &HashMap<u32, String>, shape: MapShape) -> Value {
+    let mut v = view(l, names);
+    if !shape.keeps(MapPart::Tags) {
+        v["tags"] = json!([]);
+    }
+    if !shape.keeps(MapPart::UnpinnedPano) && v["pinned"] == json!(false) {
+        v["pano"] = Value::Null;
+    }
+    if !shape.keeps(MapPart::AppData) {
+        let kept: serde_json::Map<String, Value> = l
+            .extra
+            .as_ref()
+            .map(RawExtra::to_map)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(k, _)| match k.as_str() {
+                "countryCode" | "stateCode" => true,
+                "panoDate" => shape.keeps(MapPart::PanoDate),
+                _ => false,
+            })
+            .collect();
+        v["extra"] = if kept.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(kept)
+        };
+    }
+    v
+}
+
 /// A tag as the export carries it: color, order and doclinks under its name. `visible` is
 /// not carried, by design.
-fn tag_view(tags: &[(u32, ValueRecord)]) -> HashMap<String, Value> {
+fn tag_view(tags: &[(u32, ValueRecord)], shape: MapShape) -> HashMap<String, Value> {
+    if !shape.keeps(MapPart::Tags) {
+        return HashMap::new();
+    }
     tags.iter()
         .map(|(_, rec)| {
             (
@@ -230,56 +275,65 @@ fn tag_view(tags: &[(u32, ValueRecord)]) -> HashMap<String, Value> {
                 json!({
                     "color": rec.get("color").cloned().unwrap_or(Value::Null),
                     "order": rec.get("order").cloned().unwrap_or(Value::Null),
-                    "doclinks": rec.get("doclinks").cloned().unwrap_or_else(|| json!([])),
+                    "doclinks": rec
+                        .get("doclinks")
+                        .filter(|_| shape.keeps(MapPart::AppData))
+                        .cloned()
+                        .unwrap_or_else(|| json!([])),
                 }),
             )
         })
         .collect()
 }
 
-const LOSSLESS: CoordOpts = CoordOpts {
-    export_zoom: true,
-    export_unpanned: false,
-    export_extras: true,
-};
-
 #[test]
-fn every_fixture_survives_the_map_making_json() {
-    for fx in catalog() {
-        let doc = export_document(
-            fx.map_name,
-            &fx.locations,
-            &tags_json(&fx.tags),
-            fx.fields.clone(),
-            &LOSSLESS,
-        );
-        let parsed = parse_single_json(&doc.to_string());
-
-        assert!(
-            parsed.warnings.is_empty(),
-            "{}: {:?}",
-            fx.name,
-            parsed.warnings
-        );
-        assert_eq!(parsed.name, fx.map_name, "{}: name", fx.name);
-        assert_eq!(
-            parsed.locations.len(),
-            fx.locations.len(),
-            "{}: row count",
-            fx.name
-        );
-        let (want, got) = (names(&fx.tags), names(&parsed.tags));
-        for (i, (a, b)) in fx.locations.iter().zip(&parsed.locations).enumerate() {
-            assert_eq!(view(b, &got), view(a, &want), "{}: row {i}", fx.name);
+fn every_fixture_keeps_exactly_what_each_shape_keeps() {
+    for shape in [MapShape::GeoGuessr, MapShape::MapMaking, MapShape::Local] {
+        for fx in catalog() {
+            assert_shape_round_trip(&fx, shape);
         }
-        assert_eq!(
-            tag_view(&parsed.tags),
-            tag_view(&fx.tags),
-            "{}: tags",
-            fx.name
-        );
-        assert_eq!(parsed.fields, fx.fields, "{}: field definitions", fx.name);
     }
+}
+
+fn assert_shape_round_trip(fx: &Fixture, shape: MapShape) {
+    let co = CoordOpts {
+        export_zoom: true,
+        export_unpanned: false,
+        shape,
+    };
+    let doc = export_document(
+        fx.map_name,
+        &fx.locations,
+        &tags_json(&fx.tags),
+        fx.fields.clone(),
+        &co,
+    );
+    let parsed = parse_single_json(&doc.to_string());
+    let name = format!("{} as {shape:?}", fx.name);
+    let name = name.as_str();
+
+    assert!(parsed.warnings.is_empty(), "{name}: {:?}", parsed.warnings);
+    assert_eq!(parsed.name, fx.map_name, "{name}: name");
+    assert_eq!(
+        parsed.locations.len(),
+        fx.locations.len(),
+        "{name}: row count"
+    );
+    let (want, got) = (names(&fx.tags), names(&parsed.tags));
+    for (i, (a, b)) in fx.locations.iter().zip(&parsed.locations).enumerate() {
+        assert_eq!(
+            view(b, &got),
+            shaped_view(a, &want, shape),
+            "{name}: row {i}"
+        );
+    }
+    assert_eq!(
+        tag_view(&parsed.tags, MapShape::Local),
+        tag_view(&fx.tags, shape),
+        "{name}: tags"
+    );
+    let fields = fx.fields.clone().filter(|_| shape.keeps(MapPart::AppData));
+    assert_eq!(parsed.fields, fields, "{name}: field definitions");
 }
 
 #[test]

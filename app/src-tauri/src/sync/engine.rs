@@ -27,6 +27,7 @@ use crate::sync::{
     NormalizedSyncLocation, PushBatch, PushedId, RemoteSnapshot, SideCounts, SyncLocalPin,
     SyncPlan, SyncProvider,
 };
+use crate::types::shape::MapPart;
 use crate::types::{AppError, AppResult};
 use std::mem;
 use std::time::Instant;
@@ -195,7 +196,7 @@ fn build_push_batch<P: SyncProvider>(
     // Only a whole-document (positional) write reads `desired`; for a delta provider it would
     // be a full cloned copy of the remote side that nothing consumes.
     let mut desired = Vec::new();
-    if provider.identity() == IdentityModel::Positional {
+    if provider.spec().identity == IdentityModel::Positional {
         for (key, idx) in &keyed.remote_order {
             if dropped.contains(key) {
                 continue;
@@ -239,7 +240,7 @@ pub(crate) fn plan<P: SyncProvider>(
         ));
     }
     let provider = input.provider;
-    let positional = provider.identity() == IdentityModel::Positional;
+    let positional = provider.spec().identity == IdentityModel::Positional;
 
     let tag_name = |id: u32| input.tag_names.get(&id).cloned();
     let keyed = build_keyed_inputs(
@@ -316,7 +317,7 @@ pub(crate) fn plan<P: SyncProvider>(
     // Local tags the incoming pulls reference that don't exist yet (created by the apply step).
     let name_set: HashSet<&str> = input.tag_names.values().map(String::as_str).collect();
     let mut needed_tags: Vec<String> = Vec::new();
-    if provider.supports_tags() {
+    if provider.spec().shape.keeps(MapPart::Tags) {
         let mut seen: HashSet<String> = HashSet::new();
         for key in plan.pull.create.iter().chain(plan.pull.update.iter()) {
             if let Some(n) = keyed.remote.get(key) {
@@ -666,7 +667,6 @@ pub(crate) struct ReconcileRequest<'a> {
 /// Pull, plan, and execute a linked map against one provider. Blocking (network + rusqlite).
 fn reconcile_with<P: SyncProvider>(
     provider: &P,
-    provider_id: &str,
     req: &ReconcileRequest<'_>,
     mapping: &[RemoteMappingRow],
     conn: &mut Connection,
@@ -705,7 +705,7 @@ fn reconcile_with<P: SyncProvider>(
     );
     let mut sink = DbSink {
         conn,
-        provider: provider_id,
+        provider: provider.spec().id,
         map_id: req.map_id,
     };
     let t = Instant::now();
@@ -721,16 +721,14 @@ fn run_reconcile(
     let mut conn = storage::open_db()?;
     let mapping = remote_mapping::get(&conn, provider_name, req.map_id)?;
 
-    match provider_name {
-        "map-making.app" => {
-            let provider = MapMakingProvider::from_key()?;
-            reconcile_with(&provider, provider_name, req, &mapping, &mut conn)
-        }
-        "geoguessr" => {
-            let provider = GeoGuessrProvider::from_session()?;
-            reconcile_with(&provider, provider_name, req, &mapping, &mut conn)
-        }
-        other => Err(AppError(format!("unknown sync provider '{other}'"))),
+    if provider_name == MapMakingProvider::SPEC.id {
+        let provider = MapMakingProvider::from_key()?;
+        reconcile_with(&provider, req, &mapping, &mut conn)
+    } else if provider_name == GeoGuessrProvider::SPEC.id {
+        let provider = GeoGuessrProvider::from_session()?;
+        reconcile_with(&provider, req, &mapping, &mut conn)
+    } else {
+        Err(AppError(format!("unknown sync provider '{provider_name}'")))
     }
 }
 

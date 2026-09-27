@@ -51,7 +51,7 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
+				shape: "local",
 				selector: { type: "Everything" },
 				mapName: map.name,
 				tagsJson: JSON.stringify(api.getTags()),
@@ -99,7 +99,7 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
+				shape: "local",
 				selector: { type: "Everything" },
 				mapName: map.name,
 				tagsJson: JSON.stringify(api.getTags()),
@@ -127,7 +127,7 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: false,
 				exportUnpanned: true,
-				exportExtras: true,
+				shape: "local",
 				selector: { type: "Everything" },
 				mapName: map.name,
 				tagsJson: JSON.stringify(api.getTags()),
@@ -152,7 +152,7 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
+				shape: "local",
 				selector: { type: "Everything" },
 				mapName: map.name,
 				tagsJson: JSON.stringify(api.getTags()),

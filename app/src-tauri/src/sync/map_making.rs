@@ -10,9 +10,10 @@ use vali_data::decode::Reader;
 use crate::net::proxy;
 use crate::store::storage;
 use crate::sync::{
-    canon_tags, sync_flags, IdentityModel, NormalizedSyncLocation, PushBatch, PushedId,
-    RemoteSnapshot, SyncProvider,
+    canon_tags, sync_flags, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch,
+    PushedId, RemoteSnapshot, SyncProvider,
 };
+use crate::types::shape::MapShape;
 use crate::types::{AppError, AppResult, ErrCode};
 use crate::util::blocking;
 
@@ -117,16 +118,8 @@ fn to_input(item: &MmLocation, id: i64) -> LocationInput {
 impl SyncProvider for MapMakingProvider {
     type Raw = MmLocation;
 
-    fn id(&self) -> &'static str {
-        "map-making.app"
-    }
-
-    fn identity(&self) -> IdentityModel {
-        IdentityModel::Stable
-    }
-
-    fn supports_tags(&self) -> bool {
-        true
+    fn spec(&self) -> &'static ProviderSpec {
+        &Self::SPEC
     }
 
     fn remote_id_of(&self, item: &MmLocation, _index: usize) -> i64 {
@@ -197,6 +190,12 @@ impl SyncProvider for MapMakingProvider {
 }
 
 impl MapMakingProvider {
+    pub(crate) const SPEC: ProviderSpec = ProviderSpec {
+        id: "map-making.app",
+        identity: IdentityModel::Stable,
+        shape: MapShape::MapMaking,
+    };
+
     /// The provider bound to the stored API key.
     pub(crate) fn from_key() -> AppResult<Self> {
         let api_key = KEY

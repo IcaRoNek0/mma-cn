@@ -1,6 +1,7 @@
 use super::*;
 use crate::sync;
 use crate::sync::{IdentityModel, NormalizedSyncLocation, PushBatch, PushedId, SyncProvider};
+use crate::types::shape::MapShape;
 use crate::types::ErrCode;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -110,9 +111,9 @@ fn wr_packed_varints(buf: &mut Vec<u8>, field: u64, vals: &[u32]) {
 #[test]
 fn declares_persisted_identity() {
     let p = provider();
-    assert_eq!(p.id(), "map-making.app");
-    assert_eq!(p.identity(), IdentityModel::Stable);
-    assert!(p.supports_tags());
+    assert_eq!(p.spec().id, "map-making.app");
+    assert_eq!(p.spec().identity, IdentityModel::Stable);
+    assert_eq!(p.spec().shape, MapShape::MapMaking);
     assert_eq!(p.remote_id_of(&remote(9000), 3), 9000);
 }
 

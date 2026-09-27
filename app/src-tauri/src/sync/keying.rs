@@ -84,7 +84,7 @@ fn claim_remotes<P: SyncProvider>(
     let mut claimed_by: HashMap<usize, u32> = HashMap::new();
     let mut taken: HashSet<usize> = HashSet::new();
 
-    if provider.identity() == IdentityModel::Stable {
+    if provider.spec().identity == IdentityModel::Stable {
         let mut by_remote_id: HashMap<i64, usize> = HashMap::new();
         for (i, item) in remote_locs.iter().enumerate() {
             by_remote_id.insert(provider.remote_id_of(item, i), i);
@@ -221,7 +221,7 @@ pub(crate) fn build_keyed_inputs<P: SyncProvider>(
         if !provider.include_local(loc) {
             continue;
         }
-        let norm = provider.project(local_to_normalized(loc, tag_name));
+        let norm = local_to_normalized(loc, tag_name).onto(provider.spec().shape);
         let key = if mapped_local.contains(&loc.id) {
             local_key(loc.id)
         } else {

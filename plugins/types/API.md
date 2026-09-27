@@ -452,6 +452,20 @@ LocationFlag: {
 
 Per-location bitfield, serialized as a plain `u32` over IPC and Arrow.
 
+### MapShape
+
+`stable` · unreleased
+
+```ts
+MapShape: {
+  readonly GeoGuessr: "geoguessr";
+  readonly MapMaking: "mapMaking";
+  readonly Local: "local";
+}
+```
+
+How much of a map a destination keeps. Each shape keeps everything the one before it does.
+
 ### MergeWinner
 
 `stable` · since v0.11.0

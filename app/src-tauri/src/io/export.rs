@@ -6,6 +6,7 @@ use crate::selections::Selector;
 use crate::store::engine;
 use crate::store::engine::{with_store, StoreState, WindowLabel};
 use crate::store::storage;
+use crate::types::shape::{MapPart, MapShape};
 use crate::types::Location;
 use crate::types::LocationFlags;
 use crate::types::{AppError, AppResult};
@@ -31,7 +32,8 @@ use zip::write::SimpleFileOptions;
 pub struct ExportOpts {
     pub export_zoom: bool,
     pub export_unpanned: bool,
-    pub export_extras: bool,
+    /// How much of the map the file keeps.
+    pub shape: MapShape,
     /// Which locations to export.
     pub selector: Selector,
     pub map_name: String,
@@ -72,6 +74,7 @@ fn parse_tag_defs(tags_json: &str) -> (HashMap<String, serde_json::Value>, HashM
 /// Convert tag defs to the export metadata shape `{name: {color: [r,g,b], order}}`.
 fn tag_color_meta(
     tag_defs: &HashMap<String, serde_json::Value>,
+    shape: MapShape,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut converted = serde_json::Map::new();
     for v in tag_defs.values() {
@@ -87,7 +90,7 @@ fn tag_color_meta(
                 entry.insert("order".into(), serde_json::json!(order));
             }
             if let Some(links) = v.get("doclinks").and_then(|d| d.as_array()) {
-                if !links.is_empty() {
+                if !links.is_empty() && shape.keeps(MapPart::AppData) {
                     entry.insert("doclinks".into(), serde_json::Value::Array(links.clone()));
                 }
             }
@@ -101,7 +104,7 @@ fn tag_color_meta(
 pub(crate) struct CoordOpts {
     pub(crate) export_zoom: bool,
     pub(crate) export_unpanned: bool,
-    pub(crate) export_extras: bool,
+    pub(crate) shape: MapShape,
 }
 
 /// Convert one location to a `{lat, lng, heading, ...}` coordinate object.
@@ -149,35 +152,40 @@ fn location_to_coord(
         );
     }
 
-    if opts.export_extras {
-        let mut extra = serde_json::Map::new();
-        if let Some(ref e) = loc.extra {
+    let shape = opts.shape;
+    let mut extra = serde_json::Map::new();
+    if let Some(ref e) = loc.extra {
+        if shape.keeps(MapPart::AppData) {
             for (k, v) in e.to_map() {
                 if k == "countryCode" || k == "stateCode" {
                     continue;
                 }
                 extra.insert(k, v);
             }
+        } else if shape.keeps(MapPart::PanoDate) {
+            if let Some(date) = e.get("panoDate") {
+                extra.insert("panoDate".into(), date);
+            }
         }
-        if !loc.tags.is_empty() {
-            let names: Vec<Value> = loc
-                .tags
-                .iter()
-                .map(|id| {
-                    json!(id_to_name
-                        .get(id)
-                        .cloned()
-                        .unwrap_or_else(|| id.to_string()))
-                })
-                .collect();
-            extra.insert("tags".into(), json!(names));
-        }
-        if !pinned && loc.pano_id.is_some() {
-            extra.insert("panoId".into(), json!(loc.pano_id));
-        }
-        if !extra.is_empty() {
-            c.insert("extra".into(), Value::Object(extra));
-        }
+    }
+    if shape.keeps(MapPart::Tags) && !loc.tags.is_empty() {
+        let names: Vec<Value> = loc
+            .tags
+            .iter()
+            .map(|id| {
+                json!(id_to_name
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| id.to_string()))
+            })
+            .collect();
+        extra.insert("tags".into(), json!(names));
+    }
+    if shape.keeps(MapPart::UnpinnedPano) && !pinned && loc.pano_id.is_some() {
+        extra.insert("panoId".into(), json!(loc.pano_id));
+    }
+    if !extra.is_empty() {
+        c.insert("extra".into(), Value::Object(extra));
     }
 
     Value::Object(c)
@@ -205,20 +213,18 @@ pub(crate) fn export_document(
     }
     parts.insert("customCoordinates".into(), serde_json::Value::Array(coords));
 
-    if co.export_extras {
-        let mut extra = serde_json::Map::new();
-        if !tag_defs.is_empty() {
-            let converted = tag_color_meta(&tag_defs);
-            if !converted.is_empty() {
-                extra.insert("tags".into(), serde_json::Value::Object(converted));
-            }
+    let mut extra = serde_json::Map::new();
+    if co.shape.keeps(MapPart::Tags) && !tag_defs.is_empty() {
+        let converted = tag_color_meta(&tag_defs, co.shape);
+        if !converted.is_empty() {
+            extra.insert("tags".into(), serde_json::Value::Object(converted));
         }
-        if let Some(fields) = fields {
-            extra.insert("fields".into(), fields);
-        }
-        if !extra.is_empty() {
-            parts.insert("extra".into(), serde_json::Value::Object(extra));
-        }
+    }
+    if let Some(fields) = fields.filter(|_| co.shape.keeps(MapPart::AppData)) {
+        extra.insert("fields".into(), fields);
+    }
+    if !extra.is_empty() {
+        parts.insert("extra".into(), serde_json::Value::Object(extra));
     }
     serde_json::Value::Object(parts)
 }
@@ -274,7 +280,7 @@ pub fn store_export_json(
         let co = CoordOpts {
             export_zoom: opts.export_zoom,
             export_unpanned: opts.export_unpanned,
-            export_extras: opts.export_extras,
+            shape: opts.shape,
         };
         let fields = opts
             .extra_fields_json
@@ -510,7 +516,7 @@ pub async fn store_export_bulk_zip() -> AppResult<String> {
                 let co = CoordOpts {
                     export_zoom: true,
                     export_unpanned: false,
-                    export_extras: true,
+                    shape: MapShape::Local,
                 };
                 let fields = serde_json::from_str::<serde_json::Value>(extra_json)
                     .ok()

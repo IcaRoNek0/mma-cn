@@ -7,6 +7,7 @@ import { TextInput } from "@/components/primitives/TextInput";
 import { useMapState, getVisibleTags } from "@/store/useMapStore";
 import { selectorForPick, type SelectorPick } from "@/store/selectorPick";
 import { useMapSetting } from "@/store/useMapSetting";
+import { MapShape } from "@/bindings.consts";
 import { cmd } from "@/lib/commands";
 import { saveExportTempFile } from "@/lib/util/tauri";
 import { mmaBufUrl } from "@/lib/util/util";
@@ -41,7 +42,7 @@ export function ExportDialog({ open, onOpenChange }: DialogProps) {
 		cmd.storeExportJson({
 			exportZoom: saveZoom,
 			exportUnpanned: bypassUnpanned,
-			exportExtras: saveExtras,
+			shape: saveExtras ? MapShape.Local : MapShape.GeoGuessr,
 			selector: selector,
 			mapName: map.name,
 			tagsJson: tagsJson(),

@@ -152,31 +152,6 @@ fn round_trips_a_pano_when_loading_by_pano() {
 }
 
 #[test]
-fn project_erases_pano_when_load_as_pano_unset() {
-    let p = provider();
-    // A stored panoId without the LoadAsPanoId flag cannot be expressed: project drops it.
-    let projected = p.project(norm(|n| {
-        n.pano_id = Some(PANO_22.into());
-        n.flags = 0;
-    }));
-    assert_eq!(projected.pano_id, None);
-    assert_eq!(projected.flags, 0);
-}
-
-#[test]
-fn project_is_idempotent_and_strips_tags() {
-    let p = provider();
-    let once = p.project(norm(|n| {
-        n.pano_id = Some(PANO_22.into());
-        n.flags = LOAD_AS_PANO_ID;
-        n.tags = vec!["a".into(), "b".into()];
-    }));
-    assert!(once.tags.is_empty());
-    assert_eq!(once.flags, LOAD_AS_PANO_ID);
-    assert_eq!(sync_key(&once), sync_key(&p.project(once.clone())));
-}
-
-#[test]
 fn materialize_drops_pano_when_flag_absent() {
     let p = provider();
     let coord = p.materialize(&norm(|n| {
