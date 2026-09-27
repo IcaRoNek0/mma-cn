@@ -2501,7 +2501,7 @@ type SearchQuery = {
     /**  Component mask; the full set when absent. */
     components?: number[] | null;
 };
-/**  A panorama visit record. */
+/**  A panorama visit record. @unstable */
 type SeenEntry = {
     id: number;
     panoId: string;
@@ -2520,6 +2520,7 @@ type SeenEntry = {
 /**
  *  Filters for seen-history queries. All fields are AND-combined.
  *  `search` matches against the address.
+ *  @unstable
  */
 type SeenFilter = {
     country?: string | null;
@@ -2528,7 +2529,7 @@ type SeenFilter = {
     locationIds?: number[] | null;
     since?: number | null;
 };
-/**  Map ID and display name for seen-history filtering. */
+/**  Map ID and display name for seen-history filtering. @unstable */
 type SeenMapInfo = {
     id: string;
     name: string;
@@ -2978,11 +2979,15 @@ export type SortMode = "name" | "created" | "opened" | "amount";
 export type TagSortMode = "default" | "name" | "amount";
 /** @unstable */
 export type WorkArea = "overview" | "location" | "duplicates" | "import" | "plugin" | "diff";
-/** Hex like "#1098ad"; legacy stored prefs may hold an Open Props ramp name. */
+/** Hex like "#1098ad"; legacy stored prefs may hold an Open Props ramp name. @unstable */
 export type SvColor = string;
+/** @unstable */
 export type MapTypeKey = "map" | "satellite" | "osm" | "vector";
+/** @unstable */
 export type SvCoverageType = "official" | "unofficial" | "default";
+/** @unstable */
 export type SvThickness = "default" | "high";
+/** @unstable */
 export type MarkerStyle = "pin" | "circle" | "arrow";
 
 /** @unstable */
@@ -5028,13 +5033,13 @@ export interface SelectorPickController {
     allCount: number;
     selectionCount: number;
 }
-/** Convert a picker choice into the corresponding `Selector`. */
+/** Convert a picker choice into the corresponding `Selector`. @unstable */
 declare function selectorForPick(choice: SelectorPick): Selector;
 /** React hook: selector state with live counts. Defaults to the current selection when one
- *  exists, else all locations. Use `createSelectorPick` when non-React code also reads the selector. */
+ *  exists, else all locations. Use `createSelectorPick` when non-React code also reads the selector. @unstable */
 declare function useSelectorPick(initial?: SelectorPick): SelectorPickController;
 /** A standalone selector store that can be read from both React and non-React code.
- *  Each `createSelectorPick` call returns an isolated instance. */
+ *  Each `createSelectorPick` call returns an isolated instance. @unstable */
 export interface SelectorPickHandle {
     get(): Selector;
     getChoice(): SelectorPick;
@@ -5043,7 +5048,7 @@ export interface SelectorPickHandle {
     /** React view of this handle: re-renders on change, with live counts. */
     use(): SelectorPickController;
 }
-/** A standalone "all locations vs current selection" switch, for features that operate on a subset. */
+/** A standalone "all locations vs current selection" switch, for features that operate on a subset. @unstable */
 declare function createSelectorPick(initial?: SelectorPick): SelectorPickHandle;
 
 /** @unstable */
@@ -5052,8 +5057,11 @@ export type picker_SelectorPick = SelectorPick;
 export type picker_SelectorPickController = SelectorPickController;
 /** @unstable */
 export type picker_SelectorPickHandle = SelectorPickHandle;
+/** @unstable */
 declare const picker_createSelectorPick: typeof createSelectorPick;
+/** @unstable */
 declare const picker_selectorForPick: typeof selectorForPick;
+/** @unstable */
 declare const picker_useSelectorPick: typeof useSelectorPick;
 declare namespace picker {
   export { picker_createSelectorPick as createSelectorPick, picker_selectorForPick as selectorForPick, picker_useSelectorPick as useSelectorPick };
@@ -5142,9 +5150,9 @@ export type PluginEvent<T = void> = `plugin:${string}:${string}` & {
 export type EventPayload<E extends EditorEvent | PluginEvent<unknown>> = E extends EditorEvent ? EditorEventMap[E] : E extends PluginEvent<infer T> ? T : never;
 export type EventHandler<E extends EditorEvent | PluginEvent<unknown>> = (payload: EventPayload<E>) => void;
 
-/** Reactive list of all maps (metadata only). */
+/** Reactive list of all maps (metadata only). @unstable */
 declare function useMapList(): MapMeta[];
-/** The list of all maps (metadata only). */
+/** The list of all maps (metadata only). @unstable */
 declare function getMapList(): MapMeta[];
 /** Refresh the map list from disk. @unstable */
 declare function reloadMapList(): Promise<void>;
@@ -5152,19 +5160,19 @@ declare function reloadMapList(): Promise<void>;
 declare function invalidateMapList(): Promise<void>;
 /** Set the map list directly without a disk read. @unstable */
 declare function setCachedMapList(list: MapMeta[]): void;
-/** Create a new empty map and return its metadata. */
+/** Create a new empty map and return its metadata. @unstable */
 declare function createMap(name: string, folder?: string | null): Promise<MapMeta>;
-/** Open the scratch map, creating it on first use. */
+/** Open the scratch map, creating it on first use. @unstable */
 declare function openScratchMap(): Promise<void>;
 /** Whether `id` belongs to an app fixture rather than a user-created map. @unstable */
 declare function isReservedMap(id: string | null): boolean;
-/** Permanently delete a map and all its data. Not undoable. */
+/** Permanently delete a map and all its data. Not undoable. @unstable */
 declare function deleteMap$1(id: string): Promise<void>;
-/** Rename a folder, moving all its maps to the new name. */
+/** Rename a folder, moving all its maps to the new name. @unstable */
 declare function renameFolder(from: string, to: string): Promise<void>;
-/** Move a map into a folder, or to the root when `folder` is null. */
+/** Move a map into a folder, or to the root when `folder` is null. @unstable */
 declare function moveMapToFolder(mapId: string, folder: string | null): Promise<void>;
-/** Delete a folder. Maps in it become unfoldered. */
+/** Delete a folder. Maps in it become unfoldered. @unstable */
 declare function deleteFolder(name: string): Promise<void>;
 /** A mark drawn after a map's name in the map list: an icon, or a count of changes. @unstable */
 export type MapBadge = {
@@ -5199,28 +5207,35 @@ declare function useMapBadges(): Map<string, MapBadge[]>;
 export type mapList_BadgeSource = BadgeSource;
 /** @unstable */
 export type mapList_MapBadge = MapBadge;
+/** @unstable */
 declare const mapList_createMap: typeof createMap;
+/** @unstable */
 declare const mapList_deleteFolder: typeof deleteFolder;
 /** @unstable */
 declare const mapList_getMapBadgeSources: typeof getMapBadgeSources;
 /** @unstable */
 declare const mapList_getMapBadges: typeof getMapBadges;
+/** @unstable */
 declare const mapList_getMapList: typeof getMapList;
 /** @unstable */
 declare const mapList_invalidateMapList: typeof invalidateMapList;
 /** @unstable */
 declare const mapList_isReservedMap: typeof isReservedMap;
+/** @unstable */
 declare const mapList_moveMapToFolder: typeof moveMapToFolder;
+/** @unstable */
 declare const mapList_openScratchMap: typeof openScratchMap;
 /** @unstable */
 declare const mapList_registerMapBadges: typeof registerMapBadges;
 /** @unstable */
 declare const mapList_reloadMapList: typeof reloadMapList;
+/** @unstable */
 declare const mapList_renameFolder: typeof renameFolder;
 /** @unstable */
 declare const mapList_setCachedMapList: typeof setCachedMapList;
 /** @unstable */
 declare const mapList_useMapBadges: typeof useMapBadges;
+/** @unstable */
 declare const mapList_useMapList: typeof useMapList;
 declare namespace mapList {
   export { mapList_createMap as createMap, mapList_deleteFolder as deleteFolder, deleteMap$1 as deleteMap, mapList_getMapBadgeSources as getMapBadgeSources, mapList_getMapBadges as getMapBadges, mapList_getMapList as getMapList, mapList_invalidateMapList as invalidateMapList, mapList_isReservedMap as isReservedMap, mapList_moveMapToFolder as moveMapToFolder, mapList_openScratchMap as openScratchMap, mapList_registerMapBadges as registerMapBadges, mapList_reloadMapList as reloadMapList, mapList_renameFolder as renameFolder, mapList_setCachedMapList as setCachedMapList, mapList_useMapBadges as useMapBadges, mapList_useMapList as useMapList };
@@ -6400,17 +6415,19 @@ declare function queryProcedure<T = unknown, P = unknown>(spec: ProcedureSpec, i
  *  become locale month names; otherwise falls back to the keys themselves when the field's
  *  procedure has no `label` query or returns a non-matching array. @unstable */
 declare function resolveFieldLabels(field: string, keys: string[], key?: KeySpec): Promise<string[]>;
-/** One location's answer from a `collect` run. */
+/** One location's answer from a `collect` run. @unstable */
 export interface CollectedEntry<T = unknown> {
     id: number;
     value: T;
 }
+/** @unstable */
 export interface BatchOutcome {
     /** Count of rows the procedure processed successfully. */
     succeeded: number;
     /** IDs of rows the procedure failed on. */
     failed: number[];
 }
+/** @unstable */
 export interface ProcedureOutcome<TCollected = unknown> extends BatchOutcome {
     /** Answers from a `collect` run, in page order. Absent when results were written as patches. */
     collected?: CollectedEntry<TCollected>[];
@@ -6419,7 +6436,7 @@ export interface ProcedureOutcome<TCollected = unknown> extends BatchOutcome {
 export type ProviderOutcomes = Record<string, ProcedureOutcome>;
 /** @unstable */
 declare const noWork: () => BatchOutcome;
-/** One provider's own progress. Counts are net of skipped rows. */
+/** One provider's own progress. Counts are net of skipped rows. @unstable */
 export interface ProviderPart {
     label: string;
     done: number;
@@ -6427,6 +6444,7 @@ export interface ProviderPart {
     failed: number;
     finished: boolean;
 }
+/** @unstable */
 export interface RunOpts {
     signal?: AbortSignal;
     force?: boolean;
@@ -6437,6 +6455,7 @@ export interface RunOpts {
      *  again from each subsequent provider. */
     onPartial?: (rows: Location[]) => void;
 }
+/** @unstable */
 export type BulkOpts = Pick<RunOpts, "signal" | "onProgress">;
 /** A provider to run, optionally overriding the config its procedure declares. @unstable */
 export interface ProviderRun<TConfig = unknown> {
@@ -6513,21 +6532,26 @@ declare namespace procedures {
   export type { procedures_BatchOutcome as BatchOutcome, procedures_BulkOpts as BulkOpts, procedures_CollectedEntry as CollectedEntry, procedures_ProcedureOutcome as ProcedureOutcome, procedures_ProviderOutcomes as ProviderOutcomes, procedures_ProviderPart as ProviderPart, procedures_ProviderRun as ProviderRun, procedures_RunOpts as RunOpts };
 }
 
-/** Fetch a page of the seen (visited-panorama) history. */
+/** Fetch a page of the seen (visited-panorama) history. @unstable */
 declare function getSeenEntries(limit?: number, offset?: number, filter?: SeenFilter, thumbnails?: boolean): Promise<SeenEntry[]>;
-/** Number of seen entries matching the filter (all when omitted). */
+/** Number of seen entries matching the filter (all when omitted). @unstable */
 declare function getSeenCount(filter?: SeenFilter): Promise<number>;
-/** Distinct country codes that appear in the seen history. */
+/** Distinct country codes that appear in the seen history. @unstable */
 declare function getSeenCountries(): Promise<string[]>;
-/** Maps that have seen-history entries. */
+/** Maps that have seen-history entries. @unstable */
 declare function getSeenMaps(): Promise<SeenMapInfo[]>;
-/** Delete the entire seen history. Not undoable. */
+/** Delete the entire seen history. Not undoable. @unstable */
 declare function clearSeen(): Promise<void>;
 
+/** @unstable */
 declare const seen_clearSeen: typeof clearSeen;
+/** @unstable */
 declare const seen_getSeenCount: typeof getSeenCount;
+/** @unstable */
 declare const seen_getSeenCountries: typeof getSeenCountries;
+/** @unstable */
 declare const seen_getSeenEntries: typeof getSeenEntries;
+/** @unstable */
 declare const seen_getSeenMaps: typeof getSeenMaps;
 declare namespace seen {
   export {
@@ -6780,21 +6804,23 @@ declare namespace seenRecorder {
 
 /** Enrich a single location with the map's enabled metadata fields. Existing fields are
  *  kept unless `force` re-derives all of them. Returns the enriched location without
- *  writing it. Returns the location unchanged when enrichment is disabled. */
+ *  writing it. Returns the location unchanged when enrichment is disabled. @unstable */
 declare function enrich(loc: Location, opts?: Omit<RunOpts, "onProgress">): Promise<Location>;
 /** One summary row per pass that did work: the core metadata pass, then every
- *  provider that updated or failed at least one location. */
+ *  provider that updated or failed at least one location. @unstable */
 export interface EnrichOutcome extends ProcedureOutcome {
     id: string;
     label: string;
 }
 /** Bulk-enrich a selector: resolve missing pano ids, then run every field-producing
- *  provider (metadata, exact date, timezone, subdivision). */
+ *  provider (metadata, exact date, timezone, subdivision). @unstable */
 declare function enrichAll(selector: Selector, opts?: RunOpts): Promise<EnrichOutcome[]>;
 
 /** @unstable */
 export type enrich$1_EnrichOutcome = EnrichOutcome;
+/** @unstable */
 declare const enrich$1_enrich: typeof enrich;
+/** @unstable */
 declare const enrich$1_enrichAll: typeof enrichAll;
 declare namespace enrich$1 {
   export { enrich$1_enrich as enrich, enrich$1_enrichAll as enrichAll };
@@ -6846,7 +6872,7 @@ declare namespace providers {
   export type { providers_PanoResolveConfig as PanoResolveConfig };
 }
 
-/** How a bulk pin settles each location's pano before pinning it. */
+/** How a bulk pin settles each location's pano before pinning it. @unstable */
 export interface PinOpts extends BulkOpts {
     /** Resolve pano ids first; off, only locations that already carry one are pinned. */
     resolve?: boolean;
@@ -6856,17 +6882,18 @@ export interface PinOpts extends BulkOpts {
     force?: boolean;
 }
 /** What a bulk pin did: the locations newly pinned, the ones whose pano could not be
- *  resolved, and how many pano ids the resolve wrote. */
+ *  resolved, and how many pano ids the resolve wrote. @unstable */
 export interface PinOutcome extends BatchOutcome {
     resolved: number;
 }
-/** Pin every location in the selector to its pano id, resolving pano ids first when asked. */
+/** Pin every location in the selector to its pano id, resolving pano ids first when asked. @unstable */
 declare function bulkPinToPano(selector: Selector, opts?: PinOpts): Promise<PinOutcome>;
 
 /** @unstable */
 export type pinPano_PinOpts = PinOpts;
 /** @unstable */
 export type pinPano_PinOutcome = PinOutcome;
+/** @unstable */
 declare const pinPano_bulkPinToPano: typeof bulkPinToPano;
 declare namespace pinPano {
   export { pinPano_bulkPinToPano as bulkPinToPano };
@@ -6875,17 +6902,17 @@ declare namespace pinPano {
 
 /** Configuration for Street View validation: search radius, and whether pinned rows are
  *  also compared against the coordinate lookup (off = a pin means the row is deliberate,
- *  its stored pano's own timeline is the only update signal). */
+ *  its stored pano's own timeline is the only update signal). @unstable */
 export interface ValidateConfig {
     radius: number;
     checkPinned: boolean;
 }
 /** What a validation run answered: the ids grouped by the state they validated to, over
- *  the outcome every run reports. */
+ *  the outcome every run reports. @unstable */
 export interface ValidationOutcome extends BatchOutcome {
     states: Map<ValidationState, number[]>;
 }
-/** Check that each location's Street View coverage still exists. */
+/** Check that each location's Street View coverage still exists. @unstable */
 declare function validateLocations(selector: Selector, opts?: BulkOpts & {
     config?: Partial<ValidateConfig>;
 }): Promise<ValidationOutcome>;
@@ -6894,6 +6921,7 @@ declare function validateLocations(selector: Selector, opts?: BulkOpts & {
 export type validate_ValidateConfig = ValidateConfig;
 /** @unstable */
 export type validate_ValidationOutcome = ValidationOutcome;
+/** @unstable */
 declare const validate_validateLocations: typeof validateLocations;
 declare namespace validate {
   export { validate_validateLocations as validateLocations };
@@ -6922,6 +6950,7 @@ declare namespace query {
   export type { query_SearchOpts as SearchOpts };
 }
 
+/** @unstable */
 export interface MapEmbedPrefs {
     svOpacity: number;
     svVisible: boolean;
@@ -6950,35 +6979,42 @@ export interface MapEmbedPrefs {
     showPreviews: boolean;
     clickMode: ClickMode;
 }
-/** What clicking empty map does: create a location, nothing, or snap to the nearest one. */
+/** What clicking empty map does: create a location, nothing, or snap to the nearest one. @unstable */
 export type ClickMode = "default" | "selectOnly" | "nearest";
 
+/** @unstable */
 export interface MapStyle {
     featureType?: string;
     elementType?: string;
     stylers: Record<string, any>[];
 }
 
+/** @unstable */
 export interface CustomStyle {
     name: string;
     style: MapStyle[];
 }
 
+/** @unstable */
 export interface HostInstances {
     google: google.maps.Map;
     maplibre: maplibregl.Map;
 }
+/** @unstable */
 export type MapHostKind = keyof HostInstances;
+/** @unstable */
 export interface DeckOverlayProps {
     layers: Layer[];
     onClick?: (info: PickingInfo, domEvent?: Event) => void;
     onHover?: (info: PickingInfo, domEvent?: Event) => void;
     onError?: (e: unknown) => void;
 }
+/** @unstable */
 export interface DeckOverlayHandle {
     setProps(props: Partial<DeckOverlayProps>): void;
     finalize(): void;
 }
+/** @unstable */
 export interface MapHostEvents {
     mousemove: LatLng;
     mousedown: LatLng;
@@ -6990,9 +7026,11 @@ export interface MapHostEvents {
     idle: void;
     tilesloaded: void;
 }
+/** @unstable */
 export interface BasemapOpts {
     customStyles: CustomStyle[];
 }
+/** @unstable */
 export interface MapHostContract<K extends MapHostKind = MapHostKind> {
     readonly kind: K;
     readonly container: HTMLElement;
@@ -7022,33 +7060,40 @@ export interface MapHostContract<K extends MapHostKind = MapHostKind> {
     resize(): void;
     destroy(): void;
 }
+/** @unstable */
 export type MapHost = {
     [K in MapHostKind]: MapHostContract<K>;
 }[MapHostKind];
 
 /** Set or clear the main editor map host. @unstable */
 declare function setMapHost(host: MapHost | null): void;
-/** Return the main editor map host, or null if not mounted. */
+/** Return the main editor map host, or null if not mounted. @unstable */
 declare function getMapHost(): MapHost | null;
-/** Wait for the main editor map to be ready. */
+/** Wait for the main editor map to be ready. @unstable */
 declare function waitForMapHost(): Promise<MapHost>;
-/** Fit the editor map's viewport to `bounds`. A `minExtent` prevents over-zoom on tiny areas. */
+/** Fit the editor map's viewport to `bounds`. A `minExtent` prevents over-zoom on tiny areas. @unstable */
 declare function fitMapToBounds(bounds: Bounds | null, padding?: number, minExtent?: number): void;
+/** @unstable */
 export type ClickInterceptor = (lat: number, lng: number, shiftKey: boolean) => boolean;
 /** Register a map-click interceptor. Returns a removal function. The most recently
- *  added interceptor that returns true consumes the click. */
+ *  added interceptor that returns true consumes the click. @unstable */
 declare function addClickInterceptor(fn: ClickInterceptor): () => void;
 /** Run registered click interceptors (newest first). True if one consumed the click. @unstable */
 declare function tryInterceptClick(lat: number, lng: number, shiftKey?: boolean): boolean;
+/** @unstable */
 export type DrawInterceptor = (rings: number[][][]) => boolean;
-/** Set the callback for completed polygon draws. Null clears it. */
+/** Set the callback for completed polygon draws. Null clears it. @unstable */
 declare function setDrawInterceptor(fn: DrawInterceptor | null): void;
 /** Pass completed polygon rings to the draw interceptor. True if it consumed them. @unstable */
 declare function tryInterceptDraw(rings: number[][][]): boolean;
 
+/** @unstable */
 declare const mapState_addClickInterceptor: typeof addClickInterceptor;
+/** @unstable */
 declare const mapState_fitMapToBounds: typeof fitMapToBounds;
+/** @unstable */
 declare const mapState_getMapHost: typeof getMapHost;
+/** @unstable */
 declare const mapState_setDrawInterceptor: typeof setDrawInterceptor;
 /** @unstable */
 declare const mapState_setMapHost: typeof setMapHost;
@@ -7056,6 +7101,7 @@ declare const mapState_setMapHost: typeof setMapHost;
 declare const mapState_tryInterceptClick: typeof tryInterceptClick;
 /** @unstable */
 declare const mapState_tryInterceptDraw: typeof tryInterceptDraw;
+/** @unstable */
 declare const mapState_waitForMapHost: typeof waitForMapHost;
 declare namespace mapState {
   export {
@@ -7116,12 +7162,13 @@ declare namespace sceneStore {
   };
 }
 
-/** Snapshot of every rendered location's id and position (`[lng, lat, ...]`). */
+/** Snapshot of every rendered location's id and position (`[lng, lat, ...]`). @unstable */
 declare function getScenePositions(): {
     ids: Uint32Array;
     positions: Float32Array;
 };
 
+/** @unstable */
 declare const scenePositions_getScenePositions: typeof getScenePositions;
 declare namespace scenePositions {
   export {
@@ -7642,7 +7689,9 @@ export type SettingsApi = typeof settings;
 export type ImportStagingApi = typeof importStaging;
 /** Uncommitted changes and their preview on the map. @unstable */
 export type CommitDiffApi = typeof commitDiff;
+/** The selector picker the pick dialogs share; its choices move with the UI. @unstable */
 export type SelectorPickApi = typeof picker;
+/** The cached map list and its refresh. @unstable */
 export type MapListApi = typeof mapList;
 /** Review sessions and their history. @unstable */
 export type ReviewApi = typeof review;
@@ -7668,20 +7717,26 @@ export type FieldDefRegistryApi = typeof fieldDefRegistry;
 export type FieldProjectionsApi = typeof fieldProjections;
 /** Running procedures directly, outside a registered provider. @unstable */
 export type ProceduresApi = typeof procedures;
+/** The seen-location history. @unstable */
 export type SeenApi = typeof seen;
 /** How the app records panorama visits into the seen history. @unstable */
 export type SeenRecorderApi = typeof seenRecorder;
 /** The shared panorama viewer. @unstable */
 export type PanoApi = typeof panoSurface;
+/** Enrichment passes over the open map. @unstable */
 export type EnrichApi = typeof enrich$1;
 /** The providers the app registers for enrichment. @unstable */
 export type ProvidersApi = typeof providers;
+/** Bulk pinning locations to their panoramas. @unstable */
 export type PinPanoApi = typeof pinPano;
+/** Coverage validation passes. @unstable */
 export type ValidateApi = typeof validate;
 export type QueryApi = typeof query;
+/** The embedded map host, its preferences, and click interceptors. @unstable */
 export type MapStateApi = typeof mapState;
 /** The marker scene the map surfaces render from, and its load lifecycle. @unstable */
 export type SceneStoreApi = typeof sceneStore;
+/** Screen positions of the rendered markers. @unstable */
 export type ScenePositionsApi = typeof scenePositions;
 /** Color conversion helpers. @unstable */
 export type ColorApi = typeof colorUtils;

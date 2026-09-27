@@ -12,8 +12,6 @@ Every member of the global `MMA` object (also `window.MMA`), grouped by surface.
 
 - [Consts](#consts)
 - [Store](#store)
-- [SelectorPick](#selectorpick)
-- [MapList](#maplist)
 - [Registry](#registry)
 - [PluginStorage](#pluginstorage)
 - [PluginEvents](#pluginevents)
@@ -22,13 +20,7 @@ Every member of the global `MMA` object (also `window.MMA`), grouped by surface.
 - [Ui](#ui)
 - [FieldDefs](#fielddefs)
 - [FieldDefRegistry](#fielddefregistry)
-- [Seen](#seen)
-- [Enrich](#enrich)
-- [PinPano](#pinpano)
-- [Validate](#validate)
 - [Query](#query)
-- [MapState](#mapstate)
-- [ScenePositions](#scenepositions)
 - [Toast](#toast)
 - [UseJob](#usejob)
 - [Types](#types)
@@ -41,6 +33,8 @@ Every member of the global `MMA` object (also `window.MMA`), grouped by surface.
 - [Settings](#settings)
 - [ImportStaging](#importstaging)
 - [CommitDiff](#commitdiff)
+- [SelectorPick](#selectorpick)
+- [MapList](#maplist)
 - [Review](#review)
 - [Commands](#commands)
 - [Tauri](#tauri)
@@ -49,10 +43,16 @@ Every member of the global `MMA` object (also `window.MMA`), grouped by surface.
 - [Scope](#scope)
 - [FieldProjections](#fieldprojections)
 - [Procedures](#procedures)
+- [Seen](#seen)
 - [SeenRecorder](#seenrecorder)
 - [Pano](#pano)
+- [Enrich](#enrich)
 - [Providers](#providers)
+- [PinPano](#pinpano)
+- [Validate](#validate)
+- [MapState](#mapstate)
 - [SceneStore](#scenestore)
+- [ScenePositions](#scenepositions)
 - [Color](#color)
 - [Jobs](#jobs)
 - [Test](#test)
@@ -1353,201 +1353,6 @@ waitForInflightPersist(): Promise<void> | null
 
 Wait for any in-progress save to finish.
 
-## SelectorPick
-
-### createSelectorPick
-
-`stable` · since v0.10.0
-
-```ts
-createSelectorPick(initial?: SelectorPick): SelectorPickHandle
-```
-
-A standalone "all locations vs current selection" switch, for features that operate on a subset.
-
-### selectorForPick
-
-`stable` · since v0.10.0
-
-```ts
-selectorForPick(choice: SelectorPick): Selector
-```
-
-Convert a picker choice into the corresponding `Selector`.
-
-### useSelectorPick
-
-`stable` · since v0.10.0
-
-```ts
-useSelectorPick(initial?: SelectorPick): SelectorPickController
-```
-
-React hook: selector state with live counts. Defaults to the current selection when one
-exists, else all locations. Use `createSelectorPick` when non-React code also reads the selector.
-
-## MapList
-
-### createMap
-
-`stable` · since v0.4.0
-
-```ts
-createMap(name: string, folder?: string | null): Promise<MapMeta>
-```
-
-Create a new empty map and return its metadata.
-
-### deleteFolder
-
-`stable` · since v0.4.0
-
-```ts
-deleteFolder(name: string): Promise<void>
-```
-
-Delete a folder. Maps in it become unfoldered.
-
-### deleteMap
-
-`stable` · since v0.4.0
-
-```ts
-deleteMap(id: string): Promise<void>
-```
-
-Permanently delete a map and all its data. Not undoable.
-
-### getMapBadges
-
-`unstable` · unreleased
-
-```ts
-getMapBadges(): Map<string, MapBadge[]>
-```
-
-Badges per map id, from every registered source.
-
-### getMapBadgeSources
-
-`unstable` · unreleased
-
-```ts
-getMapBadgeSources(): readonly BadgeSource[]
-```
-
-Every registered badge source, in registration order.
-
-### getMapList
-
-`stable` · since v0.7.0
-
-```ts
-getMapList(): MapMeta[]
-```
-
-The list of all maps (metadata only).
-
-### invalidateMapList
-
-`unstable` · since v0.4.0
-
-```ts
-invalidateMapList(): Promise<void>
-```
-
-Refresh the map list and notify other windows of the change.
-
-### isReservedMap
-
-`unstable` · since v0.10.1
-
-```ts
-isReservedMap(id: string | null): boolean
-```
-
-Whether `id` belongs to an app fixture rather than a user-created map.
-
-### moveMapToFolder
-
-`stable` · since v0.4.0
-
-```ts
-moveMapToFolder(mapId: string, folder: string | null): Promise<void>
-```
-
-Move a map into a folder, or to the root when `folder` is null.
-
-### openScratchMap
-
-`stable` · since v0.10.1
-
-```ts
-openScratchMap(): Promise<void>
-```
-
-Open the scratch map, creating it on first use.
-
-### registerMapBadges
-
-`unstable` · unreleased
-
-```ts
-registerMapBadges(source: BadgeSource): void
-```
-
-Add a source of map-row badges.
-
-### reloadMapList
-
-`unstable` · since v0.8.1
-
-```ts
-reloadMapList(): Promise<void>
-```
-
-Refresh the map list from disk.
-
-### renameFolder
-
-`stable` · since v0.4.0
-
-```ts
-renameFolder(from: string, to: string): Promise<void>
-```
-
-Rename a folder, moving all its maps to the new name.
-
-### setCachedMapList
-
-`unstable` · since v0.8.1
-
-```ts
-setCachedMapList(list: MapMeta[]): void
-```
-
-Set the map list directly without a disk read.
-
-### useMapBadges
-
-`unstable` · unreleased
-
-```ts
-useMapBadges(): Map<string, MapBadge[]>
-```
-
-Reactive {@link getMapBadges}.
-
-### useMapList
-
-`stable` · since v0.4.0
-
-```ts
-useMapList(): MapMeta[]
-```
-
-Reactive list of all maps (metadata only).
-
 ## Registry
 
 ### getPlugin
@@ -2631,120 +2436,6 @@ unregisterPluginFieldDefs(keys: string[]): void
 
 Remove plugin field definitions by key (called when a plugin is deactivated).
 
-## Seen
-
-### clearSeen
-
-`stable` · since v0.4.0
-
-```ts
-clearSeen(): Promise<void>
-```
-
-Delete the entire seen history. Not undoable.
-
-### getSeenCount
-
-`stable` · since v0.4.0
-
-```ts
-getSeenCount(filter?: SeenFilter): Promise<number>
-```
-
-Number of seen entries matching the filter (all when omitted).
-
-### getSeenCountries
-
-`stable` · since v0.10.3
-
-```ts
-getSeenCountries(): Promise<string[]>
-```
-
-Distinct country codes that appear in the seen history.
-
-### getSeenEntries
-
-`stable` · since v0.4.0
-
-```ts
-getSeenEntries(
-  limit?: number,
-  offset?: number,
-  filter?: SeenFilter,
-  thumbnails?: boolean,
-): Promise<SeenEntry[]>
-```
-
-Fetch a page of the seen (visited-panorama) history.
-
-### getSeenMaps
-
-`stable` · since v0.10.3
-
-```ts
-getSeenMaps(): Promise<SeenMapInfo[]>
-```
-
-Maps that have seen-history entries.
-
-## Enrich
-
-### enrich
-
-`stable` · since v0.10.3
-
-```ts
-enrich(
-  loc: Location,
-  opts?: Omit<RunOpts, "onProgress">,
-): Promise<Location>
-```
-
-Enrich a single location with the map's enabled metadata fields. Existing fields are
-kept unless `force` re-derives all of them. Returns the enriched location without
-writing it. Returns the location unchanged when enrichment is disabled.
-
-### enrichAll
-
-`stable` · since v0.4.0
-
-```ts
-enrichAll(selector: Selector, opts?: RunOpts): Promise<EnrichOutcome[]>
-```
-
-Bulk-enrich a selector: resolve missing pano ids, then run every field-producing
-provider (metadata, exact date, timezone, subdivision).
-
-## PinPano
-
-### bulkPinToPano
-
-`stable` · since v0.4.0
-
-```ts
-bulkPinToPano(selector: Selector, opts?: PinOpts): Promise<PinOutcome>
-```
-
-Pin every location in the selector to its pano id, resolving pano ids first when asked.
-
-## Validate
-
-### validateLocations
-
-`stable` · since v0.4.0
-
-```ts
-validateLocations(
-  selector: Selector,
-  opts?: BulkOpts & {
-    config?: Partial<ValidateConfig>;
-  },
-): Promise<ValidationOutcome>
-```
-
-Check that each location's Street View coverage still exists.
-
 ## Query
 
 ### panosAt
@@ -2779,108 +2470,6 @@ svMetadata(
 
 Full pano metadata for one or more panos, aligned to `panoIds`. Duplicates are
 deduped and large batches are split automatically.
-
-## MapState
-
-### addClickInterceptor
-
-`stable` · since v0.10.3
-
-```ts
-addClickInterceptor(fn: ClickInterceptor): () => void
-```
-
-Register a map-click interceptor. Returns a removal function. The most recently
-added interceptor that returns true consumes the click.
-
-### fitMapToBounds
-
-`stable` · since v0.10.3
-
-```ts
-fitMapToBounds(
-  bounds: Bounds | null,
-  padding?: number,
-  minExtent?: number,
-): void
-```
-
-Fit the editor map's viewport to `bounds`. A `minExtent` prevents over-zoom on tiny areas.
-
-### getMapHost
-
-`stable` · since v0.8.0
-
-```ts
-getMapHost(): MapHost | null
-```
-
-Return the main editor map host, or null if not mounted.
-
-### setDrawInterceptor
-
-`stable` · since v0.10.3
-
-```ts
-setDrawInterceptor(fn: DrawInterceptor | null): void
-```
-
-Set the callback for completed polygon draws. Null clears it.
-
-### setMapHost
-
-`unstable` · since v0.10.3
-
-```ts
-setMapHost(host: MapHost | null): void
-```
-
-Set or clear the main editor map host.
-
-### tryInterceptClick
-
-`unstable` · since v0.10.3
-
-```ts
-tryInterceptClick(lat: number, lng: number, shiftKey?: boolean): boolean
-```
-
-Run registered click interceptors (newest first). True if one consumed the click.
-
-### tryInterceptDraw
-
-`unstable` · since v0.10.3
-
-```ts
-tryInterceptDraw(rings: number[][][]): boolean
-```
-
-Pass completed polygon rings to the draw interceptor. True if it consumed them.
-
-### waitForMapHost
-
-`stable` · since v0.8.0
-
-```ts
-waitForMapHost(): Promise<MapHost>
-```
-
-Wait for the main editor map to be ready.
-
-## ScenePositions
-
-### getScenePositions
-
-`stable` · since v0.9.0
-
-```ts
-getScenePositions(): {
-  ids: Uint32Array;
-  positions: Float32Array;
-}
-```
-
-Snapshot of every rendered location's id and position (`[lng, lat, ...]`).
 
 ## Toast
 
@@ -4557,6 +4146,205 @@ useCommitDiff(): CommitDiff
 ```
 
 React hook: the uncommitted add/remove/modify counts, kept in sync with the store.
+
+## SelectorPick
+
+The selector picker the pick dialogs share; its choices move with the UI.
+
+### createSelectorPick
+
+`unstable` · since v0.10.0
+
+```ts
+createSelectorPick(initial?: SelectorPick): SelectorPickHandle
+```
+
+A standalone "all locations vs current selection" switch, for features that operate on a subset.
+
+### selectorForPick
+
+`unstable` · since v0.10.0
+
+```ts
+selectorForPick(choice: SelectorPick): Selector
+```
+
+Convert a picker choice into the corresponding `Selector`.
+
+### useSelectorPick
+
+`unstable` · since v0.10.0
+
+```ts
+useSelectorPick(initial?: SelectorPick): SelectorPickController
+```
+
+React hook: selector state with live counts. Defaults to the current selection when one
+exists, else all locations. Use `createSelectorPick` when non-React code also reads the selector.
+
+## MapList
+
+The cached map list and its refresh.
+
+### createMap
+
+`unstable` · since v0.4.0
+
+```ts
+createMap(name: string, folder?: string | null): Promise<MapMeta>
+```
+
+Create a new empty map and return its metadata.
+
+### deleteFolder
+
+`unstable` · since v0.4.0
+
+```ts
+deleteFolder(name: string): Promise<void>
+```
+
+Delete a folder. Maps in it become unfoldered.
+
+### deleteMap
+
+`unstable` · since v0.4.0
+
+```ts
+deleteMap(id: string): Promise<void>
+```
+
+Permanently delete a map and all its data. Not undoable.
+
+### getMapBadges
+
+`unstable` · unreleased
+
+```ts
+getMapBadges(): Map<string, MapBadge[]>
+```
+
+Badges per map id, from every registered source.
+
+### getMapBadgeSources
+
+`unstable` · unreleased
+
+```ts
+getMapBadgeSources(): readonly BadgeSource[]
+```
+
+Every registered badge source, in registration order.
+
+### getMapList
+
+`unstable` · since v0.7.0
+
+```ts
+getMapList(): MapMeta[]
+```
+
+The list of all maps (metadata only).
+
+### invalidateMapList
+
+`unstable` · since v0.4.0
+
+```ts
+invalidateMapList(): Promise<void>
+```
+
+Refresh the map list and notify other windows of the change.
+
+### isReservedMap
+
+`unstable` · since v0.10.1
+
+```ts
+isReservedMap(id: string | null): boolean
+```
+
+Whether `id` belongs to an app fixture rather than a user-created map.
+
+### moveMapToFolder
+
+`unstable` · since v0.4.0
+
+```ts
+moveMapToFolder(mapId: string, folder: string | null): Promise<void>
+```
+
+Move a map into a folder, or to the root when `folder` is null.
+
+### openScratchMap
+
+`unstable` · since v0.10.1
+
+```ts
+openScratchMap(): Promise<void>
+```
+
+Open the scratch map, creating it on first use.
+
+### registerMapBadges
+
+`unstable` · unreleased
+
+```ts
+registerMapBadges(source: BadgeSource): void
+```
+
+Add a source of map-row badges.
+
+### reloadMapList
+
+`unstable` · since v0.8.1
+
+```ts
+reloadMapList(): Promise<void>
+```
+
+Refresh the map list from disk.
+
+### renameFolder
+
+`unstable` · since v0.4.0
+
+```ts
+renameFolder(from: string, to: string): Promise<void>
+```
+
+Rename a folder, moving all its maps to the new name.
+
+### setCachedMapList
+
+`unstable` · since v0.8.1
+
+```ts
+setCachedMapList(list: MapMeta[]): void
+```
+
+Set the map list directly without a disk read.
+
+### useMapBadges
+
+`unstable` · unreleased
+
+```ts
+useMapBadges(): Map<string, MapBadge[]>
+```
+
+Reactive {@link getMapBadges}.
+
+### useMapList
+
+`unstable` · since v0.4.0
+
+```ts
+useMapList(): MapMeta[]
+```
+
+Reactive list of all maps (metadata only).
 
 ## Review
 
@@ -7115,6 +6903,65 @@ are processed in place and results are written back. When `rows` is a Location a
 locations are processed independently and returned as modified copies. Resolves once
 every provider finishes, or on abort.
 
+## Seen
+
+The seen-location history.
+
+### clearSeen
+
+`unstable` · since v0.4.0
+
+```ts
+clearSeen(): Promise<void>
+```
+
+Delete the entire seen history. Not undoable.
+
+### getSeenCount
+
+`unstable` · since v0.4.0
+
+```ts
+getSeenCount(filter?: SeenFilter): Promise<number>
+```
+
+Number of seen entries matching the filter (all when omitted).
+
+### getSeenCountries
+
+`unstable` · since v0.10.3
+
+```ts
+getSeenCountries(): Promise<string[]>
+```
+
+Distinct country codes that appear in the seen history.
+
+### getSeenEntries
+
+`unstable` · since v0.4.0
+
+```ts
+getSeenEntries(
+  limit?: number,
+  offset?: number,
+  filter?: SeenFilter,
+  thumbnails?: boolean,
+): Promise<SeenEntry[]>
+```
+
+Fetch a page of the seen (visited-panorama) history.
+
+### getSeenMaps
+
+`unstable` · since v0.10.3
+
+```ts
+getSeenMaps(): Promise<SeenMapInfo[]>
+```
+
+Maps that have seen-history entries.
+
 ## SeenRecorder
 
 How the app records panorama visits into the seen history.
@@ -7651,6 +7498,36 @@ pano.zoomOut(): void
 
 Step the zoom out.
 
+## Enrich
+
+Enrichment passes over the open map.
+
+### enrich
+
+`unstable` · since v0.10.3
+
+```ts
+enrich(
+  loc: Location,
+  opts?: Omit<RunOpts, "onProgress">,
+): Promise<Location>
+```
+
+Enrich a single location with the map's enabled metadata fields. Existing fields are
+kept unless `force` re-derives all of them. Returns the enriched location without
+writing it. Returns the location unchanged when enrichment is disabled.
+
+### enrichAll
+
+`unstable` · since v0.4.0
+
+```ts
+enrichAll(selector: Selector, opts?: RunOpts): Promise<EnrichOutcome[]>
+```
+
+Bulk-enrich a selector: resolve missing pano ids, then run every field-producing
+provider (metadata, exact date, timezone, subdivision).
+
 ## Providers
 
 The providers the app registers for enrichment.
@@ -7794,6 +7671,128 @@ timezoneProvider: {
 A named procedure with dependency-graph placement. Providers that declare
 `fieldDefs` are enrichment providers whose fields appear in the enrichment UI.
 
+## PinPano
+
+Bulk pinning locations to their panoramas.
+
+### bulkPinToPano
+
+`unstable` · since v0.4.0
+
+```ts
+bulkPinToPano(selector: Selector, opts?: PinOpts): Promise<PinOutcome>
+```
+
+Pin every location in the selector to its pano id, resolving pano ids first when asked.
+
+## Validate
+
+Coverage validation passes.
+
+### validateLocations
+
+`unstable` · since v0.4.0
+
+```ts
+validateLocations(
+  selector: Selector,
+  opts?: BulkOpts & {
+    config?: Partial<ValidateConfig>;
+  },
+): Promise<ValidationOutcome>
+```
+
+Check that each location's Street View coverage still exists.
+
+## MapState
+
+The embedded map host, its preferences, and click interceptors.
+
+### addClickInterceptor
+
+`unstable` · since v0.10.3
+
+```ts
+addClickInterceptor(fn: ClickInterceptor): () => void
+```
+
+Register a map-click interceptor. Returns a removal function. The most recently
+added interceptor that returns true consumes the click.
+
+### fitMapToBounds
+
+`unstable` · since v0.10.3
+
+```ts
+fitMapToBounds(
+  bounds: Bounds | null,
+  padding?: number,
+  minExtent?: number,
+): void
+```
+
+Fit the editor map's viewport to `bounds`. A `minExtent` prevents over-zoom on tiny areas.
+
+### getMapHost
+
+`unstable` · since v0.8.0
+
+```ts
+getMapHost(): MapHost | null
+```
+
+Return the main editor map host, or null if not mounted.
+
+### setDrawInterceptor
+
+`unstable` · since v0.10.3
+
+```ts
+setDrawInterceptor(fn: DrawInterceptor | null): void
+```
+
+Set the callback for completed polygon draws. Null clears it.
+
+### setMapHost
+
+`unstable` · since v0.10.3
+
+```ts
+setMapHost(host: MapHost | null): void
+```
+
+Set or clear the main editor map host.
+
+### tryInterceptClick
+
+`unstable` · since v0.10.3
+
+```ts
+tryInterceptClick(lat: number, lng: number, shiftKey?: boolean): boolean
+```
+
+Run registered click interceptors (newest first). True if one consumed the click.
+
+### tryInterceptDraw
+
+`unstable` · since v0.10.3
+
+```ts
+tryInterceptDraw(rings: number[][][]): boolean
+```
+
+Pass completed polygon rings to the draw interceptor. True if it consumed them.
+
+### waitForMapHost
+
+`unstable` · since v0.8.0
+
+```ts
+waitForMapHost(): Promise<MapHost>
+```
+
+Wait for the main editor map to be ready.
+
 ## SceneStore
 
 The marker scene the map surfaces render from, and its load lifecycle.
@@ -7877,6 +7876,23 @@ whenSceneSettled(): Promise<void>
 ```
 
 Resolves when the most recently started full scene load has finished (or immediately if none is in flight).
+
+## ScenePositions
+
+Screen positions of the rendered markers.
+
+### getScenePositions
+
+`unstable` · since v0.9.0
+
+```ts
+getScenePositions(): {
+  ids: Uint32Array;
+  positions: Float32Array;
+}
+```
+
+Snapshot of every rendered location's id and position (`[lng, lat, ...]`).
 
 ## Color
 

@@ -62,7 +62,9 @@ type SettingsApi = typeof settings;
 type ImportStagingApi = typeof importStaging;
 /** Uncommitted changes and their preview on the map. @unstable */
 type CommitDiffApi = typeof commitDiff;
+/** The selector picker the pick dialogs share; its choices move with the UI. @unstable */
 type SelectorPickApi = typeof picker;
+/** The cached map list and its refresh. @unstable */
 type MapListApi = typeof mapList;
 /** Review sessions and their history. @unstable */
 type ReviewApi = typeof review;
@@ -88,20 +90,26 @@ type FieldDefRegistryApi = typeof fieldDefRegistry;
 type FieldProjectionsApi = typeof fieldProjections;
 /** Running procedures directly, outside a registered provider. @unstable */
 type ProceduresApi = typeof procedures;
+/** The seen-location history. @unstable */
 type SeenApi = typeof seen;
 /** How the app records panorama visits into the seen history. @unstable */
 type SeenRecorderApi = typeof seenRecorder;
 /** The shared panorama viewer. @unstable */
 type PanoApi = typeof panoSurface;
+/** Enrichment passes over the open map. @unstable */
 type EnrichApi = typeof enrich;
 /** The providers the app registers for enrichment. @unstable */
 type ProvidersApi = typeof providers;
+/** Bulk pinning locations to their panoramas. @unstable */
 type PinPanoApi = typeof pinPano;
+/** Coverage validation passes. @unstable */
 type ValidateApi = typeof validate;
 type QueryApi = typeof query;
+/** The embedded map host, its preferences, and click interceptors. @unstable */
 type MapStateApi = typeof mapState;
 /** The marker scene the map surfaces render from, and its load lifecycle. @unstable */
 type SceneStoreApi = typeof sceneStore;
+/** Screen positions of the rendered markers. @unstable */
 type ScenePositionsApi = typeof scenePositions;
 /** Color conversion helpers. @unstable */
 type ColorApi = typeof colorUtils;
