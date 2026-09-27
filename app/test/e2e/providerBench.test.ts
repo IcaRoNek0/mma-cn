@@ -14,11 +14,12 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { closeMap, createAndOpenMap, deleteMap, waitForReady, withApi } from "./helpers";
 
-const FIXTURE = process.env.MMA_BENCH_FIXTURE ?? "E:/tmp/mma-bench/fixture.json";
-const OUT = process.env.MMA_BENCH_OUT ?? "E:/tmp/mma-bench/master.json";
+const FIXTURE = process.env.MMA_BENCH_FIXTURE ?? join(tmpdir(), "mma-bench", "fixture.json");
+const OUT = process.env.MMA_BENCH_OUT ?? join(tmpdir(), "mma-bench", "master.json");
 const ONLY = (process.env.MMA_BENCH_ONLY ?? "").split(",").filter(Boolean);
 const SCALE = Number(process.env.MMA_BENCH_SCALE ?? 50000);
 

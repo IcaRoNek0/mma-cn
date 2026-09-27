@@ -8,8 +8,6 @@
 //! Running it:
 //!
 //! ```sh
-//! export CARGO_TARGET_DIR=E:/cargo-build/mma-dev/target   # never src-tauri/target
-//!
 //! # (a) quick smoke -- 10k rows, one pass, no statistics
 //! cargo bench --features bench --bench store -- --quick
 //!

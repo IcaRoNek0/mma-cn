@@ -13,10 +13,11 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { createAndOpenMap, closeMap, deleteMap, waitForReady, withApi } from "./helpers";
 
-const OUT = process.env.MMA_BENCH_FIXTURE ?? "E:/tmp/mma-bench/fixture.json";
+const OUT = process.env.MMA_BENCH_FIXTURE ?? join(tmpdir(), "mma-bench", "fixture.json");
 const WANT = Number(process.env.MMA_BENCH_FIXTURE_ROWS ?? 50000);
 const OVERSAMPLE = Number(process.env.MMA_BENCH_OVERSAMPLE ?? 6);
 /** Suburban boxes across many countries: dense enough road coverage for a 50m search to
