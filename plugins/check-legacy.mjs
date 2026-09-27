@@ -262,7 +262,12 @@ function promiseWalker(checker, sources, probe, removal) {
 			props.length > 0 &&
 			declaredHere(oldType);
 		if (!structured) {
-			probe(o, n, path);
+			// A function is a value the plugin calls, so the implementation must satisfy the
+			// promised signature: new asserted assignable to old. A return may gain members,
+			// while one that loses or widens a member fails, as does a new required parameter.
+			// Data compares the other way, where widening is the additive case.
+			if (oldType.getCallSignatures().length > 0) probe(n, o, path);
+			else probe(o, n, path);
 			return;
 		}
 		for (const prop of props) {
@@ -293,9 +298,10 @@ const leaf = (d) => {
 /** Compare the exported type surface of two SDK d.ts files, which must sit in one directory.
  *  Removed exports and removed members are found structurally; compatibility over the members
  *  both sides have is decided by the compiler, on a generated probe file of assignability
- *  assertions, so the rule is TypeScript's own and not a hand-rolled differ. Additions,
- *  optionalisation and widening pass; a narrowed member fails. `@unstable` members are
- *  excluded with everything under them. Every rule applies at every depth. */
+ *  assertions, so the rule is TypeScript's own and not a hand-rolled differ. On data,
+ *  additions, optionalisation and widening pass and a narrowed member fails; on functions,
+ *  the new signature must satisfy the promised one. `@unstable` members are excluded with
+ *  everything under them. Every rule applies at every depth. */
 export function compareTypes(oldPath, newPath) {
 	const dir = dirname(newPath);
 	const spec = (p) => `./${basename(p).replace(/\.(d\.)?ts$/, "")}`;

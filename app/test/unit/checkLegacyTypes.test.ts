@@ -94,11 +94,40 @@ export { F };`,
 export { F };`,
 		broken: ["F"],
 	},
+	// A function compares as the value a plugin calls: the new signature must satisfy the
+	// promised one, so returns are covariant and a new required parameter is a break.
 	{
-		name: "fails when an exported function narrows its return",
+		name: "passes when an exported function narrows its return",
 		before: `export declare function f(x: string): string;`,
 		after: `export declare function f(x: string): "literal";`,
+	},
+	{
+		name: "fails when an exported function widens its return",
+		before: `export declare function f(x: string): string;`,
+		after: `export declare function f(x: string): string | number;`,
 		broken: ["f"],
+	},
+	{
+		name: "passes when a function's return gains a member",
+		before: `export declare function f(): { a: string };`,
+		after: `export declare function f(): { a: string; b: number };`,
+	},
+	{
+		name: "fails when a function's return loses a member",
+		before: `export declare function f(): { a: string; b: number };`,
+		after: `export declare function f(): { a: string };`,
+		broken: ["f"],
+	},
+	{
+		name: "fails when a function gains a required parameter",
+		before: `export declare function f(a: string): void;`,
+		after: `export declare function f(a: string, b: number): void;`,
+		broken: ["f"],
+	},
+	{
+		name: "passes when a function gains an optional parameter",
+		before: `export declare function f(a: string): void;`,
+		after: `export declare function f(a: string, b?: number): void;`,
 	},
 
 	// Every rule holds at every depth: a nested member is judged exactly like a top-level one.
