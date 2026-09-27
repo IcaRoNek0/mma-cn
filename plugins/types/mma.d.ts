@@ -702,6 +702,12 @@ declare const commands$1: {
      *  @unstable
      */
     polygonBounds: (polygon: PolygonGeometry) => Promise<[number, number, number, number] | null>;
+    /**
+     *  The polygon redrawn so none of its edges cross, covering the same area, or `null` when
+     *  it encloses none.
+     *  @unstable
+     */
+    polygonUntangle: (polygon: PolygonGeometry) => Promise<PolygonGeometry | null>;
     /**  Group by a derived key, returning `{ key, ids, bin }` per group. @unstable */
     storeGroupBy: (selector: Selector, field: string, key: KeySpec) => Promise<PartitionBucket[]>;
     /**

@@ -51,6 +51,40 @@ fn polygon_bounds_spans_the_extra_polygons_too() {
 }
 
 #[test]
+fn polygon_untangle_spreads_split_pieces_into_extra_polygons() {
+    let mut g = geom(vec![vec![
+        [0.0, 0.0],
+        [2.0, 2.0],
+        [2.0, 0.0],
+        [0.0, 2.0],
+        [0.0, 0.0],
+    ]]);
+    g.extra_polygons = Some(vec![vec![square(40.0, 0.0, 50.0, 10.0)]]);
+    g.properties = Some(serde_json::json!({ "name": "bow" }));
+    let out = tauri::async_runtime::block_on(polygon_untangle(g)).unwrap();
+    assert_eq!(out.extra_polygons.as_ref().map(Vec::len), Some(2));
+    assert_eq!(out.properties, Some(serde_json::json!({ "name": "bow" })));
+    for (lng, lat, inside) in [
+        (0.3, 1.0, true),
+        (1.7, 1.0, true),
+        (1.0, 0.3, false),
+        (45.0, 5.0, true),
+    ] {
+        assert_eq!(
+            out.prepared().contains(lng, lat),
+            inside,
+            "at ({lng}, {lat})"
+        );
+    }
+}
+
+#[test]
+fn polygon_untangle_of_nothing_is_null() {
+    let flat = geom(vec![vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]]);
+    assert!(tauri::async_runtime::block_on(polygon_untangle(flat)).is_none());
+}
+
+#[test]
 fn seam_straddling_parts_merge_into_one_frame() {
     let mut g = geom(vec![square(170.0, -5.0, 180.0, 5.0)]);
     g.extra_polygons = Some(vec![vec![square(-180.0, -5.0, -170.0, 5.0)]]);

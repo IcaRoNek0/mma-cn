@@ -3,6 +3,11 @@
 
 use std::borrow::Cow;
 
+use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::core::solver::Solver;
+use i_overlay::float::overlay::{FloatOverlay, OverlayOptions};
+
 /// Shortest signed longitude delta from `from` to `to`, in [-180, 180).
 #[inline]
 pub fn lng_delta(from: f64, to: f64) -> f64 {
@@ -251,6 +256,54 @@ pub fn polygon_contains<'a>(
         }
     }
     true
+}
+
+/// Redraw a polygon (outer ring then holes) as polygons whose edges never cross, covering
+/// exactly the points `polygon_contains` accepts, so a renderer that fills rings as
+/// simple shapes fills what the polygon contains. Rings come back closed, in the outer
+/// ring's unwrapped frame; an empty result means the polygon encloses no area.
+pub fn untangle_polygon(rings: &[Vec<[f64; 2]>]) -> Vec<Vec<Vec<[f64; 2]>>> {
+    let Some((outer, holes)) = rings.split_first() else {
+        return Vec::new();
+    };
+    let Some(&[anchor, _]) = outer.first() else {
+        return Vec::new();
+    };
+    let even_odd = |ring: &[[f64; 2]]| {
+        let shift = ((anchor - ring.first().map_or(anchor, |v| v[0])) / 360.0).round() * 360.0;
+        let ring: Vec<[f64; 2]> = unwrap_ring(ring)
+            .iter()
+            .map(|&[lng, lat]| [lng + shift, lat])
+            .collect();
+        FloatOverlay::with_subj_custom(&ring, collinear_kept(), Solver::default())
+            .overlay(OverlayRule::Subject, FillRule::EvenOdd)
+    };
+    let mut shapes = even_odd(outer);
+    if !holes.is_empty() {
+        let cut: Vec<Vec<[f64; 2]>> = holes.iter().flat_map(|h| even_odd(h)).flatten().collect();
+        shapes = FloatOverlay::with_subj_and_clip_custom(
+            &shapes,
+            &cut,
+            collinear_kept(),
+            Solver::default(),
+        )
+        .overlay(OverlayRule::Difference, FillRule::NonZero);
+    }
+    for contour in shapes.iter_mut().flatten() {
+        if let Some(&first) = contour.first() {
+            contour.push(first);
+        }
+    }
+    shapes
+}
+
+/// Vertices along a straight edge survive, so an edge split to stay under 180 degrees of
+/// longitude stays split.
+fn collinear_kept() -> OverlayOptions<f64> {
+    let mut options = OverlayOptions::default();
+    options.preserve_input_collinear = true;
+    options.preserve_output_collinear = true;
+    options
 }
 
 /// Grow a running `[min_lng, min_lat, max_lng, max_lat]` to cover one ring, unwrapped

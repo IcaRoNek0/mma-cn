@@ -215,3 +215,135 @@ fn prepared_ring_matches_on_its_own_vertices_and_edge_latitudes() {
         }
     }
 }
+
+fn contains(rings: &[Vec<[f64; 2]>], lng: f64, lat: f64) -> bool {
+    polygon_contains(lng, lat, rings.iter().map(Vec::as_slice))
+}
+
+fn crosses(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let turn = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    turn(a, b, c) * turn(a, b, d) < 0.0 && turn(c, d, a) * turn(c, d, b) < 0.0
+}
+
+/// Untangle `rings`, then check no two output edges cross and that the output contains
+/// exactly what the input does over a grid of `n` x `n` points spanning `bbox`.
+fn untangle_checked(rings: &[Vec<[f64; 2]>], bbox: [f64; 4], n: usize) -> Vec<Vec<Vec<[f64; 2]>>> {
+    let out = untangle_polygon(rings);
+    let edges: Vec<([f64; 2], [f64; 2])> = out
+        .iter()
+        .flatten()
+        .flat_map(|ring| ring.windows(2).map(|w| (w[0], w[1])))
+        .collect();
+    for (i, &(a, b)) in edges.iter().enumerate() {
+        for &(c, d) in &edges[i + 1..] {
+            assert!(!crosses(a, b, c, d), "{a:?}-{b:?} crosses {c:?}-{d:?}");
+        }
+    }
+    let [w, s, e, nth] = bbox;
+    for yi in 0..n {
+        for xi in 0..n {
+            let lng = wrap_dlng(w + (e - w) * (xi as f64 + 0.371) / n as f64);
+            let lat = s + (nth - s) * (yi as f64 + 0.529) / n as f64;
+            assert_eq!(
+                out.iter().any(|p| contains(p, lng, lat)),
+                contains(rings, lng, lat),
+                "at ({lng}, {lat})"
+            );
+        }
+    }
+    out
+}
+
+fn scribble(n: usize, clng: f64, clat: f64) -> Vec<[f64; 2]> {
+    let mut seed = 0x2545_f491_u32;
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 8) as f64 / (1u32 << 24) as f64 - 0.5
+    };
+    (0..n)
+        .map(|_| [wrap_dlng(clng + 8.0 * next()), clat + 6.0 * next()])
+        .collect()
+}
+
+#[test]
+fn untangle_splits_a_bowtie_into_its_two_lobes() {
+    let bowtie = vec![vec![
+        [0.0, 0.0],
+        [2.0, 2.0],
+        [2.0, 0.0],
+        [0.0, 2.0],
+        [0.0, 0.0],
+    ]];
+    let out = untangle_checked(&bowtie, [-1.0, -1.0, 3.0, 3.0], 80);
+    assert_eq!(out.len(), 2);
+    assert!(out.iter().all(|p| p.len() == 1));
+}
+
+#[test]
+fn untangle_leaves_the_center_of_a_star_empty() {
+    let star: Vec<[f64; 2]> = (0..=5)
+        .map(|k| {
+            let a = std::f64::consts::FRAC_PI_2 + k as f64 * 4.0 * std::f64::consts::PI / 5.0;
+            [a.cos(), a.sin()]
+        })
+        .collect();
+    let out = untangle_checked(&[star], [-1.2, -1.2, 1.2, 1.2], 80);
+    assert!(!out.iter().any(|p| contains(p, 0.0, 0.0)));
+}
+
+#[test]
+fn untangle_matches_containment_on_a_scribble() {
+    for clng in [10.0, 179.0] {
+        let ring = scribble(40, clng, 30.0);
+        untangle_checked(&[ring], [clng - 5.0, 26.0, clng + 5.0, 34.0], 150);
+    }
+}
+
+#[test]
+fn untangle_keeps_a_clean_ring_and_its_edge_splits() {
+    let ring = vec![
+        [100.0, -10.0],
+        [200.0, -10.0],
+        [300.0, -10.0],
+        [300.0, 10.0],
+        [200.0, 10.0],
+        [100.0, 10.0],
+        [100.0, -10.0],
+    ];
+    let out = untangle_checked(&[ring.clone()], [90.0, -20.0, 310.0, 20.0], 100);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].len(), 1);
+    assert_eq!(out[0][0].len(), ring.len());
+    assert!(out[0][0]
+        .iter()
+        .all(|&[lng, _]| (100.0..=300.0).contains(&lng)));
+}
+
+#[test]
+fn untangle_cuts_overlapping_holes_as_their_union_in_any_frame() {
+    let square = |w: f64, s: f64, size: f64| {
+        vec![
+            [w, s],
+            [w + size, s],
+            [w + size, s + size],
+            [w, s + size],
+            [w, s],
+        ]
+    };
+    let rings = vec![
+        square(170.0, 0.0, 20.0),
+        square(-185.0, 5.0, 6.0),
+        square(174.0, 8.0, 6.0),
+    ];
+    let out = untangle_checked(&rings, [168.0, -2.0, 192.0, 22.0], 120);
+    assert!(!out.iter().any(|p| contains(p, 177.5, 9.5)));
+}
+
+#[test]
+fn untangle_of_a_ring_without_area_is_empty() {
+    let flat = vec![vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]];
+    assert!(untangle_polygon(&flat).is_empty());
+    assert!(untangle_polygon(&[]).is_empty());
+}

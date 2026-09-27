@@ -1,3 +1,4 @@
+import type { PolygonGeometry } from "@/bindings.gen";
 import {
 	addLocs,
 	createLocation,
@@ -150,6 +151,37 @@ describe("Selections - basic types", () => {
 			},
 		});
 		expect(result).toBeGreaterThan(0);
+	});
+
+	it("an untangled bowtie selects exactly what the crossed one did, as two pieces", async () => {
+		const bowtie: PolygonGeometry = {
+			coordinates: [
+				[
+					[-105, -5],
+					[-65, 5],
+					[-65, -5],
+					[-105, 5],
+					[-105, -5],
+				],
+			],
+			extraPolygons: null,
+		};
+		const result = await withApi(async (api, crossed: PolygonGeometry) => {
+			const count = async (polygon: PolygonGeometry) => {
+				await api.applySelectionUpdate(() => []);
+				await api.applySelectionUpdate(api.addSelection({ type: "Polygon", polygon }));
+				return api.getMapState().selectedLocationIds.size;
+			};
+			const untangled = await api.cmd.polygonUntangle(crossed);
+			return {
+				pieces: untangled ? 1 + (untangled.extraPolygons?.length ?? 0) : 0,
+				crossed: await count(crossed),
+				untangled: untangled ? await count(untangled) : -1,
+			};
+		}, bowtie);
+		expect(result.pieces).toBe(2);
+		expect(result.crossed).toBeGreaterThan(0);
+		expect(result.untangled).toBe(result.crossed);
 	});
 
 	// --- Duplicates ---

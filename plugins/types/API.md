@@ -5127,6 +5127,17 @@ cmd.polygonRandomPoints(
 Up to `count` points drawn uniformly at random inside the polygon, as `[lng, lat]`
 pairs. Fewer come back when the polygon fills little of its bounding box.
 
+#### cmd.polygonUntangle
+
+`unstable` · unreleased
+
+```ts
+cmd.polygonUntangle(polygon: PolygonGeometry): Promise<PolygonGeometry | null>
+```
+
+The polygon redrawn so none of its edges cross, covering the same area, or `null` when
+it encloses none.
+
 #### cmd.procedureActivity
 
 `unstable` · since v0.11.0
