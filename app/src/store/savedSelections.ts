@@ -16,8 +16,7 @@ import { cmd } from "@/lib/commands";
 import { importLegacySavedSelections } from "./migrations";
 import { bridgeAcrossWindows, emit, useEventValue } from "@/lib/events";
 import { log } from "@/lib/util/log";
-import { applySelectionUpdate, getTag, getVisibleTags } from "./useMapStore";
-import { addSelection, batch } from "./selections";
+import { addSelections, getTag, getVisibleTags } from "./useMapStore";
 
 /** Selection types that cannot be saved as rules because they are bound to the open map. */
 export const MAP_LOCAL_TYPES = ["Locations", "Manual", "ValidationState", "Reviewed"] as const;
@@ -218,7 +217,6 @@ export async function deleteSavedSelection(id: string): Promise<void> {
  *  were added. */
 export function applySavedSelection(saved: SavedSelection): number {
 	const parts = savedParts(saved);
-	if (parts.length > 0)
-		void applySelectionUpdate(batch(addSelection)(parts.map((p) => p.selector)));
+	if (parts.length > 0) void addSelections(parts.map((p) => p.selector));
 	return parts.length;
 }

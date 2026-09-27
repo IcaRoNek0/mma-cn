@@ -21,7 +21,7 @@ import {
 	openStagedLocation,
 	resolveLocation,
 	setActiveLocation,
-	applySelectionUpdate,
+	applyListUpdate,
 } from "@/store/useMapStore";
 import { toggleManualSelection } from "@/store/selections";
 import { isVirtualLocation, isImportPreview, locId, createLocation } from "@/types";
@@ -204,7 +204,7 @@ export async function handleMapClick(
 		if (picked != null) {
 			if (isVirtualLocation({ id: locId(picked) })) return; // staged location's active pin: already open
 			if (domEvent instanceof MouseEvent && domEvent.ctrlKey)
-				void applySelectionUpdate(toggleManualSelection(locId(picked)));
+				void applyListUpdate(toggleManualSelection(locId(picked)));
 			else void setActiveLocation(picked);
 			return;
 		}
@@ -220,7 +220,7 @@ export async function handleMapClick(
 			const nearest = await cmd.storeFindNearest(info.coordinate[1], info.coordinate[0]);
 			if (!nearest) return;
 			if (domEvent instanceof MouseEvent && domEvent.ctrlKey)
-				void applySelectionUpdate(toggleManualSelection(nearest.id));
+				void applyListUpdate(toggleManualSelection(nearest.id));
 			else void setActiveLocation(nearest);
 			return;
 		}

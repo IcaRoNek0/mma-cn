@@ -1,12 +1,11 @@
 import { useCallback } from "react";
-import { getMapState, applySelectionUpdate } from "@/store/useMapStore";
-import { batch, removeSelection } from "@/store/selections";
+import { getMapState, removeSelections } from "@/store/useMapStore";
 import { cmd } from "@/lib/commands";
 import { useHeldHotkeyClick } from "@/lib/map/useHeldHotkeyClick";
 
 /** Keys of the polygon selections covering a point. */
 export async function polygonsAt(lat: number, lng: number): Promise<string[]> {
-	const polygons = getMapState().selections.flatMap((s) =>
+	const polygons = getMapState().selectionList.flatMap(({ selection: s }) =>
 		s.selector.type === "Polygon" ? [{ key: s.key, polygon: s.selector.polygon }] : [],
 	);
 	const hits = await Promise.all(
@@ -19,7 +18,7 @@ export async function polygonsAt(lat: number, lng: number): Promise<string[]> {
  *  map context menu. */
 export async function deletePolygonsAt(lat: number, lng: number): Promise<void> {
 	const keys = await polygonsAt(lat, lng);
-	if (keys.length) void applySelectionUpdate(batch(removeSelection)(keys));
+	if (keys.length) void removeSelections(keys);
 }
 
 export function useDeletePolygon() {

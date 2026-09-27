@@ -8,6 +8,7 @@ import {
 	mutate,
 	openMap as storeOpenMap,
 	query,
+	syncSelections as storeSyncSelections,
 } from "@/store/useMapStore";
 import * as mapList from "@/store/mapList";
 import { cmd } from "@/lib/commands";
@@ -20,16 +21,8 @@ export { runProcedure, procedureEntry } from "@/lib/data/procedures";
 
 /** Force a full selection re-resolve and return the selected IDs. */
 export async function syncSelections(): Promise<{ ids: number[] }> {
-	const { selections, ghostedSelections } = getMapState();
-	if (selections.length === 0) return { ids: [] };
-	await cmd.storeSyncSelections(
-		selections.map((s) => ({
-			key: s.key,
-			selector: s.selector,
-			color: s.color,
-			ghosted: ghostedSelections.has(s.key),
-		})),
-	);
+	if (getMapState().selectionList.length === 0) return { ids: [] };
+	await storeSyncSelections();
 	return { ids: await query(currentSelection()).ids() };
 }
 

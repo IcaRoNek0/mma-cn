@@ -13,9 +13,10 @@ import {
 	listSessions,
 	resumeReview,
 	deleteSession,
-	selectReviewSet,
+	reviewSetSelector,
 	renameReview,
 } from "@/lib/review/review";
+import { addSelections } from "@/store/useMapStore";
 import { shortDateFmt, relativeTime } from "@/lib/util/format";
 import { t } from "@/lib/i18n";
 import { dateTimeFmt } from "@/lib/util/format";
@@ -59,7 +60,7 @@ export function ReviewSessionsModal({ open, onOpenChange }: DialogProps) {
 	};
 
 	const handleSelect = (s: ReviewSession, mode: "reviewed" | "unreviewed") => {
-		void selectReviewSet(s, mode);
+		void addSelections([reviewSetSelector(s, mode)]);
 		onOpenChange(false);
 	};
 

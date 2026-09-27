@@ -648,7 +648,7 @@ Emits `location:add`.
 addSelections(selectors: Selector[]): Promise<void>
 ```
 
-Add selectors to the active selection list.
+Add selectors to the selection.
 
 ### applyFieldOp
 
@@ -664,19 +664,29 @@ applyFieldOp(
 
 Apply a field operation across all locations matching `selector`. Emits `location:invalidate`.
 
+### applyListUpdate
+
+`unstable` · unreleased
+
+```ts
+applyListUpdate(
+  op: (rows: ListedSelection[]) => ListedSelection[],
+): Promise<void>
+```
+
+Apply `op` to the listed selections, ghosted ones included: the sidebar's own edits.
+No-op when nothing changed.
+
 ### applySelectionUpdate
 
 `unstable` · since v0.10.3
 
 ```ts
-applySelectionUpdate(
-  op: (sels: Selection[], ghosted: ReadonlySet<string>) => Selection[] | SelectionPatch,
-): Promise<void>
+applySelectionUpdate(op: (active: Selection[]) => Selection[]): Promise<void>
 ```
 
-Apply a selection transform function and re-resolve the selection.
-The function receives the current selections and ghosted set, and returns either
-a new `Selection[]` or a `SelectionPatch`. No-op when nothing changed.
+Apply `op` to the selection. It sees only the active selections; ghosted ones keep their
+places in the list. No-op when nothing changed.
 
 ### cancelAutosave
 
@@ -830,7 +840,7 @@ Save any unsaved changes now instead of waiting for the autosave timer.
 getActiveSelections(): Selection[]
 ```
 
-Active (non-ghosted) selections, the default for any operational logic.
+The selection: every listed selection that is not ghosted.
 
 ### getMapState
 
@@ -1083,7 +1093,7 @@ Remove locations by id. Undoable.
 removeSelections(keys: string[]): Promise<void>
 ```
 
-Drop selections by key.
+Drop listed selections by key, ghosted ones included.
 
 ### renameField
 
@@ -1134,7 +1144,7 @@ Persist a new tag display order.
 resetSelections(): Promise<void>
 ```
 
-Clear all selections.
+Clear all selections, ghosted ones included.
 
 ### resolveLocation
 
@@ -3150,10 +3160,12 @@ Pure transforms over the selection list behind the sidebar.
 `unstable` · since v0.4.0
 
 ```ts
-addSelection(selector: Selector): (current: Selection[]) => Selection[]
+addSelection(
+  selector: Selector,
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Append a new selection built from `selector`, deduplicating by key.
+List a selection built from `selector`. One already listed is updated in place, ghost and all.
 
 ### all
 
@@ -3174,18 +3186,6 @@ any(...selectors: Selector[]): Selector
 ```
 
 Locations matching any of `selectors`; with none, no location.
-
-### batch
-
-`unstable` · since v0.10.3
-
-```ts
-batch<T, S>(
-  op: (item: T) => (state: S) => S,
-): (items: T[]) => (state: S) => S
-```
-
-Lift a single-item curried transform into one that folds over an array of items.
 
 ### buildSelection
 
@@ -3226,7 +3226,7 @@ composeSelections(
   drag: SelectionPath,
   drop: SelectionPath,
   mode: GroupType,
-): (current: Selection[]) => Selection[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
@@ -3285,7 +3285,8 @@ invertSelections(
 ): (current: Selection[]) => Selection[]
 ```
 
-Invert targeted top-level selections. A single target toggles in place; several are wrapped in Union then Invert.
+Invert the targeted selections (or all, when `keys` is null). A single target toggles in
+place; several are wrapped in Union then Invert.
 
 ### isolateGhost
 
@@ -3293,26 +3294,12 @@ Invert targeted top-level selections. A single target toggles in place; several 
 
 ```ts
 isolateGhost(
-  key: string,
-): (sels: Selection[], ghosted: ReadonlySet<string>) => SelectionPatch
+  index: number,
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Solo one selection by ghosting all others. Repeat to clear all ghosts.
-
-### isolateGhostKeys
-
-`unstable` · since v0.10.3
-
-```ts
-isolateGhostKeys(
-  keys: string[],
-  ghosted: ReadonlySet<string>,
-  key: string,
-): Set<string>
-```
-
-Ghost keys that "solo" `key`: everything except it. Returns an empty set when `key`
-is already the sole visible selection, so a repeat call un-isolates (clears all ghosts).
+Ghost every listed selection but the one at `index`, or un-ghost them all when it already
+is the only one left.
 
 ### lacks
 
@@ -3344,7 +3331,7 @@ moveSelection(
   from: SelectionPath,
   to: SelectionPath,
   position: "before" | "after",
-): (current: Selection[]) => Selection[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Move the selection at `from` to just before or after the one at `to`, which must sit in the
@@ -3410,17 +3397,19 @@ Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
 `unstable` · since v0.4.0
 
 ```ts
-removeSelection(key: string): (current: Selection[]) => Selection[]
+removeSelection(key: string): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Remove the top-level selection whose key is `key`. A removed group leaves its children behind in its place.
+Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place.
 
 ### removeSelectionAt
 
 `unstable` · unreleased
 
 ```ts
-removeSelectionAt(path: SelectionPath): (current: Selection[]) => Selection[]
+removeSelectionAt(
+  path: SelectionPath,
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Remove the selection at `path`. A removed group leaves its children behind in its place.
@@ -3431,10 +3420,9 @@ Remove the selection at `path`. A removed group leaves its children behind in it
 
 ```ts
 replaceSelection(
-  current: Selection[],
   path: SelectionPath,
   selector: Selector,
-): Selection[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
@@ -3448,7 +3436,7 @@ the existing sibling wins and the replacement is dropped.
 rewriteSelectionFields(
   from: string,
   to: string | null,
-): (selections: Selection[]) => Selection[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped.
@@ -3470,7 +3458,7 @@ Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped
 
 ```ts
 selectionAt(
-  list: Selection[],
+  rows: ListedSelection[],
   path: SelectionPath,
 ): Selection | undefined
 ```
@@ -3520,7 +3508,7 @@ Per-type descriptor for each selector variant: key derivation, display label, an
 setPolygonName(
   path: SelectionPath,
   name: string,
-): (current: Selection[]) => Selection[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Rename a Polygon selection's display name.
@@ -3533,7 +3521,7 @@ Rename a Polygon selection's display name.
 setSelectionColor(
   path: SelectionPath,
   color: RGB,
-): (current: Selection[]) => Selection[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Recolor the selection at `path`.
@@ -3566,31 +3554,30 @@ else, so there is no tag selector to build.
 
 ```ts
 toggleGhost(
-  key: string,
-): (_sels: Selection[], ghosted: ReadonlySet<string>) => SelectionPatch
+  index: number,
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Toggle one selection's ghosted (dimmed) state.
+Ghost the listed selection at `index`, or un-ghost it.
 
 ### toggleGhostAll
 
 `unstable` · since v0.10.3
 
 ```ts
-toggleGhostAll(): (
-  sels: Selection[],
-  ghosted: ReadonlySet<string>,
-) => SelectionPatch
+toggleGhostAll(): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Ghost all selections, or clear all ghosts if every selection is already ghosted.
+Ghost every listed selection, or un-ghost them all when every one already is.
 
 ### toggleInvert
 
 `unstable` · unreleased
 
 ```ts
-toggleInvert(path: SelectionPath): (current: Selection[]) => Selection[]
+toggleInvert(
+  path: SelectionPath,
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Invert the selection at `path` in place, or restore it when it is already inverted.
@@ -3600,7 +3587,9 @@ Invert the selection at `path` in place, or restore it when it is already invert
 `unstable` · since v0.4.0
 
 ```ts
-toggleManualSelection(locationId: number): (current: Selection[]) => Selection[]
+toggleManualSelection(
+  locationId: number,
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
 Add or remove a location from the Manual selection, creating it if needed.
@@ -3645,6 +3634,21 @@ untaggedSelector(): Selector
 
 Locations with no tags: `tags` resolves to nothing on an untagged row.
 
+### withActive
+
+`unstable` · unreleased
+
+```ts
+withActive(
+  rows: ListedSelection[],
+  active: Selection[],
+): ListedSelection[]
+```
+
+The listed selections once the active ones become `active`. Ghosted rows keep their places
+and `active` fills the others in order; a selection already listed as a ghosted row updates
+that row and stays ghosted.
+
 ### withChildren
 
 `unstable` · since v0.10.5
@@ -3667,7 +3671,7 @@ Editing the selection list the way the sidebar does.
 getSelectedTagIds(): ReadonlySet<number>
 ```
 
-Tag ids that currently have a top-level Tag selection active.
+Tag ids that have a top-level Tag selection listed, ghosted or not.
 
 ### getSelectedTagIdsDeep
 
@@ -3689,17 +3693,6 @@ toggleTagSelections(tagIds: number[]): void
 ```
 
 Toggle tag selections on or off for the given tags.
-
-### updateFilterSelection
-
-`unstable` · since v0.5.1
-
-```ts
-updateFilterSelection(path: SelectionPath, selector: Selector): Promise<void>
-```
-
-Edit an existing filter (or any selection) in place, preserving its position inside any
-AND/OR/Invert composite. Carries ghost state to the new key.
 
 ## SavedSelections
 
@@ -4804,6 +4797,17 @@ reviewPrev(): Promise<void>
 
 Step back to the previous location in the session.
 
+### reviewSelected
+
+`unstable` · unreleased
+
+```ts
+reviewSelected(): Promise<void>
+```
+
+Review the selected locations. With one active selection, the review belongs to it and
+resumes with it.
+
 ### reviewSet
 
 `unstable` · unreleased
@@ -4814,6 +4818,16 @@ reviewSet(s: ReviewSession, mode: ReviewMode): number[]
 
 The session's locations in `mode`: those reviewed, or those still to review.
 
+### reviewSetSelector
+
+`unstable` · unreleased
+
+```ts
+reviewSetSelector(s: ReviewSession, mode: ReviewMode): Selector
+```
+
+The locations of review session `s` that are reviewed, or still to review.
+
 ### selectReviewedHistory
 
 `unstable` · since v0.6.3
@@ -4823,16 +4837,6 @@ selectReviewedHistory(): Promise<void>
 ```
 
 Select every location marked reviewed across all sessions on this map.
-
-### selectReviewSet
-
-`unstable` · since v0.5.2
-
-```ts
-selectReviewSet(s: ReviewSession, mode: ReviewMode): Promise<void>
-```
-
-Add a reviewed or unreviewed overlay selection for a session.
 
 ### useReviewSession
 
@@ -6469,7 +6473,7 @@ spacing) or `minDistanceM` (keep as many as fit at that spacing).
 `unstable` · since v0.4.0
 
 ```ts
-cmd.storeSyncSelections(sels: SelectionInput[]): Promise<SelectionSync>
+cmd.storeSyncSelections(sels: ListedSelection[]): Promise<SelectionSync>
 ```
 
 Replace all active selections and resolve them against current data. Returns
@@ -8591,7 +8595,7 @@ getActiveLocation(): Location | null
 getAllSelections(): Selection[]
 ```
 
-**Deprecated in v0.8.2.** Read `MMA.getMapState().selections`.
+**Deprecated in v0.8.2.** Read `MMA.getMapState().selectionList`.
 
 ### getCurrentMap
 
@@ -8628,10 +8632,10 @@ getDirtyCount(): Promise<number>
 `unstable` · `deprecated` · since v0.7.4
 
 ```ts
-getGhostedSelections(): ReadonlySet<string>
+getGhostedSelections(): Set<string>
 ```
 
-**Deprecated in v0.8.2.** Read `MMA.getMapState().ghostedSelections`.
+**Deprecated in v0.8.2.** Read `MMA.getMapState().selectionList`.
 
 ### getGoogleMap
 

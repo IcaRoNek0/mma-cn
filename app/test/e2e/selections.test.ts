@@ -110,9 +110,9 @@ describe("Selections - basic types", () => {
 		const id2 = locIds[2];
 		await withApi(
 			async (api, i0: number, i1: number, i2: number) => {
-				await api.applySelectionUpdate(api.toggleManualSelection(i0));
-				await api.applySelectionUpdate(api.toggleManualSelection(i1));
-				await api.applySelectionUpdate(api.toggleManualSelection(i2));
+				await api.applyListUpdate(api.toggleManualSelection(i0));
+				await api.applyListUpdate(api.toggleManualSelection(i1));
+				await api.applyListUpdate(api.toggleManualSelection(i2));
 			},
 			id0,
 			id1,
@@ -122,7 +122,7 @@ describe("Selections - basic types", () => {
 		expect(ids.length).toBe(3);
 
 		await withApi(async (api, i1: number) => {
-			await api.applySelectionUpdate(api.toggleManualSelection(i1)); // remove
+			await api.applyListUpdate(api.toggleManualSelection(i1)); // remove
 		}, id1);
 		ids = await refreshSelections();
 		expect(ids.length).toBe(2);

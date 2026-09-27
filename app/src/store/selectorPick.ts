@@ -1,7 +1,7 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import type { Selector } from "@/bindings.gen";
 
-import { useMapState, currentSelection } from "./useMapStore";
+import { useMapState, currentSelection, getActiveSelections } from "./useMapStore";
 
 /** What the selector picker offers. Not a location set -- `selectorForPick` turns it
  *  into a `Selector`. */
@@ -34,16 +34,16 @@ function defaultChoice(selectionCount: number): SelectorPick {
 /** React hook: selector state with live counts. Defaults to the current selection when one
  *  exists, else all locations. Use `createSelectorPick` when non-React code also reads the selector. */
 export function useSelectorPick(initial?: SelectorPick): SelectorPickController {
-	const selections = useMapState((s) => s.selections);
+	const active = useMapState(() => getActiveSelections());
 	const selectedIds = useMapState((s) => s.selectedLocationIds);
 	const allCount = useMapState((s) => s.locationCount);
 	const [choice, setChoice] = useState<SelectorPick>(
 		() => initial ?? defaultChoice(selectedIds.size),
 	);
-	// `selections` is the invalidation key, not a value read here: selectorForPick reads
+	// `active` is the invalidation key, not a value read here: selectorForPick reads
 	// the live selection, which eslint cannot see.
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	const selector = useMemo(() => selectorForPick(choice), [choice, selections]);
+	const selector = useMemo(() => selectorForPick(choice), [choice, active]);
 	return { selector, choice, setChoice, allCount, selectionCount: selectedIds.size };
 }
 
@@ -79,11 +79,11 @@ export function createSelectorPick(initial?: SelectorPick): SelectorPickHandle {
 		subscribe: sub,
 		use(): SelectorPickController {
 			useSyncExternalStore(sub, getChoice);
-			const selections = useMapState((s) => s.selections);
+			const active = useMapState(() => getActiveSelections());
 			const selectedIds = useMapState((s) => s.selectedLocationIds);
 			const allCount = useMapState((s) => s.locationCount);
 			// eslint-disable-next-line react-hooks/exhaustive-deps -- as in useSelectorPick
-			const selector = useMemo(() => selectorForPick(choice), [choice, selections]);
+			const selector = useMemo(() => selectorForPick(choice), [choice, active]);
 			return {
 				selector,
 				choice,

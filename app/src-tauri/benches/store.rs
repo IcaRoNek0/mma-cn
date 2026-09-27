@@ -46,7 +46,7 @@
 //! use it for both halves of an A/B or neither.
 
 use app_lib::bench_api as bench;
-use bench::{LocationPatch, Selection, SelectionInput, Selector};
+use bench::{ListedSelection, LocationPatch, Selection, Selector};
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use roaring::RoaringBitmap;
 use std::env;
@@ -130,7 +130,7 @@ fn noop_updates(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     app.set_store(fx.rendered_store());
-                    app.sync_selections(vec![SelectionInput {
+                    app.sync_selections(vec![ListedSelection {
                         selection: Selection {
                             key: "tag:3".into(),
                             selector: Selector::tag(3),
@@ -254,7 +254,7 @@ fn selections(c: &mut Criterion) {
         },
         Selector::has("panoId"),
     ]);
-    let input = |key: &str, selector: &Selector| SelectionInput {
+    let input = |key: &str, selector: &Selector| ListedSelection {
         selection: Selection {
             key: key.into(),
             selector: selector.clone(),

@@ -214,11 +214,8 @@ export async function selectCount(...selector: Selector[]): Promise<number> {
 
 export async function refreshSelections(): Promise<number[]> {
 	return withApi(async (api) => {
-		const sels = api
-			.getActiveSelections()
-			.map((s) => ({ key: s.key, selector: s.selector, color: s.color }));
-		if (sels.length === 0) return [] as number[];
-		await api.cmd.storeSyncSelections(sels);
+		if (api.getActiveSelections().length === 0) return [] as number[];
+		await api.syncSelections();
 		return api.resolveIds(api.currentSelection());
 	});
 }

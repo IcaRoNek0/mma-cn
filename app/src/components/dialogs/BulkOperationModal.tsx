@@ -15,8 +15,8 @@ import { TextInput } from "@/components/primitives/TextInput";
 import { CoverageBar } from "@/components/primitives/CoverageBar";
 import { Bar } from "@/components/primitives/Bar";
 import { ProgressRow } from "@/components/primitives/ProgressRow";
-import { applySelectionUpdate, applyFieldOp, query, getMapState } from "@/store/useMapStore";
-import { addSelection, all, batch as batchOp, panoIdSelector } from "@/store/selections";
+import { addSelections, applyFieldOp, getMapState, query } from "@/store/useMapStore";
+import { all, panoIdSelector } from "@/store/selections";
 import { useSelectorPick, type SelectorPickController } from "@/store/selectorPick";
 import type { Selector, FieldOp } from "@/bindings.gen";
 import { SelectorPicker } from "@/components/primitives/SelectorPicker";
@@ -143,7 +143,7 @@ function ValidateSetup({ picker, info, onReady }: SetupProps) {
 									locations: result.states.get(state)!,
 									state,
 								}));
-							if (batch.length > 0) void applySelectionUpdate(batchOp(addSelection)(batch));
+							if (batch.length > 0) void addSelections(batch);
 							const n = batch.reduce((total, b) => total + b.locations.length, 0);
 							return {
 								outcome: result,
@@ -797,9 +797,7 @@ export function SelectFailedButton({
 		<Button
 			style={style}
 			onClick={() => {
-				void applySelectionUpdate(
-					batchOp(addSelection)([{ type: "Manual", locations: outcome.failed }]),
-				);
+				void addSelections([{ type: "Manual", locations: outcome.failed }]);
 				toast(
 					t(
 						{ one: "Selected {n} failed location", other: "Selected {n} failed locations" },

@@ -766,7 +766,7 @@ declare const commands$1: {
      *  per-selection counts and a bitmask for the marker overlay.
      *  @unstable
      */
-    storeSyncSelections: (sels: SelectionInput[]) => Promise<SelectionSync>;
+    storeSyncSelections: (sels: ListedSelection[]) => Promise<SelectionSync>;
     /**
      *  Find groups of locations within `distance` metres of each other (transitive).
      *  Returns groups of IDs, each with at least two members.
@@ -1730,6 +1730,12 @@ type KeySpec =
     part: DatePart;
     tzLocal: boolean;
 };
+/**  A selection as the sidebar lists it, plus whether it is ghosted. @unstable */
+type ListedSelection = {
+    selection: Selection;
+    /**  Counted, but kept out of the overlay and the selected set. */
+    ghosted: boolean;
+};
 /**
  *  A single Street View location on a map.
  *
@@ -2562,11 +2568,6 @@ type Selection = {
     color: [number, number, number];
     selector: Selector;
 };
-/**  A top-level selection, plus whether it is ghosted. @unstable */
-type SelectionInput = {
-    /**  Counted, but kept out of the overlay and the selected set. */
-    ghosted?: boolean;
-} & Selection;
 /**  Updated selection state after a change. `counts` gives each selection's match count. */
 type SelectionSync = {
     /**  Resolved count per selection node, keyed by `Selection.key` (top-level and nested). */
@@ -2888,8 +2889,6 @@ export type Digits = {
 };
 /** @unstable */
 export type D = keyof Digits;
-/** Lift a single-item curried transform into one that folds over an array of items. @unstable */
-declare const batch: <T, S>(op: (item: T) => (state: S) => S) => (items: T[]) => (state: S) => S;
 /** @unstable */
 export type RequireNonNull<T> = {
     [P in keyof T]-?: NonNullable<T[P]>;
@@ -3306,240 +3305,6 @@ declare class CellManager {
     clear(): void;
 }
 
-/** Pure selection transforms: build, compose, invert, rewrite, and remove selections. @unstable */
-
-export interface SelectionState {
-    selections: Selection[];
-    ghosted: ReadonlySet<string>;
-}
-/** @unstable */
-export type SelectionPatch = Partial<SelectionState>;
-/** Selector variants that wrap child selections (Intersection, Union, Invert). @unstable */
-export type CompositeType = Extract<Selector, {
-    selections: Selection[];
-}>["type"];
-/** Composite variants that wrap exactly one child (e.g. Invert). @unstable */
-export type UnaryType = "Invert";
-/** Composite variants that are flat n-ary groups. @unstable */
-export type GroupType = Exclude<CompositeType, UnaryType>;
-/** @unstable */
-declare const UNARY_TYPES: readonly ["Invert"];
-/** @unstable */
-export type FilterOpKind = FilterOp["op"];
-/** Whether a predicate reads the location's clock in its own timezone. Only a range can. @unstable */
-declare const filterIsLocalTime: (test: FilterOp) => boolean;
-/** Display symbol/word for each filter operator. Symbols are language-neutral; only the worded
- *  operators are marked for translation. @unstable */
-declare const OP_LABELS: Record<FilterOpKind, string>;
-/** Locations carrying `tagId`. A tag is membership in the `tags` list field and nothing
- *  else, so there is no tag selector to build. @unstable */
-declare const tagSelector: (tagId: number) => Selector;
-/** Locations with no tags: `tags` resolves to nothing on an untagged row. @unstable */
-declare const untaggedSelector: () => Selector;
-/** Locations whose heading was never set. @unstable */
-declare const unpannedSelector: () => Selector;
-/** Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
- *  `Selector::pano_ids`), or the locations not pinned. @unstable */
-declare function panoIdSelector(on: boolean): Selector;
-/** The tag a selector names, or null when it names something else. The single place that
- *  recognises tag membership, so nothing else has to know its shape. @unstable */
-declare function tagIdOf(selector: Selector): number | null;
-/** Whether a selector is the pinned composite `panoIdSelector` builds (`true`), its
- *  inversion (`false`), or something else (`null`). Display-only. @unstable */
-declare function panoIdOf(selector: Selector): boolean | null;
-/** Deterministic color derived from a selection key string. @unstable */
-declare function colorForKey(key: string): RGB;
-/** Key an id list by hashing it: the same ids in the same order give the same key.
- *  Order-sensitive, like the list it identifies. Key length is constant. @unstable */
-declare function locationsKey(ids: number[]): string;
-/** Ghost keys that "solo" `key`: everything except it. Returns an empty set when `key`
- *  is already the sole visible selection, so a repeat call un-isolates (clears all ghosts). @unstable */
-declare function isolateGhostKeys(keys: string[], ghosted: ReadonlySet<string>, key: string): Set<string>;
-/** Toggle one selection's ghosted (dimmed) state. @unstable */
-declare const toggleGhost: (key: string) => (_sels: Selection[], ghosted: ReadonlySet<string>) => SelectionPatch;
-/** Solo one selection by ghosting all others. Repeat to clear all ghosts. @unstable */
-declare const isolateGhost: (key: string) => (sels: Selection[], ghosted: ReadonlySet<string>) => SelectionPatch;
-/** Ghost all selections, or clear all ghosts if every selection is already ghosted. @unstable */
-declare const toggleGhostAll: () => (sels: Selection[], ghosted: ReadonlySet<string>) => SelectionPatch;
-/** Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped to
- *  `[0, ids.length]`, so an over-large count returns all ids. `ids` is not mutated. @unstable */
-declare function sampleIds(ids: number[], n: number): number[];
-/** What one selection type answers about itself; optional answers default at the lookup. @unstable */
-export interface SelectionDescriptor<K extends Selector["type"]> {
-    key(selector: Variant<Selector, K>, locations: number[]): string;
-    label(selector: Variant<Selector, K>, tagNames?: Record<number, string>): string;
-    /** Null falls through to the key hash. */
-    color?(selector: Variant<Selector, K>): RGB | null;
-    locations?(selector: Variant<Selector, K>): number[];
-}
-/** Per-type descriptor for each selector variant: key derivation, display label, and optional color/location overrides. @unstable */
-declare const SELECTIONS: {
-    [K in Selector["type"]]: SelectionDescriptor<K>;
-};
-/** Every child selection a selector wraps, whatever shape it wraps them in. @unstable */
-declare function childSelections(selector: Selector): Selection[];
-/** `selector` with its children replaced, keeping the shape it wraps them in. @unstable */
-declare function withChildren(selector: Selector, children: Selection[]): Selector;
-/** Create a Selection with a deterministic key and color from its selector. @unstable */
-declare function buildSelection(selector: Selector): Selection;
-/** Locations matching every one of `selectors`; with none, every location. @unstable */
-declare const all: (...selectors: Selector[]) => Selector;
-/** Locations matching any of `selectors`; with none, no location. @unstable */
-declare const any: (...selectors: Selector[]) => Selector;
-/** Locations not matching `selector`. @unstable */
-declare const not: (selector: Selector) => Selector;
-/** Locations holding a value for `field`. @unstable */
-declare const has: (field: string) => Selector;
-/** Locations holding no value for `field`. @unstable */
-declare const lacks: (field: string) => Selector;
-/** Append a new selection built from `selector`, deduplicating by key. @unstable */
-declare const addSelection: (selector: Selector) => (current: Selection[]) => Selection[];
-/** Remove the top-level selection whose key is `key`. A removed group leaves its children behind in its place. @unstable */
-declare const removeSelection: (key: string) => (current: Selection[]) => Selection[];
-/** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. @unstable */
-declare const intersectSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
-/** Merge the targeted selections (or all, when `keys` is null) into a single Union. @unstable */
-declare const unionSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
-/** Invert targeted top-level selections. A single target toggles in place; several are wrapped in Union then Invert. @unstable */
-declare const invertSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
-/** Add or remove a location from the Manual selection, creating it if needed. @unstable */
-declare const toggleManualSelection: (locationId: number) => (current: Selection[]) => Selection[];
-/** Where a selection sits: its index in the list, then its index among the children of each
- *  selection it is nested in. @unstable */
-export type SelectionPath = readonly number[];
-/** The selection at `path`, or undefined when nothing sits there. @unstable */
-declare function selectionAt(list: Selection[], path: SelectionPath): Selection | undefined;
-/** Invert the selection at `path` in place, or restore it when it is already inverted. @unstable */
-declare const toggleInvert: (path: SelectionPath) => (current: Selection[]) => Selection[];
-/** Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
- *  `drop` when that already is one. Nothing happens when either contains the other. @unstable */
-declare const composeSelections: (drag: SelectionPath, drop: SelectionPath, mode: GroupType) => (current: Selection[]) => Selection[];
-/** Move the selection at `from` to just before or after the one at `to`, which must sit in the
- *  list or directly in a group. Nothing happens when `to` is inside the moved selection. @unstable */
-declare const moveSelection: (from: SelectionPath, to: SelectionPath, position: "before" | "after") => (current: Selection[]) => Selection[];
-/** Remove the selection at `path`. A removed group leaves its children behind in its place. @unstable */
-declare const removeSelectionAt: (path: SelectionPath) => (current: Selection[]) => Selection[];
-/** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
- *  the existing sibling wins and the replacement is dropped. @unstable */
-declare function replaceSelection(current: Selection[], path: SelectionPath, selector: Selector): Selection[];
-/** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
- *  rather than the open map's tags. @unstable */
-declare function selectionDisplayName(sel: Selection, tagNames?: Record<number, string>): string;
-/** Display label for a tag name. In tree view with `truncateTagPaths` on, collapses
- *  the `/`-path to its shortest unique suffix; otherwise returns the name verbatim. @unstable */
-declare function displayTagName(name: string): string;
-/** Recolor the selection at `path`. @unstable */
-declare const setSelectionColor: (path: SelectionPath, color: RGB) => (current: Selection[]) => Selection[];
-/** Rename a Polygon selection's display name. @unstable */
-declare const setPolygonName: (path: SelectionPath, name: string) => (current: Selection[]) => Selection[];
-/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. @unstable */
-declare const rewriteSelectionFields: (from: string, to: string | null) => (selections: Selection[]) => Selection[];
-
-/** @unstable */
-export type selectionOps_CompositeType = CompositeType;
-/** @unstable */
-export type selectionOps_FilterOpKind = FilterOpKind;
-/** @unstable */
-export type selectionOps_GroupType = GroupType;
-/** @unstable */
-declare const selectionOps_OP_LABELS: typeof OP_LABELS;
-/** @unstable */
-declare const selectionOps_SELECTIONS: typeof SELECTIONS;
-/** @unstable */
-export type selectionOps_SelectionPatch = SelectionPatch;
-/** @unstable */
-export type selectionOps_SelectionPath = SelectionPath;
-/** @unstable */
-export type selectionOps_SelectionState = SelectionState;
-/** @unstable */
-declare const selectionOps_UNARY_TYPES: typeof UNARY_TYPES;
-/** @unstable */
-export type selectionOps_UnaryType = UnaryType;
-/** @unstable */
-declare const selectionOps_addSelection: typeof addSelection;
-/** @unstable */
-declare const selectionOps_all: typeof all;
-/** @unstable */
-declare const selectionOps_any: typeof any;
-/** @unstable */
-declare const selectionOps_batch: typeof batch;
-/** @unstable */
-declare const selectionOps_buildSelection: typeof buildSelection;
-/** @unstable */
-declare const selectionOps_childSelections: typeof childSelections;
-/** @unstable */
-declare const selectionOps_colorForKey: typeof colorForKey;
-/** @unstable */
-declare const selectionOps_composeSelections: typeof composeSelections;
-/** @unstable */
-declare const selectionOps_displayTagName: typeof displayTagName;
-/** @unstable */
-declare const selectionOps_filterIsLocalTime: typeof filterIsLocalTime;
-/** @unstable */
-declare const selectionOps_has: typeof has;
-/** @unstable */
-declare const selectionOps_intersectSelections: typeof intersectSelections;
-/** @unstable */
-declare const selectionOps_invertSelections: typeof invertSelections;
-/** @unstable */
-declare const selectionOps_isolateGhost: typeof isolateGhost;
-/** @unstable */
-declare const selectionOps_isolateGhostKeys: typeof isolateGhostKeys;
-/** @unstable */
-declare const selectionOps_lacks: typeof lacks;
-/** @unstable */
-declare const selectionOps_locationsKey: typeof locationsKey;
-/** @unstable */
-declare const selectionOps_moveSelection: typeof moveSelection;
-/** @unstable */
-declare const selectionOps_not: typeof not;
-/** @unstable */
-declare const selectionOps_panoIdOf: typeof panoIdOf;
-/** @unstable */
-declare const selectionOps_panoIdSelector: typeof panoIdSelector;
-/** @unstable */
-declare const selectionOps_removeSelection: typeof removeSelection;
-/** @unstable */
-declare const selectionOps_removeSelectionAt: typeof removeSelectionAt;
-/** @unstable */
-declare const selectionOps_replaceSelection: typeof replaceSelection;
-/** @unstable */
-declare const selectionOps_rewriteSelectionFields: typeof rewriteSelectionFields;
-/** @unstable */
-declare const selectionOps_sampleIds: typeof sampleIds;
-/** @unstable */
-declare const selectionOps_selectionAt: typeof selectionAt;
-/** @unstable */
-declare const selectionOps_selectionDisplayName: typeof selectionDisplayName;
-/** @unstable */
-declare const selectionOps_setPolygonName: typeof setPolygonName;
-/** @unstable */
-declare const selectionOps_setSelectionColor: typeof setSelectionColor;
-/** @unstable */
-declare const selectionOps_tagIdOf: typeof tagIdOf;
-/** @unstable */
-declare const selectionOps_tagSelector: typeof tagSelector;
-/** @unstable */
-declare const selectionOps_toggleGhost: typeof toggleGhost;
-/** @unstable */
-declare const selectionOps_toggleGhostAll: typeof toggleGhostAll;
-/** @unstable */
-declare const selectionOps_toggleInvert: typeof toggleInvert;
-/** @unstable */
-declare const selectionOps_toggleManualSelection: typeof toggleManualSelection;
-/** @unstable */
-declare const selectionOps_unionSelections: typeof unionSelections;
-/** @unstable */
-declare const selectionOps_unpannedSelector: typeof unpannedSelector;
-/** @unstable */
-declare const selectionOps_untaggedSelector: typeof untaggedSelector;
-/** @unstable */
-declare const selectionOps_withChildren: typeof withChildren;
-declare namespace selectionOps {
-  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_batch as batch, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_isolateGhostKeys as isolateGhostKeys, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_sampleIds as sampleIds, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withChildren as withChildren };
-  export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPatch as SelectionPatch, selectionOps_SelectionPath as SelectionPath, selectionOps_SelectionState as SelectionState, selectionOps_UnaryType as UnaryType };
-}
-
 /** The engine-owned mirror: exactly the value slice Rust ships (`EngineValues`), with every field required. */
 export type EngineState = {
     [K in keyof EngineValues]: NonNullable<EngineValues[K]>;
@@ -3548,13 +3313,11 @@ export interface UiState {
     mapId: string | null;
     /** Persisted identity slice (metadata + settings). Changes rarely. */
     map: MapMeta | null;
-    /** Resolved count per selection node (top-level and nested), keyed by `Selection.key`.
-     *  The sole source for sidebar counts — refreshed wholesale from Rust on every sync. @unstable */
+    /** Resolved count per selection node keyed by `Selection.key`. @unstable */
     selectionCounts: Record<string, number>;
-    selections: Selection[];
-    /** Keys of selections that are "ghosted": kept in the list but excluded from the
-     *  Rust sync, so they neither render nor count toward the selected set. Ephemeral. @unstable */
-    ghostedSelections: ReadonlySet<string>;
+    /** The selections as the sidebar lists them, ghosted ones included. Everything that acts on
+     *  the selection reads `getActiveSelections` instead. @unstable */
+    selectionList: ListedSelection[];
     selectedLocationIds: SelectedIds;
     /** @unstable */
     activeLocationId: number | null;
@@ -3640,7 +3403,7 @@ declare function query$1(selector: Selector): {
      *  Prefer a narrower selector or a projection (`columns`, `countBy`) when possible. */
     locations: () => Promise<Location[]>;
 };
-/** Active (non-ghosted) selections, the default for any operational logic. */
+/** The selection: every listed selection that is not ghosted. */
 declare const getActiveSelections: () => Selection[];
 /** The live selection as a `Selector`: the union of the active selection nodes. */
 declare function currentSelection(): Selector;
@@ -3681,18 +3444,20 @@ declare function renameField(from: string, to: string, winner?: MergeWinner): Pr
 declare function deleteField(key: string): Promise<void>;
 /** Apply a field operation across all locations matching `selector`. Emits `location:invalidate`. @unstable */
 declare function applyFieldOp(selector: Selector, op: FieldOp, recordUndo: boolean): Promise<FieldOpResult>;
-/** Add selectors to the active selection list. */
+/** Add selectors to the selection. */
 declare function addSelections(selectors: Selector[]): Promise<void>;
-/** Drop selections by key. */
+/** Drop listed selections by key, ghosted ones included. */
 declare function removeSelections(keys: string[]): Promise<void>;
-/** Apply a selection transform function and re-resolve the selection.
- *  The function receives the current selections and ghosted set, and returns either
- *  a new `Selection[]` or a `SelectionPatch`. No-op when nothing changed. @unstable */
-declare function applySelectionUpdate(op: (sels: Selection[], ghosted: ReadonlySet<string>) => Selection[] | SelectionPatch): Promise<void>;
+/** Apply `op` to the selection. It sees only the active selections; ghosted ones keep their
+ *  places in the list. No-op when nothing changed. @unstable */
+declare function applySelectionUpdate(op: (active: Selection[]) => Selection[]): Promise<void>;
+/** Apply `op` to the listed selections, ghosted ones included: the sidebar's own edits.
+ *  No-op when nothing changed. @unstable */
+declare function applyListUpdate(op: (rows: ListedSelection[]) => ListedSelection[]): Promise<void>;
 /** Re-resolve all selections against the current map data and update the overlay.
  *  Use when the underlying data changed but the selections themselves did not. @unstable */
 declare function syncSelections$1(): Promise<void>;
-/** Clear all selections. */
+/** Clear all selections, ghosted ones included. */
 declare function resetSelections(): Promise<void>;
 /** Replace the current selection with up to `count` ids picked at random.
  *  With `perSelection`, picks up to `count` from each active selection separately.
@@ -3795,6 +3560,8 @@ declare const store_addSelections: typeof addSelections;
 /** @unstable */
 declare const store_applyFieldOp: typeof applyFieldOp;
 /** @unstable */
+declare const store_applyListUpdate: typeof applyListUpdate;
+/** @unstable */
 declare const store_applySelectionUpdate: typeof applySelectionUpdate;
 /** @unstable */
 declare const store_cancelAutosave: typeof cancelAutosave;
@@ -3877,16 +3644,238 @@ declare const store_useMapState: typeof useMapState;
 /** @unstable */
 declare const store_waitForInflightPersist: typeof waitForInflightPersist;
 declare namespace store {
-  export { store_addLocations as addLocations, store_addSelections as addSelections, store_applyFieldOp as applyFieldOp, store_applySelectionUpdate as applySelectionUpdate, store_cancelAutosave as cancelAutosave, store_checkoutCommit as checkoutCommit, store_closeDuplicates as closeDuplicates, closeMap$1 as closeMap, store_commitMap as commitMap, store_createTags as createTags, store_currentSelection as currentSelection, store_deleteField as deleteField, store_deleteTags as deleteTags, store_discardOpenMap as discardOpenMap, store_duplicateLocation as duplicateLocation, store_emitBitmask as emitBitmask, store_exitPluginMode as exitPluginMode, store_flushSave as flushSave, store_getActiveSelections as getActiveSelections, store_getMapState as getMapState, store_getTag as getTag, store_getTagCounts as getTagCounts, store_getTags as getTags, store_getVisibleTags as getVisibleTags, store_holdAutosave as holdAutosave, store_initStore as initStore, store_mergeDuplicates as mergeDuplicates, store_mutate as mutate, store_openDuplicateLocation as openDuplicateLocation, openMap$1 as openMap, store_openStagedLocation as openStagedLocation, store_patchMapMeta as patchMapMeta, store_previewDuplicateGroups as previewDuplicateGroups, store_previewVirtualLocation as previewVirtualLocation, store_pruneDuplicates as pruneDuplicates, query$1 as query, store_redo as redo, store_removeDuplicate as removeDuplicate, store_removeLocations as removeLocations, store_removeSelections as removeSelections, store_renameField as renameField, store_renameTagsIn as renameTagsIn, store_reorderTags as reorderTags, store_resetSelections as resetSelections, store_resolveLocation as resolveLocation, store_scheduleAutoCommit as scheduleAutoCommit, store_scheduleSave as scheduleSave, store_selectEvenlySpacedFromSelection as selectEvenlySpacedFromSelection, store_selectRandomFromSelection as selectRandomFromSelection, store_selectSpacedFromSelection as selectSpacedFromSelection, store_setActiveLocation as setActiveLocation, store_setMapExtraFields as setMapExtraFields, store_setPluginMode as setPluginMode, store_setSelectedLocationIds as setSelectedLocationIds, store_setTags as setTags, store_setWorkArea as setWorkArea, syncSelections$1 as syncSelections, store_tagIdsToNames as tagIdsToNames, store_undo as undo, store_updateLocations as updateLocations, store_updateMapMeta as updateMapMeta, store_updateTags as updateTags, store_useMapState as useMapState, store_waitForInflightPersist as waitForInflightPersist };
+  export { store_addLocations as addLocations, store_addSelections as addSelections, store_applyFieldOp as applyFieldOp, store_applyListUpdate as applyListUpdate, store_applySelectionUpdate as applySelectionUpdate, store_cancelAutosave as cancelAutosave, store_checkoutCommit as checkoutCommit, store_closeDuplicates as closeDuplicates, closeMap$1 as closeMap, store_commitMap as commitMap, store_createTags as createTags, store_currentSelection as currentSelection, store_deleteField as deleteField, store_deleteTags as deleteTags, store_discardOpenMap as discardOpenMap, store_duplicateLocation as duplicateLocation, store_emitBitmask as emitBitmask, store_exitPluginMode as exitPluginMode, store_flushSave as flushSave, store_getActiveSelections as getActiveSelections, store_getMapState as getMapState, store_getTag as getTag, store_getTagCounts as getTagCounts, store_getTags as getTags, store_getVisibleTags as getVisibleTags, store_holdAutosave as holdAutosave, store_initStore as initStore, store_mergeDuplicates as mergeDuplicates, store_mutate as mutate, store_openDuplicateLocation as openDuplicateLocation, openMap$1 as openMap, store_openStagedLocation as openStagedLocation, store_patchMapMeta as patchMapMeta, store_previewDuplicateGroups as previewDuplicateGroups, store_previewVirtualLocation as previewVirtualLocation, store_pruneDuplicates as pruneDuplicates, query$1 as query, store_redo as redo, store_removeDuplicate as removeDuplicate, store_removeLocations as removeLocations, store_removeSelections as removeSelections, store_renameField as renameField, store_renameTagsIn as renameTagsIn, store_reorderTags as reorderTags, store_resetSelections as resetSelections, store_resolveLocation as resolveLocation, store_scheduleAutoCommit as scheduleAutoCommit, store_scheduleSave as scheduleSave, store_selectEvenlySpacedFromSelection as selectEvenlySpacedFromSelection, store_selectRandomFromSelection as selectRandomFromSelection, store_selectSpacedFromSelection as selectSpacedFromSelection, store_setActiveLocation as setActiveLocation, store_setMapExtraFields as setMapExtraFields, store_setPluginMode as setPluginMode, store_setSelectedLocationIds as setSelectedLocationIds, store_setTags as setTags, store_setWorkArea as setWorkArea, syncSelections$1 as syncSelections, store_tagIdsToNames as tagIdsToNames, store_undo as undo, store_updateLocations as updateLocations, store_updateMapMeta as updateMapMeta, store_updateTags as updateTags, store_useMapState as useMapState, store_waitForInflightPersist as waitForInflightPersist };
   export type { store_MapState as MapState, store_UiState as UiState };
 }
 
-/** Edit an existing filter (or any selection) in place, preserving its position inside any
- *  AND/OR/Invert composite. Carries ghost state to the new key. @unstable */
-declare function updateFilterSelection(path: SelectionPath, selector: Selector): Promise<void>;
+/** Pure selection transforms: build, compose, invert, rewrite, and remove selections. */
+
+/** Selector variants that wrap child selections (Intersection, Union, Invert). @unstable */
+export type CompositeType = Extract<Selector, {
+    selections: Selection[];
+}>["type"];
+/** Composite variants that wrap exactly one child (e.g. Invert). @unstable */
+export type UnaryType = "Invert";
+/** Composite variants that are flat n-ary groups. @unstable */
+export type GroupType = Exclude<CompositeType, UnaryType>;
+/** @unstable */
+declare const UNARY_TYPES: readonly ["Invert"];
+/** @unstable */
+export type FilterOpKind = FilterOp["op"];
+/** Whether a predicate reads the location's clock in its own timezone. Only a range can. @unstable */
+declare const filterIsLocalTime: (test: FilterOp) => boolean;
+/** Display symbol/word for each filter operator. Symbols are language-neutral; only the worded
+ *  operators are marked for translation. @unstable */
+declare const OP_LABELS: Record<FilterOpKind, string>;
+/** Locations carrying `tagId`. A tag is membership in the `tags` list field and nothing
+ *  else, so there is no tag selector to build. @unstable */
+declare const tagSelector: (tagId: number) => Selector;
+/** Locations with no tags: `tags` resolves to nothing on an untagged row. @unstable */
+declare const untaggedSelector: () => Selector;
+/** Locations whose heading was never set. @unstable */
+declare const unpannedSelector: () => Selector;
+/** Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
+ *  `Selector::pano_ids`), or the locations not pinned. @unstable */
+declare function panoIdSelector(on: boolean): Selector;
+/** The tag a selector names, or null when it names something else. The single place that
+ *  recognises tag membership, so nothing else has to know its shape. @unstable */
+declare function tagIdOf(selector: Selector): number | null;
+/** Whether a selector is the pinned composite `panoIdSelector` builds (`true`), its
+ *  inversion (`false`), or something else (`null`). Display-only. @unstable */
+declare function panoIdOf(selector: Selector): boolean | null;
+/** Deterministic color derived from a selection key string. @unstable */
+declare function colorForKey(key: string): RGB;
+/** Key an id list by hashing it: the same ids in the same order give the same key.
+ *  Order-sensitive, like the list it identifies. Key length is constant. @unstable */
+declare function locationsKey(ids: number[]): string;
+/** Ghost the listed selection at `index`, or un-ghost it. @unstable */
+declare const toggleGhost: (index: number) => (rows: ListedSelection[]) => ListedSelection[];
+/** Ghost every listed selection but the one at `index`, or un-ghost them all when it already
+ *  is the only one left. @unstable */
+declare const isolateGhost: (index: number) => (rows: ListedSelection[]) => ListedSelection[];
+/** Ghost every listed selection, or un-ghost them all when every one already is. @unstable */
+declare const toggleGhostAll: () => (rows: ListedSelection[]) => ListedSelection[];
+/** Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped to
+ *  `[0, ids.length]`, so an over-large count returns all ids. `ids` is not mutated. @unstable */
+declare function sampleIds(ids: number[], n: number): number[];
+/** What one selection type answers about itself; optional answers default at the lookup. @unstable */
+export interface SelectionDescriptor<K extends Selector["type"]> {
+    key(selector: Variant<Selector, K>, locations: number[]): string;
+    label(selector: Variant<Selector, K>, tagNames?: Record<number, string>): string;
+    /** Null falls through to the key hash. */
+    color?(selector: Variant<Selector, K>): RGB | null;
+    locations?(selector: Variant<Selector, K>): number[];
+}
+/** Per-type descriptor for each selector variant: key derivation, display label, and optional color/location overrides. @unstable */
+declare const SELECTIONS: {
+    [K in Selector["type"]]: SelectionDescriptor<K>;
+};
+/** Every child selection a selector wraps, whatever shape it wraps them in. @unstable */
+declare function childSelections(selector: Selector): Selection[];
+/** `selector` with its children replaced, keeping the shape it wraps them in. @unstable */
+declare function withChildren(selector: Selector, children: Selection[]): Selector;
+/** Create a Selection with a deterministic key and color from its selector. @unstable */
+declare function buildSelection(selector: Selector): Selection;
+/** Locations matching every one of `selectors`; with none, every location. @unstable */
+declare const all: (...selectors: Selector[]) => Selector;
+/** Locations matching any of `selectors`; with none, no location. @unstable */
+declare const any: (...selectors: Selector[]) => Selector;
+/** Locations not matching `selector`. @unstable */
+declare const not: (selector: Selector) => Selector;
+/** Locations holding a value for `field`. @unstable */
+declare const has: (field: string) => Selector;
+/** Locations holding no value for `field`. @unstable */
+declare const lacks: (field: string) => Selector;
+/** List a selection built from `selector`. One already listed is updated in place, ghost and all. @unstable */
+declare const addSelection: (selector: Selector) => (rows: ListedSelection[]) => ListedSelection[];
+/** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. @unstable */
+declare const intersectSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
+/** Merge the targeted selections (or all, when `keys` is null) into a single Union. @unstable */
+declare const unionSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
+/** Invert the targeted selections (or all, when `keys` is null). A single target toggles in
+ *  place; several are wrapped in Union then Invert. @unstable */
+declare const invertSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
+/** The listed selections once the active ones become `active`. Ghosted rows keep their places
+ *  and `active` fills the others in order; a selection already listed as a ghosted row updates
+ *  that row and stays ghosted. @unstable */
+declare function withActive(rows: ListedSelection[], active: Selection[]): ListedSelection[];
+/** Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place. @unstable */
+declare const removeSelection: (key: string) => (rows: ListedSelection[]) => ListedSelection[];
+/** Add or remove a location from the Manual selection, creating it if needed. @unstable */
+declare const toggleManualSelection: (locationId: number) => (rows: ListedSelection[]) => ListedSelection[];
+/** Where a selection sits: its index in the list, then its index among the children of each
+ *  selection it is nested in. @unstable */
+export type SelectionPath = readonly number[];
+/** The selection at `path`, or undefined when nothing sits there. @unstable */
+declare function selectionAt(rows: ListedSelection[], path: SelectionPath): Selection | undefined;
+/** Invert the selection at `path` in place, or restore it when it is already inverted. @unstable */
+declare const toggleInvert: (path: SelectionPath) => (rows: ListedSelection[]) => ListedSelection[];
+/** Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
+ *  `drop` when that already is one. Nothing happens when either contains the other. @unstable */
+declare const composeSelections: (drag: SelectionPath, drop: SelectionPath, mode: GroupType) => (rows: ListedSelection[]) => ListedSelection[];
+/** Move the selection at `from` to just before or after the one at `to`, which must sit in the
+ *  list or directly in a group. Nothing happens when `to` is inside the moved selection. @unstable */
+declare const moveSelection: (from: SelectionPath, to: SelectionPath, position: "before" | "after") => (rows: ListedSelection[]) => ListedSelection[];
+/** Remove the selection at `path`. A removed group leaves its children behind in its place. @unstable */
+declare const removeSelectionAt: (path: SelectionPath) => (rows: ListedSelection[]) => ListedSelection[];
+/** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
+ *  the existing sibling wins and the replacement is dropped. @unstable */
+declare const replaceSelection: (path: SelectionPath, selector: Selector) => (rows: ListedSelection[]) => ListedSelection[];
+/** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
+ *  rather than the open map's tags. @unstable */
+declare function selectionDisplayName(sel: Selection, tagNames?: Record<number, string>): string;
+/** Display label for a tag name. In tree view with `truncateTagPaths` on, collapses
+ *  the `/`-path to its shortest unique suffix; otherwise returns the name verbatim. @unstable */
+declare function displayTagName(name: string): string;
+/** Recolor the selection at `path`. @unstable */
+declare const setSelectionColor: (path: SelectionPath, color: RGB) => (rows: ListedSelection[]) => ListedSelection[];
+/** Rename a Polygon selection's display name. @unstable */
+declare const setPolygonName: (path: SelectionPath, name: string) => (rows: ListedSelection[]) => ListedSelection[];
+/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. @unstable */
+declare const rewriteSelectionFields: (from: string, to: string | null) => (rows: ListedSelection[]) => ListedSelection[];
+
+/** @unstable */
+export type selectionOps_CompositeType = CompositeType;
+/** @unstable */
+export type selectionOps_FilterOpKind = FilterOpKind;
+/** @unstable */
+export type selectionOps_GroupType = GroupType;
+/** @unstable */
+declare const selectionOps_OP_LABELS: typeof OP_LABELS;
+/** @unstable */
+declare const selectionOps_SELECTIONS: typeof SELECTIONS;
+/** @unstable */
+export type selectionOps_SelectionPath = SelectionPath;
+/** @unstable */
+declare const selectionOps_UNARY_TYPES: typeof UNARY_TYPES;
+/** @unstable */
+export type selectionOps_UnaryType = UnaryType;
+/** @unstable */
+declare const selectionOps_addSelection: typeof addSelection;
+/** @unstable */
+declare const selectionOps_all: typeof all;
+/** @unstable */
+declare const selectionOps_any: typeof any;
+/** @unstable */
+declare const selectionOps_buildSelection: typeof buildSelection;
+/** @unstable */
+declare const selectionOps_childSelections: typeof childSelections;
+/** @unstable */
+declare const selectionOps_colorForKey: typeof colorForKey;
+/** @unstable */
+declare const selectionOps_composeSelections: typeof composeSelections;
+/** @unstable */
+declare const selectionOps_displayTagName: typeof displayTagName;
+/** @unstable */
+declare const selectionOps_filterIsLocalTime: typeof filterIsLocalTime;
+/** @unstable */
+declare const selectionOps_has: typeof has;
+/** @unstable */
+declare const selectionOps_intersectSelections: typeof intersectSelections;
+/** @unstable */
+declare const selectionOps_invertSelections: typeof invertSelections;
+/** @unstable */
+declare const selectionOps_isolateGhost: typeof isolateGhost;
+/** @unstable */
+declare const selectionOps_lacks: typeof lacks;
+/** @unstable */
+declare const selectionOps_locationsKey: typeof locationsKey;
+/** @unstable */
+declare const selectionOps_moveSelection: typeof moveSelection;
+/** @unstable */
+declare const selectionOps_not: typeof not;
+/** @unstable */
+declare const selectionOps_panoIdOf: typeof panoIdOf;
+/** @unstable */
+declare const selectionOps_panoIdSelector: typeof panoIdSelector;
+/** @unstable */
+declare const selectionOps_removeSelection: typeof removeSelection;
+/** @unstable */
+declare const selectionOps_removeSelectionAt: typeof removeSelectionAt;
+/** @unstable */
+declare const selectionOps_replaceSelection: typeof replaceSelection;
+/** @unstable */
+declare const selectionOps_rewriteSelectionFields: typeof rewriteSelectionFields;
+/** @unstable */
+declare const selectionOps_sampleIds: typeof sampleIds;
+/** @unstable */
+declare const selectionOps_selectionAt: typeof selectionAt;
+/** @unstable */
+declare const selectionOps_selectionDisplayName: typeof selectionDisplayName;
+/** @unstable */
+declare const selectionOps_setPolygonName: typeof setPolygonName;
+/** @unstable */
+declare const selectionOps_setSelectionColor: typeof setSelectionColor;
+/** @unstable */
+declare const selectionOps_tagIdOf: typeof tagIdOf;
+/** @unstable */
+declare const selectionOps_tagSelector: typeof tagSelector;
+/** @unstable */
+declare const selectionOps_toggleGhost: typeof toggleGhost;
+/** @unstable */
+declare const selectionOps_toggleGhostAll: typeof toggleGhostAll;
+/** @unstable */
+declare const selectionOps_toggleInvert: typeof toggleInvert;
+/** @unstable */
+declare const selectionOps_toggleManualSelection: typeof toggleManualSelection;
+/** @unstable */
+declare const selectionOps_unionSelections: typeof unionSelections;
+/** @unstable */
+declare const selectionOps_unpannedSelector: typeof unpannedSelector;
+/** @unstable */
+declare const selectionOps_untaggedSelector: typeof untaggedSelector;
+/** @unstable */
+declare const selectionOps_withActive: typeof withActive;
+/** @unstable */
+declare const selectionOps_withChildren: typeof withChildren;
+declare namespace selectionOps {
+  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_sampleIds as sampleIds, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withActive as withActive, selectionOps_withChildren as withChildren };
+  export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPath as SelectionPath, selectionOps_UnaryType as UnaryType };
+}
+
 /** Toggle tag selections on or off for the given tags. @unstable */
 declare function toggleTagSelections(tagIds: number[]): void;
-/** Tag ids that currently have a top-level Tag selection active. @unstable */
+/** Tag ids that have a top-level Tag selection listed, ghosted or not. @unstable */
 declare const getSelectedTagIds: () => ReadonlySet<number>;
 /** Tag ids of every Tag leaf in the active selection tree, in list order.
  *  Includes composite children, excludes ghosted selections; ids may repeat. @unstable */
@@ -3898,14 +3887,11 @@ declare const selectionActions_getSelectedTagIds: typeof getSelectedTagIds;
 declare const selectionActions_getSelectedTagIdsDeep: typeof getSelectedTagIdsDeep;
 /** @unstable */
 declare const selectionActions_toggleTagSelections: typeof toggleTagSelections;
-/** @unstable */
-declare const selectionActions_updateFilterSelection: typeof updateFilterSelection;
 declare namespace selectionActions {
   export {
     selectionActions_getSelectedTagIds as getSelectedTagIds,
     selectionActions_getSelectedTagIdsDeep as getSelectedTagIdsDeep,
     selectionActions_toggleTagSelections as toggleTagSelections,
-    selectionActions_updateFilterSelection as updateFilterSelection,
   };
 }
 
@@ -5295,6 +5281,9 @@ declare function getReviewSession(): ReviewSession | null;
 /** Start or resume a review over `ids`. When `source` is a selection, re-reviewing
  *  that selection resumes any in-progress session for it. @unstable */
 declare function beginReview(ids: number[], source?: Selection): Promise<void>;
+/** Review the selected locations. With one active selection, the review belongs to it and
+ *  resumes with it. @unstable */
+declare function reviewSelected(): Promise<void>;
 /** Resume a session picked from the resume modal. @unstable */
 declare function resumeReview(s: ReviewSession): Promise<void>;
 /** Mark the current location reviewed and step to the next one. @unstable */
@@ -5314,8 +5303,8 @@ declare function deleteSession(id: string): Promise<void>;
 declare function listSessions(status?: "active" | "done"): Promise<ReviewSession[]>;
 /** Select every location marked reviewed across all sessions on this map. @unstable */
 declare function selectReviewedHistory(): Promise<void>;
-/** Add a reviewed or unreviewed overlay selection for a session. @unstable */
-declare function selectReviewSet(s: ReviewSession, mode: ReviewMode): Promise<void>;
+/** The locations of review session `s` that are reviewed, or still to review. @unstable */
+declare function reviewSetSelector(s: ReviewSession, mode: ReviewMode): Selector;
 
 /** @unstable */
 export type review_PruneResult = PruneResult;
@@ -5358,17 +5347,19 @@ declare const review_reviewNext: typeof reviewNext;
 /** @unstable */
 declare const review_reviewPrev: typeof reviewPrev;
 /** @unstable */
+declare const review_reviewSelected: typeof reviewSelected;
+/** @unstable */
 declare const review_reviewSet: typeof reviewSet;
 /** @unstable */
-declare const review_reviewedHistoryIds: typeof reviewedHistoryIds;
+declare const review_reviewSetSelector: typeof reviewSetSelector;
 /** @unstable */
-declare const review_selectReviewSet: typeof selectReviewSet;
+declare const review_reviewedHistoryIds: typeof reviewedHistoryIds;
 /** @unstable */
 declare const review_selectReviewedHistory: typeof selectReviewedHistory;
 /** @unstable */
 declare const review_useReviewSession: typeof useReviewSession;
 declare namespace review {
-  export { review_advance as advance, review_beginReview as beginReview, review_cancelReview as cancelReview, review_deleteSession as deleteSession, review_getReviewSession as getReviewSession, review_isAtEnd as isAtEnd, review_isAtStart as isAtStart, review_isCurrentReviewed as isCurrentReviewed, review_listSessions as listSessions, review_positionOf as positionOf, review_pruneSession as pruneSession, review_renameReview as renameReview, review_resumeReview as resumeReview, review_retreat as retreat, review_reviewDelete as reviewDelete, review_reviewIndex as reviewIndex, review_reviewNext as reviewNext, review_reviewPrev as reviewPrev, review_reviewSet as reviewSet, review_reviewedHistoryIds as reviewedHistoryIds, review_selectReviewSet as selectReviewSet, review_selectReviewedHistory as selectReviewedHistory, review_useReviewSession as useReviewSession };
+  export { review_advance as advance, review_beginReview as beginReview, review_cancelReview as cancelReview, review_deleteSession as deleteSession, review_getReviewSession as getReviewSession, review_isAtEnd as isAtEnd, review_isAtStart as isAtStart, review_isCurrentReviewed as isCurrentReviewed, review_listSessions as listSessions, review_positionOf as positionOf, review_pruneSession as pruneSession, review_renameReview as renameReview, review_resumeReview as resumeReview, review_retreat as retreat, review_reviewDelete as reviewDelete, review_reviewIndex as reviewIndex, review_reviewNext as reviewNext, review_reviewPrev as reviewPrev, review_reviewSelected as reviewSelected, review_reviewSet as reviewSet, review_reviewSetSelector as reviewSetSelector, review_reviewedHistoryIds as reviewedHistoryIds, review_selectReviewedHistory as selectReviewedHistory, review_useReviewSession as useReviewSession };
   export type { review_PruneResult as PruneResult, review_ReviewMode as ReviewMode };
 }
 
@@ -7312,10 +7303,10 @@ declare function getActiveLocation(): Location | null;
 declare function getSelectedLocationIds(): SelectedIds;
 /** @deprecated v0.8.2. Read `MMA.getMapState().workArea`. @unstable */
 declare function getWorkArea(): WorkArea;
-/** @deprecated v0.8.2. Read `MMA.getMapState().selections`. @unstable */
+/** @deprecated v0.8.2. Read `MMA.getMapState().selectionList`. @unstable */
 declare function getAllSelections(): Selection[];
-/** @deprecated v0.8.2. Read `MMA.getMapState().ghostedSelections`. @unstable */
-declare function getGhostedSelections(): ReadonlySet<string>;
+/** @deprecated v0.8.2. Read `MMA.getMapState().selectionList`. @unstable */
+declare function getGhostedSelections(): Set<string>;
 /** @deprecated v0.8.2. Use `MMA.getActiveSelections()`. @unstable */
 declare function getSelections(): Selection[];
 /** @deprecated v0.8.2. Read `(await MMA.cmd.storeGetSummary()).dirtyCount`. @unstable */
@@ -7717,4 +7708,4 @@ declare global {
 }
 
 export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, Sink, VIRTUAL_FLAGS, ValidationState, commands$1 as commands, events };
-export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SaveResult, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionInput, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };
+export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SaveResult, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };

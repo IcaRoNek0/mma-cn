@@ -19,9 +19,8 @@ import { getSettings, useSetting } from "@/store/settings";
 import { useMeasure, useMeasureInteraction } from "@/lib/sv/measure";
 import { MeasurementBar } from "@/components/primitives/MeasurementBar";
 import { MapContextMenuContent } from "@/components/editor/map/MapContextMenu";
-import { applySelectionUpdate, currentSelection, query, useMapState } from "@/store/useMapStore";
+import { addSelections, currentSelection, query, useMapState } from "@/store/useMapStore";
 import { mapOpen } from "@/lib/util/debug";
-import { addSelection, batch } from "@/store/selections";
 import { loadOpenSV, google } from "@/lib/sv/opensv";
 import { setMapHost, tryInterceptDraw } from "@/lib/map/mapState";
 import { createMapHost, hostKindForMapType, type MapHost } from "@/lib/map/host";
@@ -381,14 +380,12 @@ export function MapEmbed({
 							onDraw={(rings) => {
 								if (rings.length === 0) return;
 								if (tryInterceptDraw(rings)) return;
-								void applySelectionUpdate(
-									batch(addSelection)([
-										{
-											type: "Polygon",
-											polygon: { coordinates: rings as [number, number][][], extraPolygons: null },
-										},
-									]),
-								);
+								void addSelections([
+									{
+										type: "Polygon",
+										polygon: { coordinates: rings as [number, number][][], extraPolygons: null },
+									},
+								]);
 							}}
 							freehandPathRef={freehandPathRef}
 							polygonVerticesRef={polygonVerticesRef}

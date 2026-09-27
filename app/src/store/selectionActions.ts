@@ -1,57 +1,36 @@
 import { memoOnRefs } from "@/lib/util/memoOnRefs";
-import type { Selection, Selector } from "@/bindings.gen";
-import { applySelectionUpdate, getActiveSelections, getMapState } from "@/store/useMapStore";
+import type { Selection } from "@/bindings.gen";
+import { applyListUpdate, getActiveSelections, getMapState } from "@/store/useMapStore";
 import {
 	addSelection,
 	buildSelection,
 	removeSelection,
-	replaceSelection,
 	tagIdOf,
 	tagSelector,
-	type SelectionPatch,
-	type SelectionPath,
 } from "@/store/selections";
-
-/** Edit an existing filter (or any selection) in place, preserving its position inside any
- *  AND/OR/Invert composite. Carries ghost state to the new key. */
-export function updateFilterSelection(path: SelectionPath, selector: Selector) {
-	return applySelectionUpdate((sels, ghosted): SelectionPatch => {
-		const next = replaceSelection(sels, path, selector);
-		if (next.length !== sels.length) return { selections: next };
-		let migrated: Set<string> | null = null;
-		for (let i = 0; i < sels.length; i++) {
-			if (next[i].key !== sels[i].key && ghosted.has(sels[i].key)) {
-				migrated ??= new Set(ghosted);
-				migrated.delete(sels[i].key);
-				migrated.add(next[i].key);
-			}
-		}
-		return migrated ? { selections: next, ghosted: migrated } : { selections: next };
-	});
-}
 
 /** Toggle tag selections on or off for the given tags. */
 export function toggleTagSelections(tagIds: number[]) {
-	if (!getMapState().map || tagIds.length === 0) return;
-	void applySelectionUpdate((sels) =>
+	if (tagIds.length === 0) return;
+	void applyListUpdate((rows) =>
 		tagIds.reduce((result, tagId) => {
 			const key = buildSelection(tagSelector(tagId)).key;
-			return result.some((s) => s.key === key)
+			return result.some((r) => r.selection.key === key)
 				? removeSelection(key)(result)
 				: addSelection(tagSelector(tagId))(result);
-		}, sels),
+		}, rows),
 	);
 }
 
-/** Tag ids that currently have a top-level Tag selection active. */
+/** Tag ids that have a top-level Tag selection listed, ghosted or not. */
 export const getSelectedTagIds: () => ReadonlySet<number> = (() => {
 	let prev: Set<number> | null = null;
 	return memoOnRefs(
-		() => [getMapState().selections] as const,
-		(sels) => {
+		() => [getMapState().selectionList] as const,
+		(rows) => {
 			const ids = new Set(
-				sels.flatMap((s) => {
-					const id = tagIdOf(s.selector);
+				rows.flatMap((r) => {
+					const id = tagIdOf(r.selection.selector);
 					return id == null ? [] : [id];
 				}),
 			);

@@ -772,7 +772,7 @@ pub fn store_commit_diff(
 pub async fn store_sync_selections(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
-    sels: Vec<SelectionInput>,
+    sels: Vec<ListedSelection>,
 ) -> AppResult<SelectionSync> {
     let _t = Instant::now();
     let (counts, buf, selected_count, num_cells) = {

@@ -53,14 +53,18 @@ export function getWorkArea() {
 	return getMapState().workArea;
 }
 
-/** @deprecated v0.8.2. Read `MMA.getMapState().selections`. */
+/** @deprecated v0.8.2. Read `MMA.getMapState().selectionList`. */
 export function getAllSelections() {
-	return getMapState().selections;
+	return getMapState().selectionList.map((r) => r.selection);
 }
 
-/** @deprecated v0.8.2. Read `MMA.getMapState().ghostedSelections`. */
+/** @deprecated v0.8.2. Read `MMA.getMapState().selectionList`. */
 export function getGhostedSelections() {
-	return getMapState().ghostedSelections;
+	return new Set(
+		getMapState()
+			.selectionList.filter((r) => r.ghosted)
+			.map((r) => r.selection.key),
+	);
 }
 
 /** @deprecated v0.8.2. Use `MMA.getActiveSelections()`. */

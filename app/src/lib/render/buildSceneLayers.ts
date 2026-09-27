@@ -167,8 +167,7 @@ export function buildSceneLayers(cm: CellManager, ctx: SceneContext): Layer[] {
 		return layers;
 	}
 
-	const allSelections = getMapState().selections;
-	const polygonSels = allSelections.flatMap((sel) =>
+	const polygonSels = getMapState().selectionList.flatMap(({ selection: sel }) =>
 		sel.selector.type === "Intersection" ? sel.selector.selections : [sel],
 	);
 	const livePolygonKeys = new Set<string>();

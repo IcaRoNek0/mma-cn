@@ -4,19 +4,15 @@ import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import { emit, useEventValue, subscribe as onEvent } from "@/lib/events";
 import {
+	addSelections,
+	removeSelections,
+	getActiveSelections,
 	getMapState,
-	setActiveLocation,
-	applySelectionUpdate,
-	removeLocations,
 	query,
+	removeLocations,
+	setActiveLocation,
 } from "@/store/useMapStore";
-import {
-	addSelection,
-	batch,
-	buildSelection,
-	removeSelection,
-	selectionDisplayName,
-} from "@/store/selections";
+import { buildSelection, selectionDisplayName } from "@/store/selections";
 
 import type { ReviewSession, Selection, Selector } from "@/bindings.gen";
 import { t } from "@/lib/i18n";
@@ -232,6 +228,14 @@ export async function beginReview(ids: number[], source?: Selection): Promise<vo
 	}
 }
 
+/** Review the selected locations. With one active selection, the review belongs to it and
+ *  resumes with it. */
+export function reviewSelected(): Promise<void> {
+	const active = getActiveSelections();
+	const ids = [...getMapState().selectedLocationIds];
+	return beginReview(ids, active.length === 1 ? active[0] : undefined);
+}
+
 /** Resume a session picked from the resume modal. */
 export async function resumeReview(s: ReviewSession): Promise<void> {
 	await adopt(s);
@@ -337,16 +341,12 @@ const HISTORY_SESSION_ID = "history";
 export async function selectReviewedHistory(): Promise<void> {
 	const ids = reviewedHistoryIds(await listSessions());
 	if (ids.length === 0) return;
-	await applySelectionUpdate(
-		batch(addSelection)([reviewSelector(HISTORY_SESSION_ID, "reviewed", ids)]),
-	);
+	await addSelections([reviewSelector(HISTORY_SESSION_ID, "reviewed", ids)]);
 }
 
-/** Add a reviewed or unreviewed overlay selection for a session. */
-export function selectReviewSet(s: ReviewSession, mode: ReviewMode) {
-	return applySelectionUpdate(
-		batch(addSelection)([reviewSelector(s.id, mode, reviewSet(s, mode))]),
-	);
+/** The locations of review session `s` that are reviewed, or still to review. */
+export function reviewSetSelector(s: ReviewSession, mode: ReviewMode): Selector {
+	return reviewSelector(s.id, mode, reviewSet(s, mode));
 }
 
 // --- Selection projection (auto, debounced) ---
@@ -368,9 +368,7 @@ function clearProjectTimer() {
 function refreshProjection(): void {
 	const s = session;
 	if (!s) return;
-	void applySelectionUpdate(
-		batch(addSelection)(REVIEW_MODES.map((mode) => reviewSelector(s.id, mode, reviewSet(s, mode)))),
-	);
+	void addSelections(REVIEW_MODES.map((mode) => reviewSetSelector(s, mode)));
 }
 
 function scheduleProjection(): void {
@@ -384,7 +382,7 @@ function scheduleProjection(): void {
 function clearProjection(id: string): void {
 	clearProjectTimer();
 	const keys = REVIEW_MODES.map((mode) => buildSelection(reviewSelector(id, mode)).key);
-	void applySelectionUpdate(batch(removeSelection)(keys));
+	void removeSelections(keys);
 }
 
 /** Adopt a persisted session as active, pruning locations that no longer exist. */

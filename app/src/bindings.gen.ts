@@ -275,7 +275,7 @@ export const commands = {
 	 *  Replace all active selections and resolve them against current data. Returns
 	 *  per-selection counts and a bitmask for the marker overlay.
 	 */
-	storeSyncSelections: (sels: SelectionInput[]) => __TAURI_INVOKE<SelectionSync>("store_sync_selections", { sels }),
+	storeSyncSelections: (sels: ListedSelection[]) => __TAURI_INVOKE<SelectionSync>("store_sync_selections", { sels }),
 	/**
 	 *  Find groups of locations within `distance` metres of each other (transitive).
 	 *  Returns groups of IDs, each with at least two members.
@@ -1004,6 +1004,13 @@ export type KeySpec =
 { kind: "numericBin"; binning: NumericBinning } | 
 /**  Calendar component of a date (epoch seconds) or month ("YYYY-MM") field. */
 { kind: "datePart"; part: DatePart; tzLocal: boolean };
+
+/**  A selection as the sidebar lists it, plus whether it is ghosted. */
+export type ListedSelection = {
+	selection: Selection,
+	/**  Counted, but kept out of the overlay and the selected set. */
+	ghosted: boolean,
+};
 
 /**
  *  A single Street View location on a map.
@@ -1837,12 +1844,6 @@ export type Selection = {
 	color: [number, number, number],
 	selector: Selector,
 };
-
-/**  A top-level selection, plus whether it is ghosted. */
-export type SelectionInput = {
-	/**  Counted, but kept out of the overlay and the selected set. */
-	ghosted?: boolean,
-} & Selection;
 
 /**  Updated selection state after a change. `counts` gives each selection's match count. */
 export type SelectionSync = {

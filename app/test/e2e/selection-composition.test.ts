@@ -28,7 +28,7 @@ describe("Selection composition", () => {
 		const result = await withApi(async (api, tagId) => {
 			await api.addSelections([api.panoIdSelector(true)]); // 30 (flags=1, indices 0-29)
 			await api.addSelections([api.tagSelector(tagId)]); // 50 (indices 0-49)
-			await api.applySelectionUpdate(api.composeSelections([0], [1], "Intersection"));
+			await api.applyListUpdate(api.composeSelections([0], [1], "Intersection"));
 			const after = api.getActiveSelections();
 			return {
 				selCount: after.length,
@@ -45,7 +45,7 @@ describe("Selection composition", () => {
 		const result = await withApi(async (api, tagId) => {
 			await api.addSelections([api.panoIdSelector(true)]); // 30
 			await api.addSelections([api.tagSelector(tagId)]); // 30 (indices 50-79)
-			await api.applySelectionUpdate(api.composeSelections([0], [1], "Union"));
+			await api.applyListUpdate(api.composeSelections([0], [1], "Union"));
 			const after = api.getActiveSelections();
 			return {
 				selCount: after.length,
@@ -62,8 +62,8 @@ describe("Selection composition", () => {
 		const result = await withApi(async (api, tagId) => {
 			await api.addSelections([api.panoIdSelector(true)]);
 			await api.addSelections([api.tagSelector(tagId)]);
-			await api.applySelectionUpdate(api.composeSelections([0], [1], "Union"));
-			await api.applySelectionUpdate(api.moveSelection([0, 0], [0], "after"));
+			await api.applyListUpdate(api.composeSelections([0], [1], "Union"));
+			await api.applyListUpdate(api.moveSelection([0, 0], [0], "after"));
 			const after = api.getActiveSelections();
 			return {
 				selCount: after.length,
@@ -81,11 +81,11 @@ describe("Selection composition", () => {
 			await api.addSelections([api.untaggedSelector()]);
 
 			// Compose first two, then the third into the union
-			await api.applySelectionUpdate(api.composeSelections([0], [1], "Union"));
-			await api.applySelectionUpdate(api.composeSelections([1], [0], "Union"));
+			await api.applyListUpdate(api.composeSelections([0], [1], "Union"));
+			await api.applyListUpdate(api.composeSelections([1], [0], "Union"));
 
 			// Remove one child from composite
-			await api.applySelectionUpdate(api.removeSelectionAt([0, 0]));
+			await api.applyListUpdate(api.removeSelectionAt([0, 0]));
 
 			return {
 				selCount: api.getActiveSelections().length,

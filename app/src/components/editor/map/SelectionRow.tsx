@@ -1,6 +1,6 @@
 import { memo, useState, useEffect, useRef } from "react";
 import {
-	applySelectionUpdate,
+	applyListUpdate,
 	createTags,
 	getVisibleTags,
 	pruneDuplicates,
@@ -9,13 +9,13 @@ import {
 	getTags,
 } from "@/store/useMapStore";
 import { useItemDrag } from "@/lib/hooks/useItemDrag";
-import { updateFilterSelection } from "@/store/selectionActions";
 import {
 	composeSelections,
 	filterIsLocalTime,
 	isolateGhost,
 	moveSelection,
 	removeSelectionAt,
+	replaceSelection,
 	selectionDisplayName,
 	setPolygonName,
 	setSelectionColor,
@@ -116,12 +116,12 @@ export const SelectionRow = memo(function SelectionRow({
 	selection,
 	path,
 	depth = 0,
-	inheritedGhost = false,
+	ghosted,
 }: {
 	selection: Selection;
 	path: SelectionPath;
 	depth?: number;
-	inheritedGhost?: boolean;
+	ghosted: boolean;
 }) {
 	const map = useMapState((s) => s.map);
 	const tagColor = useMapState(() => {
@@ -130,10 +130,7 @@ export const SelectionRow = memo(function SelectionRow({
 	});
 	const count = useMapState((s) => s.selectionCounts[selection.key] ?? 0);
 	const isTopLevel = depth === 0;
-	const ghosted = useMapState(
-		(s) => inheritedGhost || (depth === 0 && s.ghostedSelections.has(selection.key)),
-	);
-	const onRemove = () => void applySelectionUpdate(removeSelectionAt(path));
+	const onRemove = () => void applyListUpdate(removeSelectionAt(path));
 	const [view, setView] = useState<"contextmenu" | "color">("contextmenu");
 	const [dropZone, setDropZone] = useState<"before" | "on" | "after" | null>(null);
 	const [editingFilter, setEditingFilter] = useState(false);
@@ -145,8 +142,7 @@ export const SelectionRow = memo(function SelectionRow({
 	const drag = useDragState();
 	const isDragging = drag?.path.join() === path.join();
 	const isDropTarget = drag != null && !isDragging;
-	const handleColorChange = (color: RGB) =>
-		void applySelectionUpdate(setSelectionColor(path, color));
+	const handleColorChange = (color: RGB) => void applyListUpdate(setSelectionColor(path, color));
 
 	const fieldEntries = useExtraFieldKeys();
 
@@ -182,7 +178,9 @@ export const SelectionRow = memo(function SelectionRow({
 		return (dir: 1 | -1) => {
 			const next = stepFilterWindow(ft, p.test, dir, wallClock);
 			if (next) {
-				void updateFilterSelection(path, { type: "Filter", field: p.field, test: next });
+				void applyListUpdate(
+					replaceSelection(path, { type: "Filter", field: p.field, test: next }),
+				);
 			}
 		};
 	})();
@@ -200,7 +198,7 @@ export const SelectionRow = memo(function SelectionRow({
 	};
 
 	const submitRename = () => {
-		void applySelectionUpdate(setPolygonName(path, renameDraft));
+		void applyListUpdate(setPolygonName(path, renameDraft));
 		setRenaming(false);
 	};
 
@@ -242,11 +240,11 @@ export const SelectionRow = memo(function SelectionRow({
 	const handleMouseUp = () => {
 		if (!isDropTarget || !drag || !dropZone) return;
 		if (dropZone === "on") {
-			void applySelectionUpdate(
+			void applyListUpdate(
 				composeSelections(drag.path, path, drag.altKey ? "Union" : "Intersection"),
 			);
 		} else {
-			void applySelectionUpdate(moveSelection(drag.path, path, dropZone));
+			void applyListUpdate(moveSelection(drag.path, path, dropZone));
 		}
 		setDropZone(null);
 	};
@@ -305,7 +303,7 @@ export const SelectionRow = memo(function SelectionRow({
 								</div>
 							) : (
 								<>
-									<MenuItem onClick={() => void applySelectionUpdate(toggleInvert(path))}>
+									<MenuItem onClick={() => void applyListUpdate(toggleInvert(path))}>
 										{t("Invert selection")}
 									</MenuItem>
 									{selection.selector.type === "Filter" && (
@@ -382,9 +380,7 @@ export const SelectionRow = memo(function SelectionRow({
 							label={ghosted ? t("Un-ghost selection") : t("Ghost selection")}
 							tooltip={t("Ghost selection (Alt-click to isolate)")}
 							onClick={(e) =>
-								void applySelectionUpdate(
-									e.altKey ? isolateGhost(selection.key) : toggleGhost(selection.key),
-								)
+								void applyListUpdate(e.altKey ? isolateGhost(path[0]) : toggleGhost(path[0]))
 							}
 						/>
 					)}
@@ -396,7 +392,7 @@ export const SelectionRow = memo(function SelectionRow({
 					initial={filterPropsToSeed(selection.selector)}
 					submitLabel={t("Update filter")}
 					onSubmit={(field, test) =>
-						void updateFilterSelection(path, { type: "Filter", field, test })
+						void applyListUpdate(replaceSelection(path, { type: "Filter", field, test }))
 					}
 					onClose={() => setEditingFilter(false)}
 				/>
@@ -435,7 +431,7 @@ export const SelectionRow = memo(function SelectionRow({
 						selection={child}
 						path={selection === inner ? [...path, i] : [...path, 0, i]}
 						depth={depth + 1}
-						inheritedGhost={ghosted}
+						ghosted={ghosted}
 					/>
 				))}
 		</>

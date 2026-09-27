@@ -65,23 +65,20 @@ vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock
 
 import {
 	openMap,
-	applySelectionUpdate,
+	addSelections,
+	applyListUpdate,
+	getActiveSelections,
 	resetSelections,
 	selectRandomFromSelection,
 	selectSpacedFromSelection,
 	selectEvenlySpacedFromSelection,
 	getMapState,
 } from "@/store/useMapStore";
-import { addSelection, batch, buildSelection, tagSelector } from "@/store/selections";
+import { buildSelection, tagSelector } from "@/store/selections";
 
-async function addSelections(selectors: import("@/bindings.gen").Selector[]) {
-	await applySelectionUpdate(batch(addSelection)(selectors));
-}
-
-/** What `currentSelection()` builds: the active (non-ghosted) nodes under one Union. */
+/** What `currentSelection()` builds: the active selections under one Union. */
 function unionOfActive() {
-	const { selections, ghostedSelections } = getMapState();
-	return { type: "Union", selections: selections.filter((s) => !ghostedSelections.has(s.key)) };
+	return { type: "Union", selections: getActiveSelections() };
 }
 
 /** Tag membership as the command mock resolves it. */
@@ -91,7 +88,7 @@ function byTagIds(tagId: number): number[] {
 
 /** The ids of the Manual selection a pick leaves behind. */
 function pickedIds(): number[] {
-	const sel = getMapState().selections[0];
+	const sel = getActiveSelections().find((s) => s.selector.type === "Manual");
 	return sel?.selector.type === "Manual" ? [...sel.selector.locations] : [];
 }
 
@@ -140,7 +137,8 @@ describe("random pick, per selection", () => {
 	it("ignores ghosted selections", async () => {
 		await addSelections([tagSelector(1), tagSelector(2)]);
 		const { toggleGhost } = await import("@/store/selections");
-		await applySelectionUpdate(toggleGhost(buildSelection(tagSelector(2)).key));
+		const ghostKey = buildSelection(tagSelector(2)).key;
+		await applyListUpdate(toggleGhost(1));
 		const sent = unionOfActive();
 
 		await selectRandomFromSelection(2, true);
@@ -148,6 +146,11 @@ describe("random pick, per selection", () => {
 		// One live selection left, so the pick runs once over the whole selection --
 		// and the ghosted one is absent from the union that gets sent.
 		expect(h.sampledSelectors).toEqual([sent]);
+		// The pick replaces only what it picked from: the ghosted selection stays, still ghosted.
+		expect(getMapState().selectionList.map((r) => [r.selection.key, r.ghosted])).toEqual([
+			["manual", false],
+			[ghostKey, true],
+		]);
 	});
 });
 

@@ -2,20 +2,20 @@ import { useState } from "react";
 import type { Tag } from "@/types";
 import { NSelect } from "@/components/primitives/NSelect";
 import {
-	useMapState,
-	getMapState,
-	setTags,
+	addSelections,
 	createTags,
-	applySelectionUpdate,
-	getVisibleTags,
+	currentSelection,
 	getActiveSelections,
+	getMapState,
+	getTagCounts,
+	getVisibleTags,
+	selectEvenlySpacedFromSelection,
 	selectRandomFromSelection,
 	selectSpacedFromSelection,
-	selectEvenlySpacedFromSelection,
-	currentSelection,
-	getTagCounts,
+	setTags,
+	useMapState,
 } from "@/store/useMapStore";
-import { addSelection, batch, buildSelection, has } from "@/store/selections";
+import { buildSelection, has } from "@/store/selections";
 import { toast } from "@/lib/util/toast";
 import { sortTagsByMode } from "@/lib/util/util";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
@@ -27,7 +27,7 @@ import { ApplyFieldAsTagsDialog } from "@/components/editor/tags/ApplyFieldAsTag
 import { TagFindReplaceDialog } from "@/components/editor/tags/TagFindReplaceDialog";
 import { MergeDuplicatesModal } from "@/components/dialogs/MergeDuplicatesModal";
 import { ReviewSessionsModal } from "@/components/dialogs/ReviewSessions";
-import { beginReview } from "@/lib/review/review";
+import { reviewSelected } from "@/lib/review/review";
 import { ToolBlock } from "@/components/primitives/ToolBlock";
 import { Button } from "@/components/primitives/Button";
 import { Checkbox } from "@/components/primitives/Checkbox";
@@ -214,17 +214,15 @@ function RankedPanel({
 			onSubmit={(e) => {
 				e.preventDefault();
 				if (!field || count < 1) return;
-				void applySelectionUpdate(
-					batch(addSelection)([
-						{
-							type: "Ranked",
-							selection: buildSelection(has(field)),
-							expr: field,
-							k: count,
-							ascending,
-						},
-					]),
-				);
+				void addSelections([
+					{
+						type: "Ranked",
+						selection: buildSelection(has(field)),
+						expr: field,
+						k: count,
+						ascending,
+					},
+				]);
 			}}
 		>
 			<NSelect value={field} onChange={(e) => setField(e.target.value)}>
@@ -265,12 +263,17 @@ function SelectedCount({ className }: { className?: string }) {
 }
 
 function SelectionList() {
-	const selections = useMapState((s) => s.selections);
-	if (selections.length === 0) return null;
+	const rows = useMapState((s) => s.selectionList);
+	if (rows.length === 0) return null;
 	return (
 		<div className="selection-manager__selections">
-			{selections.map((sel, i) => (
-				<SelectionRow key={sel.key} selection={sel} path={[i]} />
+			{rows.map((row, i) => (
+				<SelectionRow
+					key={row.selection.key}
+					selection={row.selection}
+					ghosted={row.ghosted}
+					path={[i]}
+				/>
 			))}
 		</div>
 	);
@@ -347,12 +350,7 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 	const [showApplySaved, setShowApplySaved] = useDialogState("apply-saved-selection");
 	const [saveSelName, setSaveSelName] = useState("");
 
-	useDialog("review-selected", () => {
-		const { selectedLocationIds, selections } = getMapState();
-		if (selectedLocationIds.size === 0) return;
-		const source = selections.length === 1 ? selections[0] : undefined;
-		void beginReview(Array.from(selectedLocationIds), source);
-	});
+	useDialog("review-selected", () => void reviewSelected());
 
 	if (!map) return null;
 
@@ -395,9 +393,7 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 									className="selection-manager__inline-form"
 									onSubmit={(e) => {
 										e.preventDefault();
-										void applySelectionUpdate(
-											batch(addSelection)([{ type: "Duplicates", distance: dupDistance }]),
-										);
+										void addSelections([{ type: "Duplicates", distance: dupDistance }]);
 									}}
 								>
 									<label>
@@ -421,9 +417,7 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 									persistKey={map.id}
 									submitLabel={t("Add filter")}
 									onSubmit={(field, test) => {
-										void applySelectionUpdate(
-											batch(addSelection)([{ type: "Filter", field, test }]),
-										);
+										void addSelections([{ type: "Filter", field, test }]);
 									}}
 								/>
 							),

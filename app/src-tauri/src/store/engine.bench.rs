@@ -22,7 +22,7 @@ use tauri::test::MockRuntime;
 
 pub use crate::selections::{Selection, Selector};
 pub use crate::store::engine::{
-    LocationPatch, MutationResult, RenderRequest, SelectionInput, Store, Update,
+    ListedSelection, LocationPatch, MutationResult, RenderRequest, Store, Update,
 };
 pub use crate::types::Location;
 
@@ -302,7 +302,7 @@ impl BenchApp {
         async_runtime::block_on(store_redo(label(), self.state())).expect("redo")
     }
 
-    pub fn sync_selections(&self, sels: Vec<SelectionInput>) -> usize {
+    pub fn sync_selections(&self, sels: Vec<ListedSelection>) -> usize {
         async_runtime::block_on(store_sync_selections(label(), self.state(), sels))
             .expect("sync_selections")
             .selected_count

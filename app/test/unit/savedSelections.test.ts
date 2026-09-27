@@ -12,13 +12,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@/store/useMapStore", () => ({
-	applySelectionUpdate: (op: (sels: Selection[]) => Selection[]) => {
-		const result = op([]);
-		const out = Array.isArray(result)
-			? result
-			: ((result as { selections?: Selection[] }).selections ?? []);
-		h.added.push(out.map((s: Selection) => s.selector));
-	},
+	addSelections: (selectors: Selector[]) => h.added.push(selectors),
 	getTag: (id: number) => h.tags[id],
 	getVisibleTags: () => Object.values(h.tags).filter((t) => t.visible !== false),
 	getMapState: () => ({ fieldDefs: {} }),

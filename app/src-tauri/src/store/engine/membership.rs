@@ -113,16 +113,14 @@ pub struct SelectionSync {
     pub selected_count: usize,
 }
 
-/// A top-level selection, plus whether it is ghosted.
+/// A selection as the sidebar lists it, plus whether it is ghosted.
 // Ghosting means nothing for a nested child, which is why the flag lives here and not on
 // `Selection`.
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct SelectionInput {
-    #[serde(flatten)]
+pub struct ListedSelection {
     pub selection: Selection,
     /// Counted, but kept out of the overlay and the selected set.
-    #[serde(default)]
     pub ghosted: bool,
 }
 

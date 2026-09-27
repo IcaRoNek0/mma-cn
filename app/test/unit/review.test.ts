@@ -2,12 +2,18 @@ import { describe, it, expect, vi } from "vitest";
 
 // review.ts pulls in the store graph for its side-effectful API; stub it so the
 // module loads in isolation.
-const store = vi.hoisted(() => ({ liveIds: [] as number[] }));
+const store = vi.hoisted(() => ({
+	liveIds: [] as number[],
+	mapState: { mapId: null, map: null, activeLocation: null } as Record<string, unknown>,
+	active: [] as { key: string; selector: { type: string } }[],
+}));
 vi.mock("@/store/useMapStore", () => ({
-	getMapState: () => ({ mapId: null, map: null, activeLocation: null }),
+	getMapState: () => store.mapState,
+	getActiveSelections: () => store.active,
 	setActiveLocation: vi.fn(),
 	addSelections: vi.fn(),
 	applySelectionUpdate: vi.fn(),
+	removeSelections: vi.fn(),
 	query: ({ locations }: { locations: number[] }) => ({
 		ids: async () => locations.filter((id) => store.liveIds.includes(id)),
 	}),
@@ -15,14 +21,15 @@ vi.mock("@/store/useMapStore", () => ({
 	mutate: vi.fn(),
 }));
 vi.mock("@/lib/commands", () => ({
-	cmd: { storeReviewUpdate: vi.fn(async () => {}), storeReviewDelete: vi.fn(async () => {}) },
+	cmd: {
+		storeReviewUpdate: vi.fn(async () => {}),
+		storeReviewDelete: vi.fn(async () => {}),
+		storeReviewGet: vi.fn(async () => null),
+	},
 }));
 vi.mock("@/lib/events", () => ({ subscribe: () => () => {}, emit: vi.fn() }));
 vi.mock("@/store/selections", () => ({
 	selectionDisplayName: () => "x",
-	batch: () => () => [],
-	addSelection: vi.fn(),
-	removeSelection: vi.fn(),
 	buildSelection: () => ({ key: "" }),
 }));
 vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
@@ -42,7 +49,9 @@ import {
 	resumeReview,
 	getReviewSession,
 	cancelReview,
+	reviewSelected,
 } from "@/lib/review/review";
+import { cmd } from "@/lib/commands";
 import type { ReviewSession } from "@/bindings.gen";
 
 function mk(order: number[], cursorId: number, reviewed: number[] = []): ReviewSession {
@@ -214,5 +223,19 @@ describe("worklist positions", () => {
 		expect(s.cursorId).toBe(6);
 		expect(reviewIndex(s)).toBe(5);
 		expect(retreat(s)?.cursorId).toBe(5);
+	});
+});
+
+describe("reviewSelected", () => {
+	it("belongs to the one active selection, whatever is ghosted beside it", async () => {
+		const mapState = store.mapState;
+		store.mapState = { mapId: "m", map: { settings: {} }, selectedLocationIds: new Set([1]) };
+		store.active = [{ key: "tag:1", selector: { type: "Filter" } }];
+
+		await reviewSelected();
+
+		expect(cmd.storeReviewGet).toHaveBeenCalledWith("m", "tag:1");
+		store.mapState = mapState;
+		store.active = [];
 	});
 });

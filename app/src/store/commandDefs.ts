@@ -51,23 +51,23 @@ import {
 } from "@mdi/js";
 import { registerCommand, type CommandDef } from "./commands";
 import {
-	addSelection,
-	batch,
 	intersectSelections,
 	invertSelections,
 	unionSelections,
 	toggleGhostAll,
 } from "./selections";
 import {
-	undo,
-	redo,
+	addSelections,
+	applyListUpdate,
 	applySelectionUpdate,
-	resetSelections,
-	getMapState,
 	getActiveSelections,
-	removeLocations,
-	getTags,
+	getMapState,
 	getTagCounts,
+	getTags,
+	redo,
+	removeLocations,
+	resetSelections,
+	undo,
 } from "./useMapStore";
 import { hasCommitDiff } from "./commitDiff";
 import { MAP_EMBED_PREFS, MAP_TYPES } from "./mapEmbedPrefs";
@@ -85,7 +85,7 @@ const requiresMap = () => getMapState().map !== null;
 const requiresVersioning = () => requiresMap() && !isReservedMap(getMapState().mapId);
 const hasActiveLocation = () => getMapState().activeLocation != null;
 const hasSelection = () => getMapState().selectedLocationIds.size > 0;
-const hasAnySelections = () => getMapState().selections.length > 0;
+const hasAnySelections = () => getMapState().selectionList.length > 0;
 const openBulkOp = (op: string) => () => openDialog("bulk-op", op);
 const openInlinePanel = (id: string) => () => openDialog("inline-panel", id);
 
@@ -197,38 +197,38 @@ const COMMANDS = {
 		icon: mdiSelectAll,
 		group: msg("Selections"),
 		defaultBinding: "Mod+a",
-		execute: () => applySelectionUpdate(batch(addSelection)([{ type: "Everything" }])),
+		execute: () => addSelections([{ type: "Everything" }]),
 	},
 	"select-untagged": {
 		label: msg("Select untagged locations"),
 		icon: mdiTagOffOutline,
 		group: msg("Selections"),
 		aliases: ["find untagged", "missing tags"],
-		execute: () => applySelectionUpdate(batch(addSelection)([untaggedSelector()])),
+		execute: () => addSelections([untaggedSelector()]),
 	},
 	"select-unpanned": {
 		label: msg("Select unpanned locations"),
 		icon: mdiCompassOffOutline,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(batch(addSelection)([unpannedSelector()])),
+		execute: () => addSelections([unpannedSelector()]),
 	},
 	"select-panoid": {
 		label: msg("Select Pano ID locations"),
 		icon: mdiImageOutline,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(batch(addSelection)([panoIdSelector(true)])),
+		execute: () => addSelections([panoIdSelector(true)]),
 	},
 	"select-no-panoid": {
 		label: msg("Select non-Pano ID locations"),
 		icon: mdiImageOffOutline,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(batch(addSelection)([panoIdSelector(false)])),
+		execute: () => addSelections([panoIdSelector(false)]),
 	},
 	"select-uncommitted": {
 		label: msg("Select uncommitted locations"),
 		icon: mdiContentSaveAlertOutline,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(batch(addSelection)([{ type: "Uncommitted" }])),
+		execute: () => addSelections([{ type: "Uncommitted" }]),
 	},
 	"select-reviewed": {
 		label: msg("Select reviewed locations"),
@@ -360,7 +360,7 @@ const COMMANDS = {
 		icon: mdiGhostOutline,
 		group: msg("Selections"),
 		aliases: ["hide selections", "dim selections"],
-		execute: () => applySelectionUpdate(toggleGhostAll()),
+		execute: () => applyListUpdate(toggleGhostAll()),
 		enabled: hasAnySelections,
 	},
 	"save-selections": {

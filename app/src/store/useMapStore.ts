@@ -35,18 +35,18 @@ import { resetImportState } from "./importStaging";
 import { resetCommitDiffState, resetCommitDiffCounts } from "./commitDiff";
 import { setCachedMapList, invalidateMapList, reloadMapList } from "./mapList";
 
-import type { Selection, Selector, SpacedPickResult } from "@/bindings.gen";
+import type { ListedSelection, Selection, Selector, SpacedPickResult } from "@/bindings.gen";
 import {
 	addSelection,
 	all,
 	any,
-	batch,
 	buildSelection,
 	removeSelection,
 	tagIdOf,
 	tagSelector,
+	withActive,
 } from "./selections";
-import type { SelectionPatch } from "./selections";
+import { batch } from "@/types/util";
 
 // --- Map state ---
 
@@ -57,13 +57,11 @@ export interface UiState {
 	mapId: string | null;
 	/** Persisted identity slice (metadata + settings). Changes rarely. */
 	map: MapMeta | null;
-	/** Resolved count per selection node (top-level and nested), keyed by `Selection.key`.
-	 *  The sole source for sidebar counts — refreshed wholesale from Rust on every sync. @unstable */
+	/** Resolved count per selection node keyed by `Selection.key`. @unstable */
 	selectionCounts: Record<string, number>;
-	selections: Selection[];
-	/** Keys of selections that are "ghosted": kept in the list but excluded from the
-	 *  Rust sync, so they neither render nor count toward the selected set. Ephemeral. @unstable */
-	ghostedSelections: ReadonlySet<string>;
+	/** The selections as the sidebar lists them, ghosted ones included. Everything that acts on
+	 *  the selection reads `getActiveSelections` instead. @unstable */
+	selectionList: ListedSelection[];
 	selectedLocationIds: SelectedIds;
 	/** @unstable */
 	activeLocationId: number | null;
@@ -94,8 +92,7 @@ const INITIAL_STATE: MapState = {
 	mapId: null,
 	map: null,
 	selectionCounts: {},
-	selections: [],
-	ghostedSelections: new Set(),
+	selectionList: [],
 	selectedLocationIds: SelectedIds.EMPTY,
 	activeLocationId: null,
 	activeLocation: null,
@@ -300,7 +297,7 @@ export async function initStore() {
 /** Reset all per-map editing state to its initial values. */
 function clearEditState() {
 	setState({
-		selections: [],
+		selectionList: [],
 		selectedLocationIds: SelectedIds.EMPTY,
 		activeLocationId: null,
 		activeLocation: null,
@@ -416,10 +413,10 @@ export function query(selector: Selector) {
 	};
 }
 
-/** Active (non-ghosted) selections, the default for any operational logic. */
+/** The selection: every listed selection that is not ghosted. */
 export const getActiveSelections: () => Selection[] = memoOnRefs(
-	() => [state.selections, state.ghostedSelections] as const,
-	(sels, ghosts) => (ghosts.size === 0 ? sels : sels.filter((s) => !ghosts.has(s.key))),
+	() => [state.selectionList] as const,
+	(rows) => rows.filter((r) => !r.ghosted).map((r) => r.selection),
 );
 
 /** The live selection as a `Selector`: the union of the active selection nodes. */
@@ -477,8 +474,7 @@ function applyMutation(r: MutationResult) {
 	if (!state.map) return;
 	const oldTags = getTags();
 	mergeEngineValues(r.values);
-	if (getTags() !== oldTags)
-		void applySelectionUpdate(batch(removeSelection)(deadTagKeys(oldTags, getTags())));
+	if (getTags() !== oldTags) void removeSelections(deadTagKeys(oldTags, getTags()));
 	if (r.selectionSync) applySelectionSync(r.selectionSync);
 	emitEvent("store:changed");
 }
@@ -677,7 +673,7 @@ async function migrateFieldReferences(from: string, to: string | null) {
 		delete defs[from];
 		await setMapExtraFields(defs);
 	}
-	await applySelectionUpdate(rewriteSelectionFields(from, to));
+	await applyListUpdate(rewriteSelectionFields(from, to));
 }
 
 // --- Selections ---
@@ -692,39 +688,31 @@ function selectionSyncColor(s: Selection): RGB {
 	return s.color;
 }
 
-/** All selections, each flagged ghosted or not. Rust counts every one, renders/selects only non-ghosted. */
-function buildSyncInputs() {
-	return state.selections.map((s) => ({
-		key: s.key,
-		selector: s.selector,
-		color: selectionSyncColor(s),
-		ghosted: state.ghostedSelections.has(s.key),
-	}));
-}
-
-/** Add selectors to the active selection list. */
+/** Add selectors to the selection. */
 export function addSelections(selectors: Selector[]): Promise<void> {
-	return applySelectionUpdate(batch(addSelection)(selectors));
+	return applyListUpdate(batch(addSelection)(selectors));
 }
 
-/** Drop selections by key. */
+/** Drop listed selections by key, ghosted ones included. */
 export function removeSelections(keys: string[]): Promise<void> {
-	return applySelectionUpdate(batch(removeSelection)(keys));
+	return applyListUpdate(batch(removeSelection)(keys));
 }
 
-/** Apply a selection transform function and re-resolve the selection.
- *  The function receives the current selections and ghosted set, and returns either
- *  a new `Selection[]` or a `SelectionPatch`. No-op when nothing changed. @unstable */
-export async function applySelectionUpdate(
-	op: (sels: Selection[], ghosted: ReadonlySet<string>) => Selection[] | SelectionPatch,
-) {
+/** Apply `op` to the selection. It sees only the active selections; ghosted ones keep their
+ *  places in the list. No-op when nothing changed. @unstable */
+export async function applySelectionUpdate(op: (active: Selection[]) => Selection[]) {
+	const active = getActiveSelections();
+	const next = op(active);
+	if (next !== active) await applyListUpdate((rows) => withActive(rows, next));
+}
+
+/** Apply `op` to the listed selections, ghosted ones included: the sidebar's own edits.
+ *  No-op when nothing changed. @unstable */
+export async function applyListUpdate(op: (rows: ListedSelection[]) => ListedSelection[]) {
 	if (!state.map) return;
-	const out = op(state.selections, state.ghostedSelections);
-	const patch: SelectionPatch = Array.isArray(out) ? { selections: out } : out;
-	const selections = patch.selections ?? state.selections;
-	const ghostedSelections = pruneGhosted(selections, patch.ghosted ?? state.ghostedSelections);
-	if (selections === state.selections && ghostedSelections === state.ghostedSelections) return;
-	setState({ selections, ghostedSelections });
+	const selectionList = op(state.selectionList);
+	if (selectionList === state.selectionList) return;
+	setState({ selectionList });
 	return syncSelections();
 }
 
@@ -733,27 +721,23 @@ export async function applySelectionUpdate(
 export async function syncSelections() {
 	if (!state.map) return;
 	const t = trace("selection", { summary: true });
-	const sels = buildSyncInputs();
-	const result = await cmd.storeSyncSelections(sels);
+	const result = await cmd.storeSyncSelections(
+		state.selectionList.map((r) => ({
+			...r,
+			selection: { ...r.selection, color: selectionSyncColor(r.selection) },
+		})),
+	);
 	t.step("ipc");
 	applySelectionSync(result);
 	emitEvent("store:changed");
 	t.step("apply");
 	t.end({ selected: result.selectedCount });
-	emitEvent("selection:change", state.selections);
+	emitEvent("selection:change", getActiveSelections());
 }
 
-/** Drop ghosted keys that no longer correspond to a live selection. */
-function pruneGhosted(selections: Selection[], ghosted: ReadonlySet<string>): ReadonlySet<string> {
-	if (ghosted.size === 0) return ghosted;
-	const live = new Set(selections.map((s) => s.key));
-	const pruned = ghosted.intersection(live);
-	return pruned.size !== ghosted.size ? pruned : ghosted;
-}
-
-/** Clear all selections. */
+/** Clear all selections, ghosted ones included. */
 export function resetSelections() {
-	return applySelectionUpdate(() => []);
+	return applyListUpdate(() => []);
 }
 
 /** The buckets a pick runs over: one per active selection when `perSelection`, else the
@@ -780,7 +764,7 @@ export async function selectRandomFromSelection(
 	);
 	const picked = [...new Set(buckets.flat())];
 	if (picked.length === 0) return 0;
-	await applySelectionUpdate(() => addSelection({ type: "Manual", locations: picked })([]));
+	await applySelectionUpdate(() => [buildSelection({ type: "Manual", locations: picked })]);
 
 	return picked.length;
 }
@@ -796,7 +780,7 @@ async function selectSpacedWith(
 	);
 	const ids = [...new Set(results.flatMap((r) => r.ids))];
 	if (ids.length === 0) return { picked: 0, distanceM: 0 };
-	await applySelectionUpdate(() => addSelection({ type: "Manual", locations: ids })([]));
+	await applySelectionUpdate(() => [buildSelection({ type: "Manual", locations: ids })]);
 
 	// Spacing only holds within a bucket - two buckets can each pick a coincident location.
 	const distanceM = results.length === 1 ? results[0].distanceM : 0;
@@ -1067,7 +1051,7 @@ export async function updateTags(updates: Update<TagPatch>[]) {
 	emitEvent("tag:update", updates);
 	// Only a color change needs a selection resync; names never enter the resolve.
 	const recolored = new Set(updates.filter((u) => u.patch.color != null).map((u) => u.id));
-	if (state.selections.some((s) => recolored.has(tagIdOf(s.selector) ?? -1))) {
+	if (state.selectionList.some((r) => recolored.has(tagIdOf(r.selection.selector) ?? -1))) {
 		void syncSelections();
 	}
 }
@@ -1138,7 +1122,7 @@ export async function commitMap(message?: string): Promise<string> {
 
 	// Commit clears the overlay; commit-sensitive selections (e.g. Uncommitted) must
 	// re-resolve against the new baseline instead of showing now-committed rows.
-	if (state.selections.length > 0) await syncSelections();
+	if (state.selectionList.length > 0) await syncSelections();
 	return r.id;
 }
 
@@ -1163,7 +1147,7 @@ export async function checkoutCommit(commitId: string) {
 	}
 	const map = await cmd.storeGetMap(state.mapId);
 	setState({
-		selections: [],
+		selectionList: [],
 		selectedLocationIds: SelectedIds.EMPTY,
 		activeLocationId: null,
 	});

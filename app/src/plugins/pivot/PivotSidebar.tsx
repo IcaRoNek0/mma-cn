@@ -5,20 +5,14 @@ import type { PartitionBucket, Selection, Selector } from "@/bindings.gen";
 import { NSelect } from "@/components/primitives/NSelect";
 import { SwitchRow } from "@/components/primitives/SwitchRow";
 import { useDebouncedCallback } from "@/lib/hooks/useDebouncedCallback";
+import { all, selectionDisplayName, buildSelection } from "@/store/selections";
 import {
-	addSelection,
-	all,
-	batch,
-	removeSelection,
-	selectionDisplayName,
-	buildSelection,
-} from "@/store/selections";
-import {
-	applySelectionUpdate,
+	addSelections,
 	getActiveSelections,
 	getMapState,
 	getTags,
 	query,
+	removeSelections,
 } from "@/store/useMapStore";
 import { subscribe } from "@/lib/events";
 import { Sidebar, Field, SegmentedControl } from "@/components/primitives/Sidebar";
@@ -477,9 +471,9 @@ function PivotTable({
 			const key = selectionKeys.get(m);
 			if (!key) return;
 			if (getActiveSelections().some((s) => s.key === key)) {
-				void applySelectionUpdate(batch(removeSelection)([key]));
+				void removeSelections([key]);
 			} else {
-				void applySelectionUpdate(batch(addSelection)([m.selector]));
+				void addSelections([m.selector]);
 			}
 		},
 		[selectionKeys],
