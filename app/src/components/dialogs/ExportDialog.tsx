@@ -14,8 +14,22 @@ import { mmaBufUrl } from "@/lib/util/util";
 import { getAllFieldDefs } from "@/lib/data/fieldDefRegistry";
 import { toast } from "@/lib/util/toast";
 import { log } from "@/lib/util/log";
-import { t } from "@/lib/i18n";
+import { msg, t } from "@/lib/i18n";
 import { Trans } from "@/components/primitives/Trans";
+import { NSelect } from "@/components/primitives/NSelect";
+import { InfoButton } from "@/components/primitives/Hint";
+
+const SHAPE_LABELS: Record<MapShape, string> = {
+	geoguessr: msg("GeoGuessr"),
+	mapMaking: msg("map-making.app"),
+	local: msg("Local"),
+};
+
+const SHAPE_HINTS: Record<MapShape, string> = {
+	geoguessr: msg("Coordinates, camera and pinned pano IDs only. The smallest file."),
+	mapMaking: msg("Adds tags, unpinned pano IDs and capture months. No custom fields."),
+	local: msg("Everything, including custom fields."),
+};
 
 export function ExportDialog({ open, onOpenChange }: DialogProps) {
 	const map = useMapState((s) => s.map);
@@ -27,7 +41,7 @@ export function ExportDialog({ open, onOpenChange }: DialogProps) {
 	// Derived, not stored: "the selection" has to follow the live one.
 	const selector = selectorForPick(pick);
 	const [saveZoom, setSaveZoom] = useMapSetting("exportZoom");
-	const [saveExtras, setSaveExtras] = useMapSetting("exportExtras");
+	const [shape, setShape] = useMapSetting("exportShape");
 	const [bypassUnpanned, setBypassUnpanned] = useMapSetting("exportUnpanned");
 	const [fileName, setFileName] = useState(map?.name ?? "");
 	const selCount = selectedIds.size;
@@ -42,7 +56,7 @@ export function ExportDialog({ open, onOpenChange }: DialogProps) {
 		cmd.storeExportJson({
 			exportZoom: saveZoom,
 			exportUnpanned: bypassUnpanned,
-			shape: saveExtras ? MapShape.Local : MapShape.GeoGuessr,
+			shape,
 			selector: selector,
 			mapName: map.name,
 			tagsJson: tagsJson(),
@@ -131,16 +145,22 @@ export function ExportDialog({ open, onOpenChange }: DialogProps) {
 						>
 							{t("Save zoom levels")}
 						</Checkbox>
-						<Checkbox
-							name="extras"
-							checked={saveExtras}
-							onChange={(e) => setSaveExtras(e.target.checked)}
-							hint={t(
-								"Include app-specific data like tags. Not including this makes the file smaller,\n\t\t\t\t\t\t\t\twhich can help when uploading maps with 100K+ locations to GeoGuessr.",
-							)}
-						>
-							{t("Save app data")}
-						</Checkbox>
+						<label className="export-modal__shape">
+							{t("Format:")}
+							<NSelect
+								name="shape"
+								compact
+								value={shape}
+								onChange={(e) => setShape(e.target.value as MapShape)}
+							>
+								{Object.values(MapShape).map((s) => (
+									<option key={s} value={s}>
+										{t(SHAPE_LABELS[s])}
+									</option>
+								))}
+							</NSelect>
+							<InfoButton text={t(SHAPE_HINTS[shape])} />
+						</label>
 						<Checkbox
 							name="unpanned"
 							checked={bypassUnpanned}

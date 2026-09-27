@@ -12,6 +12,7 @@ use crate::store::storage::{self, push_field};
 use crate::store::vcs::CommitDiff;
 use crate::sv::schema::PanoType;
 use crate::types;
+use crate::types::shape::MapShape;
 use crate::types::wire_str_enum;
 use crate::types::AppResult;
 use crate::types::RawExtra;
@@ -69,7 +70,8 @@ pub struct MapSettings {
     pub default_pano_id: bool,
     pub export_zoom: bool,
     pub export_unpanned: bool,
-    pub export_extras: bool,
+    /// How much of the map a JSON export keeps.
+    pub export_shape: MapShape,
     pub search_radius: Option<u32>,
     pub enrich_metadata: bool,
     pub enrich_fields: Option<Vec<String>>,
@@ -114,7 +116,7 @@ impl Default for MapSettings {
             default_pano_id: false,
             export_zoom: false,
             export_unpanned: true,
-            export_extras: true,
+            export_shape: MapShape::Local,
             search_radius: None,
             enrich_metadata: false,
             enrich_fields: None,

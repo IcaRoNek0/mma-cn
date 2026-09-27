@@ -1941,7 +1941,8 @@ type MapSettings = {
     defaultPanoId?: boolean;
     exportZoom?: boolean;
     exportUnpanned?: boolean;
-    exportExtras?: boolean;
+    /**  How much of the map a JSON export keeps. */
+    exportShape?: MapShape;
     searchRadius?: number | null;
     enrichMetadata?: boolean;
     enrichFields?: string[] | null;

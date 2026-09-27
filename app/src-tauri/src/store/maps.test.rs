@@ -584,7 +584,7 @@ fn default_settings_json_round_trips_to_default() {
     assert_eq!(parsed.default_pano_id, default.default_pano_id);
     assert_eq!(parsed.export_zoom, default.export_zoom);
     assert_eq!(parsed.export_unpanned, default.export_unpanned);
-    assert_eq!(parsed.export_extras, default.export_extras);
+    assert_eq!(parsed.export_shape, default.export_shape);
     assert_eq!(parsed.enrich_metadata, default.enrich_metadata);
     assert!(parsed.prefer_direction.is_none());
     assert!(parsed.camera_types.is_none());
