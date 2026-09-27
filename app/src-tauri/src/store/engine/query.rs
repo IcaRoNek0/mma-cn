@@ -127,7 +127,7 @@ impl BoundsAcc {
     /// `[west, south, east, north]`, choosing whichever longitude framing is
     /// tighter. The shifted framing winning means the box crosses 180°, which
     /// maps back to `west > east` - the form Google/deck `fitBounds` zooms to the
-    /// short way (matching the original's `east += 360` handling).
+    /// short way.
     pub(crate) fn resolve(self) -> [f64; 4] {
         if self.es - self.ws < self.e - self.w {
             let unshift = |v: f64| if v >= 180.0 { v - 360.0 } else { v };

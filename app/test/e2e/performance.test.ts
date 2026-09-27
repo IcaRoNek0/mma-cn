@@ -1,7 +1,7 @@
 // The whole-app performance suite. Every case is one user-meaningful operation at a
-// stated scale, drawn from the hot/cold path list in CLAUDE.md, sampled through the
-// benchmark harness and written to test/perf/results as versioned JSON. Nothing here
-// asserts a time budget: benches report, `compare.ts` decides what moved.
+// stated scale, sampled through the benchmark harness and written to test/perf/results
+// as versioned JSON. Nothing here asserts a time budget: benches report, `compare.ts`
+// decides what moved.
 //
 // Excluded from the default e2e suite. Run it with:
 //   bash scripts/e2e.sh --bench

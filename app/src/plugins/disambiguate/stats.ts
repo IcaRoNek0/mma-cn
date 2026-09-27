@@ -1,5 +1,4 @@
-// Statistical effect-size measures for selection disambiguation. Pure functions,
-// ported 1:1 from the Rust reference; unit-tested in stats.test.ts.
+// Statistical effect-size measures for selection disambiguation.
 
 import { clamp } from "@/types/util";
 

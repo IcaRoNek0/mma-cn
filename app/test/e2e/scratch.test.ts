@@ -11,8 +11,6 @@
  * `test/` is live-mounted into the e2e image, so editing this file needs NO rebuild.
  * Read the result in app/test/logs/<newest>.txt (pass/fail + assertion diffs).
  *
- * See docs/agents/e2e-testing.md for the full guide (bridge API, patterns, gotchas).
- *
  * Everything a user can do is expressible here: `withApi` runs arbitrary async code
  * inside the running app with the full `window.MMA` API injected as `api`.
  */
