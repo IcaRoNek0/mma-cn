@@ -142,15 +142,24 @@
 		"name": "Vision",
 		"description": "Search your locations by describing what they look like, or find ones that look alike",
 		"icon": "M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5Z",
-		"version": "0.2.11",
+		"version": "0.2.12",
 		"main": "index.js",
 		"experimental": true,
-		"minAppVersion": "0.11.1",
+		"minAppVersion": "0.11.3",
 		"sidecar": {
 			"name": "mma-vision",
 			"version": "0.4.3"
 		},
 		"builds": [
+			{
+				"version": "0.2.11",
+				"ref": "48f07cb379c7da86b83472b6fdcf75f401db8e61",
+				"minAppVersion": "0.11.1",
+				"sidecar": {
+					"name": "mma-vision",
+					"version": "0.4.3"
+				}
+			},
 			{
 				"version": "0.2.10",
 				"ref": "c61887bc7bc0e8a655d6da6abb4f6d4c8ca89ba5",

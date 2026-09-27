@@ -16,18 +16,18 @@ describe("Selection filters — extra field operations", () => {
 		}));
 	});
 	beforeEach(async () => {
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("filter eq on string field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "country",
 					test: { op: "eq", value: "US" },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(10);
@@ -35,13 +35,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter neq on string field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "country",
 					test: { op: "neq", value: "US" },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(10);
@@ -49,13 +49,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter gt on numeric field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "gt", value: 1000 },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		// altitude > 1000 means i > 10, so indices 11-19 = 9 locations
@@ -64,13 +64,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter lt on numeric field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "lt", value: 500 },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		// altitude < 500 means i < 5, so indices 0-4 = 5 locations
@@ -79,13 +79,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter gte on numeric field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "gte", value: 1000 },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		// altitude >= 1000 means i >= 10, so indices 10-19 = 10 locations
@@ -94,13 +94,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter lte on numeric field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "lte", value: 500 },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		// altitude <= 500 means i <= 5, so indices 0-5 = 6 locations
@@ -109,13 +109,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter between on numeric field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "between", lo: 500, hi: 1500 },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		// 500 <= altitude <= 1500 means 5 <= i <= 15, so 11 locations
@@ -124,13 +124,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter has on field (field exists)", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "country",
 					test: { op: "has" },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(20);
@@ -138,13 +138,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter nothas on field that does not exist", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "nonexistent",
 					test: { op: "nothas" },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(20);
@@ -152,13 +152,13 @@ describe("Selection filters — extra field operations", () => {
 
 	it("filter returns empty for no matches", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "country",
 					test: { op: "eq", value: "JP" },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(0);
@@ -180,18 +180,18 @@ describe("Selection filters — core field operations", () => {
 		}));
 	});
 	beforeEach(async () => {
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("filter on heading field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([
-				{
+			api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "heading",
 					test: { op: "gt", value: 180 },
-				},
-			]),
+				}),
+			),
 		);
 		const ids = await refreshSelections();
 		// heading > 180: i*12 > 180 → i > 15, so indices 16-29 = 14 locations
@@ -200,7 +200,9 @@ describe("Selection filters — core field operations", () => {
 
 	it("filter on lat field", async () => {
 		await withApi(async (api) =>
-			api.addSelections([{ type: "Filter", field: "lat", test: { op: "between", lo: 0, hi: 30 } }]),
+			api.applySelectionUpdate(
+				api.addSelection({ type: "Filter", field: "lat", test: { op: "between", lo: 0, hi: 30 } }),
+			),
 		);
 		const ids = await refreshSelections();
 		// lat = i*3, 0 <= i*3 <= 30 → i = 0..10, so 11 locations
@@ -209,21 +211,21 @@ describe("Selection filters — core field operations", () => {
 
 	it("intersecting two filters narrows results", async () => {
 		await withApi(async (api) => {
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "heading",
 					test: { op: "gt", value: 100 },
-				},
-			]);
-			await api.addSelections([
-				{
+				}),
+			);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "heading",
 					test: { op: "lt", value: 200 },
-				},
-			]);
-			await api.applySelectionUpdate(api.intersectSelections());
+				}),
+			);
+			await api.applySelectionUpdate(api.onActive(api.intersectSelections()));
 		});
 		const ids = await refreshSelections();
 		// heading > 100 AND heading < 200: i*12 > 100 AND i*12 < 200
@@ -233,21 +235,21 @@ describe("Selection filters — core field operations", () => {
 
 	it("union of two filters combines results", async () => {
 		await withApi(async (api) => {
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "heading",
 					test: { op: "lt", value: 36 },
-				},
-			]);
-			await api.addSelections([
-				{
+				}),
+			);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "heading",
 					test: { op: "gt", value: 336 },
-				},
-			]);
-			await api.applySelectionUpdate(api.unionSelections());
+				}),
+			);
+			await api.applySelectionUpdate(api.onActive(api.unionSelections()));
 		});
 		const ids = await refreshSelections();
 		// heading < 36: i*12 < 36 → i < 3, indices 0-2 = 3

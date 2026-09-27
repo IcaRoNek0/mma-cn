@@ -16,12 +16,13 @@ import {
 	reviewSetSelector,
 	renameReview,
 } from "@/lib/review/review";
-import { addSelections } from "@/store/useMapStore";
+import { applySelectionUpdate } from "@/store/useMapStore";
 import { shortDateFmt, relativeTime } from "@/lib/util/format";
 import { t } from "@/lib/i18n";
 import { dateTimeFmt } from "@/lib/util/format";
 import type { ReviewSession } from "@/bindings.gen";
 import { IconButton } from "@/components/primitives/IconButton";
+import { addSelection } from "@/store/selections";
 
 function formatDate(iso: string): string {
 	const d = new Date(iso);
@@ -60,7 +61,7 @@ export function ReviewSessionsModal({ open, onOpenChange }: DialogProps) {
 	};
 
 	const handleSelect = (s: ReviewSession, mode: "reviewed" | "unreviewed") => {
-		void addSelections([reviewSetSelector(s, mode)]);
+		void applySelectionUpdate(addSelection(reviewSetSelector(s, mode)));
 		onOpenChange(false);
 	};
 

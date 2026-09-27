@@ -1,6 +1,13 @@
 import { embed, searchImage } from "./sidecar";
 
-const { ui: { Button }, getMapState, useJob, fetchAllLocations, addSelections } = MMA;
+const {
+	ui: { Button },
+	getMapState,
+	useJob,
+	fetchAllLocations,
+	applySelectionUpdate,
+	addSelection,
+} = MMA;
 
 const SIMILARITY_THRESHOLD = 0.85;
 
@@ -38,13 +45,13 @@ export function FindSimilarButton() {
 			.filter((id): id is number => id != null);
 
 		if (matchedIds.length > 0) {
-			await addSelections([
-				{
+			await applySelectionUpdate(
+				addSelection({
 					type: "Locations",
 					locations: matchedIds,
 					name: `Similar to ${panoId!.slice(0, 8)}...`,
-				},
-			]);
+				}),
+			);
 		}
 		return matchedIds.length;
 	});

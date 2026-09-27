@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Tag } from "@/types";
 import { NSelect } from "@/components/primitives/NSelect";
 import {
-	addSelections,
+	applySelectionUpdate,
 	createTags,
 	currentSelection,
 	getActiveSelections,
@@ -15,7 +15,7 @@ import {
 	setTags,
 	useMapState,
 } from "@/store/useMapStore";
-import { buildSelection, has } from "@/store/selections";
+import { addSelection, buildSelection, has } from "@/store/selections";
 import { toast } from "@/lib/util/toast";
 import { sortTagsByMode } from "@/lib/util/util";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
@@ -214,15 +214,15 @@ function RankedPanel({
 			onSubmit={(e) => {
 				e.preventDefault();
 				if (!field || count < 1) return;
-				void addSelections([
-					{
+				void applySelectionUpdate(
+					addSelection({
 						type: "Ranked",
 						selection: buildSelection(has(field)),
 						expr: field,
 						k: count,
 						ascending,
-					},
-				]);
+					}),
+				);
 			}}
 		>
 			<NSelect value={field} onChange={(e) => setField(e.target.value)}>
@@ -393,7 +393,9 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 									className="selection-manager__inline-form"
 									onSubmit={(e) => {
 										e.preventDefault();
-										void addSelections([{ type: "Duplicates", distance: dupDistance }]);
+										void applySelectionUpdate(
+											addSelection({ type: "Duplicates", distance: dupDistance }),
+										);
 									}}
 								>
 									<label>
@@ -417,7 +419,7 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 									persistKey={map.id}
 									submitLabel={t("Add filter")}
 									onSubmit={(field, test) => {
-										void addSelections([{ type: "Filter", field, test }]);
+										void applySelectionUpdate(addSelection({ type: "Filter", field, test }));
 									}}
 								/>
 							),

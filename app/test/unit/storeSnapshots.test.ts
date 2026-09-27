@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { applyListUpdate, getActiveSelections, getMapState } from "@/store/useMapStore";
+import { applySelectionUpdate, getActiveSelections, getMapState } from "@/store/useMapStore";
 import { toggleGhost } from "@/store/selections";
 import type { ListedSelection } from "@/bindings.gen";
 
@@ -27,13 +27,13 @@ afterEach(() => {
 describe("store snapshot invariants", () => {
 	it("selectionList is reassigned on every change, never mutated in place", async () => {
 		const before = getMapState().selectionList;
-		await applyListUpdate(toggleGhost(0));
+		await applySelectionUpdate(toggleGhost(0));
 		const ghosted = getMapState().selectionList;
 		expect(ghosted).not.toBe(before);
 		expect(ghosted[0].ghosted).toBe(true);
 		expect(before[0].ghosted).toBe(false);
 
-		await applyListUpdate(toggleGhost(0));
+		await applySelectionUpdate(toggleGhost(0));
 		const unghosted = getMapState().selectionList;
 		expect(unghosted).not.toBe(ghosted);
 		expect(unghosted[0].ghosted).toBe(false);
@@ -41,7 +41,7 @@ describe("store snapshot invariants", () => {
 
 	it("getActiveSelections returns a stable reference between mutations", async () => {
 		expect(getActiveSelections()).toBe(getActiveSelections());
-		await applyListUpdate(toggleGhost(1));
+		await applySelectionUpdate(toggleGhost(1));
 		expect(getActiveSelections().map((s) => s.key)).toEqual(["tag:1"]);
 		expect(getActiveSelections()).toBe(getActiveSelections());
 	});

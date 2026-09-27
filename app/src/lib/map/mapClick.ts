@@ -16,12 +16,12 @@ import { openContextMenuLatLng, openContextMenuLocation } from "@/lib/map/contex
 import { trace } from "@/lib/util/debug";
 import {
 	addLocations,
+	applySelectionUpdate,
 	createTags,
 	getMapState,
 	openStagedLocation,
 	resolveLocation,
 	setActiveLocation,
-	applyListUpdate,
 } from "@/store/useMapStore";
 import { toggleManualSelection } from "@/store/selections";
 import { isVirtualLocation, isImportPreview, locId, createLocation } from "@/types";
@@ -204,7 +204,7 @@ export async function handleMapClick(
 		if (picked != null) {
 			if (isVirtualLocation({ id: locId(picked) })) return; // staged location's active pin: already open
 			if (domEvent instanceof MouseEvent && domEvent.ctrlKey)
-				void applyListUpdate(toggleManualSelection(locId(picked)));
+				void applySelectionUpdate(toggleManualSelection(locId(picked)));
 			else void setActiveLocation(picked);
 			return;
 		}
@@ -220,7 +220,7 @@ export async function handleMapClick(
 			const nearest = await cmd.storeFindNearest(info.coordinate[1], info.coordinate[0]);
 			if (!nearest) return;
 			if (domEvent instanceof MouseEvent && domEvent.ctrlKey)
-				void applyListUpdate(toggleManualSelection(nearest.id));
+				void applySelectionUpdate(toggleManualSelection(nearest.id));
 			else void setActiveLocation(nearest);
 			return;
 		}

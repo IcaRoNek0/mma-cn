@@ -640,16 +640,6 @@ Add locations to the map. Real ids are assigned and written back into the passed
 objects - build with `createLocation` (id 0) and read `loc.id` after. Undoable.
 Emits `location:add`.
 
-### addSelections
-
-`stable` · since v0.5.0
-
-```ts
-addSelections(selectors: Selector[]): Promise<void>
-```
-
-Add selectors to the selection.
-
 ### applyFieldOp
 
 `unstable` · since v0.10.0
@@ -664,29 +654,18 @@ applyFieldOp(
 
 Apply a field operation across all locations matching `selector`. Emits `location:invalidate`.
 
-### applyListUpdate
-
-`unstable` · unreleased
-
-```ts
-applyListUpdate(
-  op: (rows: ListedSelection[]) => ListedSelection[],
-): Promise<void>
-```
-
-Apply `op` to the listed selections, ghosted ones included: the sidebar's own edits.
-No-op when nothing changed.
-
 ### applySelectionUpdate
 
 `unstable` · since v0.10.3
 
 ```ts
-applySelectionUpdate(op: (active: Selection[]) => Selection[]): Promise<void>
+applySelectionUpdate(
+  op: (rows: ListedSelection[]) => ListedSelection[],
+): Promise<void>
 ```
 
-Apply `op` to the selection. It sees only the active selections; ghosted ones keep their
-places in the list. No-op when nothing changed.
+Apply `op` to the listed selections and re-resolve them: the one way the selection changes.
+Lift an op over the active selections alone with `onActive`. No-op when nothing changed.
 
 ### cancelAutosave
 
@@ -1085,16 +1064,6 @@ removeLocations(ids: ReadonlyIdSet): Promise<void>
 
 Remove locations by id. Undoable.
 
-### removeSelections
-
-`stable` · since v0.5.0
-
-```ts
-removeSelections(keys: string[]): Promise<void>
-```
-
-Drop listed selections by key, ghosted ones included.
-
 ### renameField
 
 `stable` · since v0.5.1
@@ -1135,16 +1104,6 @@ reorderTags(orderedIds: number[]): Promise<void>
 ```
 
 Persist a new tag display order.
-
-### resetSelections
-
-`stable` · since v0.4.0
-
-```ts
-resetSelections(): Promise<void>
-```
-
-Clear all selections, ghosted ones included.
 
 ### resolveLocation
 
@@ -3161,11 +3120,11 @@ Pure transforms over the selection list behind the sidebar.
 
 ```ts
 addSelection(
-  selector: Selector,
+  ...selectors: Selector[]
 ): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-List a selection built from `selector`. One already listed is updated in place, ghost and all.
+List the selections built from `selectors`. One already listed is updated in place, ghost and all.
 
 ### all
 
@@ -3347,6 +3306,20 @@ not(selector: Selector): Selector
 
 Locations not matching `selector`.
 
+### onActive
+
+`unstable` · unreleased
+
+```ts
+onActive(
+  op: (active: Selection[]) => Selection[],
+): (rows: ListedSelection[]) => ListedSelection[]
+```
+
+Run `op` on the active selections only. Ghosted rows keep their places and the result fills
+the others in order; a selection already listed as a ghosted row updates that row and stays
+ghosted.
+
 ### OP_LABELS
 
 `unstable` · since v0.10.3
@@ -3397,10 +3370,12 @@ Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
 `unstable` · since v0.4.0
 
 ```ts
-removeSelection(key: string): (rows: ListedSelection[]) => ListedSelection[]
+removeSelection(
+  ...keys: string[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place.
+Remove the listed selections whose keys are `keys`. A removed group leaves its children behind in its place.
 
 ### removeSelectionAt
 
@@ -3589,11 +3564,11 @@ Add or remove a location from the Manual selection, creating it if needed.
 
 ```ts
 toggleSelection(
-  selector: Selector,
-): (state: ListedSelection[]) => ListedSelection[]
+  ...selectors: Selector[]
+): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-List the selection built from `selector`, or remove it when it is already listed.
+List each selection built from `selectors`, or remove it when it is already listed.
 
 ### UNARY_TYPES
 
@@ -3634,21 +3609,6 @@ untaggedSelector(): Selector
 ```
 
 Locations with no tags: `tags` resolves to nothing on an untagged row.
-
-### withActive
-
-`unstable` · unreleased
-
-```ts
-withActive(
-  rows: ListedSelection[],
-  active: Selection[],
-): ListedSelection[]
-```
-
-The listed selections once the active ones become `active`. Ghosted rows keep their places
-and `active` fills the others in order; a selection already listed as a ghosted row updates
-that row and stays ghosted.
 
 ### withChildren
 
@@ -8429,6 +8389,16 @@ Copy of `set` with `value` toggled, or forced on/off by `on`.
 
 Shims for removed APIs.
 
+### addSelections
+
+`unstable` · `deprecated` · since v0.5.0
+
+```ts
+addSelections(selectors: Selector[]): Promise<void>
+```
+
+**Deprecated in v0.11.3.** Use `MMA.applySelectionUpdate(MMA.addSelection(...selectors))`.
+
 ### addTagToLocations
 
 `unstable` · `deprecated` · since v0.4.0
@@ -8713,6 +8683,16 @@ registerEnrichmentProvider(provider: Provider): void
 
 **Deprecated in v0.10.2.** Use `MMA.registerProvider()`.
 
+### removeSelections
+
+`unstable` · `deprecated` · since v0.5.0
+
+```ts
+removeSelections(keys: string[]): Promise<void>
+```
+
+**Deprecated in v0.11.3.** Use `MMA.applySelectionUpdate(MMA.removeSelection(...keys))`.
+
 ### removeTagFromAllLocations
 
 `unstable` · `deprecated` · since v0.4.0
@@ -8750,6 +8730,16 @@ request<T>(
 ```
 
 **Deprecated in v0.11.0.** Use `MMA.sidecar.request()`.
+
+### resetSelections
+
+`unstable` · `deprecated` · since v0.4.0
+
+```ts
+resetSelections(): Promise<void>
+```
+
+**Deprecated in v0.11.3.** Use `MMA.applySelectionUpdate(() => [])`.
 
 ### resolveIds
 

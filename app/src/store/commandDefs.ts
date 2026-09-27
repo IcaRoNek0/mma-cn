@@ -51,14 +51,14 @@ import {
 } from "@mdi/js";
 import { registerCommand, type CommandDef } from "./commands";
 import {
+	addSelection,
 	intersectSelections,
 	invertSelections,
-	unionSelections,
+	onActive,
 	toggleGhostAll,
+	unionSelections,
 } from "./selections";
 import {
-	addSelections,
-	applyListUpdate,
 	applySelectionUpdate,
 	getActiveSelections,
 	getMapState,
@@ -66,7 +66,6 @@ import {
 	getTags,
 	redo,
 	removeLocations,
-	resetSelections,
 	undo,
 } from "./useMapStore";
 import { hasCommitDiff } from "./commitDiff";
@@ -197,38 +196,38 @@ const COMMANDS = {
 		icon: mdiSelectAll,
 		group: msg("Selections"),
 		defaultBinding: "Mod+a",
-		execute: () => addSelections([{ type: "Everything" }]),
+		execute: () => applySelectionUpdate(addSelection({ type: "Everything" })),
 	},
 	"select-untagged": {
 		label: msg("Select untagged locations"),
 		icon: mdiTagOffOutline,
 		group: msg("Selections"),
 		aliases: ["find untagged", "missing tags"],
-		execute: () => addSelections([untaggedSelector()]),
+		execute: () => applySelectionUpdate(addSelection(untaggedSelector())),
 	},
 	"select-unpanned": {
 		label: msg("Select unpanned locations"),
 		icon: mdiCompassOffOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([unpannedSelector()]),
+		execute: () => applySelectionUpdate(addSelection(unpannedSelector())),
 	},
 	"select-panoid": {
 		label: msg("Select Pano ID locations"),
 		icon: mdiImageOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([panoIdSelector(true)]),
+		execute: () => applySelectionUpdate(addSelection(panoIdSelector(true))),
 	},
 	"select-no-panoid": {
 		label: msg("Select non-Pano ID locations"),
 		icon: mdiImageOffOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([panoIdSelector(false)]),
+		execute: () => applySelectionUpdate(addSelection(panoIdSelector(false))),
 	},
 	"select-uncommitted": {
 		label: msg("Select uncommitted locations"),
 		icon: mdiContentSaveAlertOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([{ type: "Uncommitted" }]),
+		execute: () => applySelectionUpdate(addSelection({ type: "Uncommitted" })),
 	},
 	"select-reviewed": {
 		label: msg("Select reviewed locations"),
@@ -241,19 +240,19 @@ const COMMANDS = {
 		label: msg("Invert selection"),
 		icon: mdiSelectInverse,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(invertSelections()),
+		execute: () => applySelectionUpdate(onActive(invertSelections())),
 	},
 	"intersect-selections": {
 		label: msg("Intersect (AND) selections"),
 		icon: mdiSetCenter,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(intersectSelections()),
+		execute: () => applySelectionUpdate(onActive(intersectSelections())),
 	},
 	"union-selections": {
 		label: msg("Union (OR) selections"),
 		icon: mdiSetAll,
 		group: msg("Selections"),
-		execute: () => applySelectionUpdate(unionSelections()),
+		execute: () => applySelectionUpdate(onActive(unionSelections())),
 	},
 	"load-geojson": {
 		label: msg("Load shapes from GeoJSON as selection"),
@@ -288,7 +287,7 @@ const COMMANDS = {
 		icon: mdiSelectRemove,
 		group: msg("Selections"),
 		defaultBinding: "Mod+d",
-		execute: resetSelections,
+		execute: () => applySelectionUpdate(() => []),
 		enabled: hasAnySelections,
 	},
 	"find-duplicates": {
@@ -360,7 +359,7 @@ const COMMANDS = {
 		icon: mdiGhostOutline,
 		group: msg("Selections"),
 		aliases: ["hide selections", "dim selections"],
-		execute: () => applyListUpdate(toggleGhostAll),
+		execute: () => applySelectionUpdate(toggleGhostAll),
 		enabled: hasAnySelections,
 	},
 	"save-selections": {

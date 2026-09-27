@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createElement, act } from "react";
 import { mount } from "./fixtures/harness";
-import { applyListUpdate, getMapState } from "@/store/useMapStore";
+import { applySelectionUpdate, getMapState } from "@/store/useMapStore";
 import { useSelectorPick, type SelectorPickController } from "@/store/selectorPick";
 import { buildSelection, tagSelector, toggleGhost } from "@/store/selections";
 
@@ -34,7 +34,7 @@ describe("useSelectorPick", () => {
 		mount(createElement(Probe), { attach: false });
 		expect(result.selector).toEqual({ type: "Union", selections: [a, b] });
 
-		await act(() => applyListUpdate(toggleGhost(1)));
+		await act(() => applySelectionUpdate(toggleGhost(1)));
 
 		expect(result.selector).toEqual({ type: "Union", selections: [a] });
 	});

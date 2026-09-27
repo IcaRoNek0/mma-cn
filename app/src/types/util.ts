@@ -100,13 +100,6 @@ export function cycle<T>(items: readonly T[], current: T | null, step = 1): T {
 	return items[(((items.indexOf(current as T) + step) % n) + n) % n];
 }
 
-/** Lift a single-item curried transform into one that folds over an array of items. */
-export const batch =
-	<T, S>(op: (item: T) => (state: S) => S) =>
-	(items: T[]) =>
-	(state: S): S =>
-		items.reduce((s, item) => op(item)(s), state);
-
 /** A switch: `off` when `isOn` already holds, else `on`. */
 export const toggle =
 	<S>(isOn: (state: S) => boolean, on: (state: S) => S, off: (state: S) => S) =>

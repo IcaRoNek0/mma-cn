@@ -1,5 +1,6 @@
-import { addSelections } from "@/store/useMapStore";
+import { applySelectionUpdate } from "@/store/useMapStore";
 import type { PolygonGeometry, Selector } from "@/bindings.gen";
+import { addSelection } from "@/store/selections";
 
 /** Prompt for GeoJSON file(s) and add their polygons as selections. */
 export async function loadGeoJSON() {
@@ -40,7 +41,7 @@ export async function loadGeoJSON() {
 				/* ignore malformed files */
 			}
 		}
-		if (selector.length) void addSelections(selector);
+		if (selector.length) void applySelectionUpdate(addSelection(...selector));
 	};
 	input.click();
 }

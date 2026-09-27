@@ -1,12 +1,12 @@
 import { memo, useState, useEffect, useRef } from "react";
 import {
-	applyListUpdate,
+	applySelectionUpdate,
 	createTags,
+	getTags,
 	getVisibleTags,
 	pruneDuplicates,
 	query,
 	useMapState,
-	getTags,
 } from "@/store/useMapStore";
 import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import {
@@ -17,12 +17,12 @@ import {
 	removeSelectionAt,
 	replaceSelection,
 	selectionDisplayName,
+	type SelectionPath,
 	setPolygonName,
 	setSelectionColor,
-	toggleGhost,
 	tagIdOf,
+	toggleGhost,
 	toggleInvert,
-	type SelectionPath,
 } from "@/store/selections";
 import { toast } from "@/lib/util/toast";
 import { downloadBlob } from "@/lib/util/util";
@@ -130,7 +130,7 @@ export const SelectionRow = memo(function SelectionRow({
 	});
 	const count = useMapState((s) => s.selectionCounts[selection.key] ?? 0);
 	const isTopLevel = depth === 0;
-	const onRemove = () => void applyListUpdate(removeSelectionAt(path));
+	const onRemove = () => void applySelectionUpdate(removeSelectionAt(path));
 	const [view, setView] = useState<"contextmenu" | "color">("contextmenu");
 	const [dropZone, setDropZone] = useState<"before" | "on" | "after" | null>(null);
 	const [editingFilter, setEditingFilter] = useState(false);
@@ -142,7 +142,8 @@ export const SelectionRow = memo(function SelectionRow({
 	const drag = useDragState();
 	const isDragging = drag?.path.join() === path.join();
 	const isDropTarget = drag != null && !isDragging;
-	const handleColorChange = (color: RGB) => void applyListUpdate(setSelectionColor(path, color));
+	const handleColorChange = (color: RGB) =>
+		void applySelectionUpdate(setSelectionColor(path, color));
 
 	const fieldEntries = useExtraFieldKeys();
 
@@ -178,7 +179,7 @@ export const SelectionRow = memo(function SelectionRow({
 		return (dir: 1 | -1) => {
 			const next = stepFilterWindow(ft, p.test, dir, wallClock);
 			if (next) {
-				void applyListUpdate(
+				void applySelectionUpdate(
 					replaceSelection(path, { type: "Filter", field: p.field, test: next }),
 				);
 			}
@@ -198,7 +199,7 @@ export const SelectionRow = memo(function SelectionRow({
 	};
 
 	const submitRename = () => {
-		void applyListUpdate(setPolygonName(path, renameDraft));
+		void applySelectionUpdate(setPolygonName(path, renameDraft));
 		setRenaming(false);
 	};
 
@@ -240,11 +241,11 @@ export const SelectionRow = memo(function SelectionRow({
 	const handleMouseUp = () => {
 		if (!isDropTarget || !drag || !dropZone) return;
 		if (dropZone === "on") {
-			void applyListUpdate(
+			void applySelectionUpdate(
 				composeSelections(drag.path, path, drag.altKey ? "Union" : "Intersection"),
 			);
 		} else {
-			void applyListUpdate(moveSelection(drag.path, path, dropZone));
+			void applySelectionUpdate(moveSelection(drag.path, path, dropZone));
 		}
 		setDropZone(null);
 	};
@@ -303,7 +304,7 @@ export const SelectionRow = memo(function SelectionRow({
 								</div>
 							) : (
 								<>
-									<MenuItem onClick={() => void applyListUpdate(toggleInvert(path))}>
+									<MenuItem onClick={() => void applySelectionUpdate(toggleInvert(path))}>
 										{t("Invert selection")}
 									</MenuItem>
 									{selection.selector.type === "Filter" && (
@@ -380,7 +381,7 @@ export const SelectionRow = memo(function SelectionRow({
 							label={ghosted ? t("Un-ghost selection") : t("Ghost selection")}
 							tooltip={t("Ghost selection (Alt-click to isolate)")}
 							onClick={(e) =>
-								void applyListUpdate(e.altKey ? isolateGhost(path[0]) : toggleGhost(path[0]))
+								void applySelectionUpdate(e.altKey ? isolateGhost(path[0]) : toggleGhost(path[0]))
 							}
 						/>
 					)}
@@ -392,7 +393,7 @@ export const SelectionRow = memo(function SelectionRow({
 					initial={filterPropsToSeed(selection.selector)}
 					submitLabel={t("Update filter")}
 					onSubmit={(field, test) =>
-						void applyListUpdate(replaceSelection(path, { type: "Filter", field, test }))
+						void applySelectionUpdate(replaceSelection(path, { type: "Filter", field, test }))
 					}
 					onClose={() => setEditingFilter(false)}
 				/>

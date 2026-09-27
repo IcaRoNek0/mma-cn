@@ -1,16 +1,16 @@
 /**
- * Flags exported functions whose body is solely `return addSelections([...])` or
- * `addSelections([...])`. These are trivial aliases - callers should use addSelections
- * directly with the selection props inline.
+ * Flags exported functions whose body is solely `return applySelectionUpdate(...)` or
+ * `applySelectionUpdate(...)`. These are trivial aliases - callers should apply the pure op
+ * through applySelectionUpdate themselves.
  *
  * @type {import('eslint').Rule.RuleModule}
  */
-function isAddSelectionsCall(node) {
+function isGateCall(node) {
 	if (!node) return false;
 	if (node.type === "CallExpression") {
-		return node.callee.type === "Identifier" && node.callee.name === "addSelections";
+		return node.callee.type === "Identifier" && node.callee.name === "applySelectionUpdate";
 	}
-	if (node.type === "AwaitExpression") return isAddSelectionsCall(node.argument);
+	if (node.type === "AwaitExpression") return isGateCall(node.argument);
 	return false;
 }
 
@@ -19,7 +19,7 @@ export default {
 		type: "suggestion",
 		messages: {
 			selectionAlias:
-				"This function is a trivial alias over addSelections(). Callers should use addSelections([{ type: ... }]) directly.",
+				"This function is a trivial alias over applySelectionUpdate(). Callers should apply the op directly: applySelectionUpdate(addSelection({ type: ... })).",
 		},
 	},
 	create(context) {
@@ -35,7 +35,7 @@ export default {
 					const init = decl.declarations[0]?.init;
 					if (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression") {
 						body = init.body?.type === "BlockStatement" ? init.body.body : null;
-						if (!body && isAddSelectionsCall(init.body)) {
+						if (!body && isGateCall(init.body)) {
 							context.report({ node: decl, messageId: "selectionAlias" });
 							return;
 						}
@@ -43,10 +43,10 @@ export default {
 				}
 				if (!body || body.length !== 1) return;
 				const stmt = body[0];
-				if (stmt.type === "ReturnStatement" && isAddSelectionsCall(stmt.argument)) {
+				if (stmt.type === "ReturnStatement" && isGateCall(stmt.argument)) {
 					context.report({ node: decl, messageId: "selectionAlias" });
 				}
-				if (stmt.type === "ExpressionStatement" && isAddSelectionsCall(stmt.expression)) {
+				if (stmt.type === "ExpressionStatement" && isGateCall(stmt.expression)) {
 					context.report({ node: decl, messageId: "selectionAlias" });
 				}
 			},

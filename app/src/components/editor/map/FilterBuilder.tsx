@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useEffect, useMemo } from "react";
 import type { Selection, FilterOp, FieldDef } from "@/bindings.gen";
-import { OP_LABELS, filterIsLocalTime, type FilterOpKind } from "@/store/selections";
+import { addSelection, filterIsLocalTime, type FilterOpKind, OP_LABELS } from "@/store/selections";
 import { NSelect } from "@/components/primitives/NSelect";
 import {
 	fieldLabel,
@@ -14,7 +14,7 @@ import {
 } from "@/lib/data/fieldDefRegistry";
 import { useEvent } from "@/lib/events";
 import { pickPeriodEnd, hasTimeOfDay, dateParts, partsToEpoch } from "@/lib/util/date";
-import { addSelections, query, useMapState } from "@/store/useMapStore";
+import { applySelectionUpdate, query, useMapState } from "@/store/useMapStore";
 import { countMissingTimezone, missingTimezoneMessage } from "@/lib/util/timezone";
 import { toast } from "@/lib/util/toast";
 import { useSetting } from "@/store/settings";
@@ -597,7 +597,7 @@ export function FilterBuilder({ mapId }: { mapId: string }) {
 			persistKey={mapId}
 			submitLabel={t("Add filter")}
 			onSubmit={(field, test) => {
-				void addSelections([{ type: "Filter", field, test }]);
+				void applySelectionUpdate(addSelection({ type: "Filter", field, test }));
 				const type = getFieldDef(field)?.type;
 				if (type)
 					void countMissingTimezone(

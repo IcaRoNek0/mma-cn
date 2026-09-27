@@ -37,16 +37,14 @@ import { setCachedMapList, invalidateMapList, reloadMapList } from "./mapList";
 
 import type { ListedSelection, Selection, Selector, SpacedPickResult } from "@/bindings.gen";
 import {
-	addSelection,
 	all,
 	any,
 	buildSelection,
 	removeSelection,
 	tagIdOf,
 	tagSelector,
-	withActive,
+	onActive,
 } from "./selections";
-import { batch } from "@/types/util";
 
 // --- Map state ---
 
@@ -474,7 +472,8 @@ function applyMutation(r: MutationResult) {
 	if (!state.map) return;
 	const oldTags = getTags();
 	mergeEngineValues(r.values);
-	if (getTags() !== oldTags) void removeSelections(deadTagKeys(oldTags, getTags()));
+	if (getTags() !== oldTags)
+		void applySelectionUpdate(removeSelection(...deadTagKeys(oldTags, getTags())));
 	if (r.selectionSync) applySelectionSync(r.selectionSync);
 	emitEvent("store:changed");
 }
@@ -673,7 +672,7 @@ async function migrateFieldReferences(from: string, to: string | null) {
 		delete defs[from];
 		await setMapExtraFields(defs);
 	}
-	await applyListUpdate(rewriteSelectionFields(from, to));
+	await applySelectionUpdate(rewriteSelectionFields(from, to));
 }
 
 // --- Selections ---
@@ -688,27 +687,9 @@ function selectionSyncColor(s: Selection): RGB {
 	return s.color;
 }
 
-/** Add selectors to the selection. */
-export function addSelections(selectors: Selector[]): Promise<void> {
-	return applyListUpdate(batch(addSelection)(selectors));
-}
-
-/** Drop listed selections by key, ghosted ones included. */
-export function removeSelections(keys: string[]): Promise<void> {
-	return applyListUpdate(batch(removeSelection)(keys));
-}
-
-/** Apply `op` to the selection. It sees only the active selections; ghosted ones keep their
- *  places in the list. No-op when nothing changed. @unstable */
-export async function applySelectionUpdate(op: (active: Selection[]) => Selection[]) {
-	const active = getActiveSelections();
-	const next = op(active);
-	if (next !== active) await applyListUpdate((rows) => withActive(rows, next));
-}
-
-/** Apply `op` to the listed selections, ghosted ones included: the sidebar's own edits.
- *  No-op when nothing changed. @unstable */
-export async function applyListUpdate(op: (rows: ListedSelection[]) => ListedSelection[]) {
+/** Apply `op` to the listed selections and re-resolve them: the one way the selection changes.
+ *  Lift an op over the active selections alone with `onActive`. No-op when nothing changed. @unstable */
+export async function applySelectionUpdate(op: (rows: ListedSelection[]) => ListedSelection[]) {
 	if (!state.map) return;
 	const selectionList = op(state.selectionList);
 	if (selectionList === state.selectionList) return;
@@ -735,11 +716,6 @@ export async function syncSelections() {
 	emitEvent("selection:change", getActiveSelections());
 }
 
-/** Clear all selections, ghosted ones included. */
-export function resetSelections() {
-	return applyListUpdate(() => []);
-}
-
 /** The buckets a pick runs over: one per active selection when `perSelection`, else the
  *  whole selection as one. `null` means "whatever is currently selected" - the only way to
  *  express a selected-id set that no live selection produced. Falls back to that single
@@ -764,7 +740,9 @@ export async function selectRandomFromSelection(
 	);
 	const picked = [...new Set(buckets.flat())];
 	if (picked.length === 0) return 0;
-	await applySelectionUpdate(() => [buildSelection({ type: "Manual", locations: picked })]);
+	await applySelectionUpdate(
+		onActive(() => [buildSelection({ type: "Manual", locations: picked })]),
+	);
 
 	return picked.length;
 }
@@ -780,7 +758,7 @@ async function selectSpacedWith(
 	);
 	const ids = [...new Set(results.flatMap((r) => r.ids))];
 	if (ids.length === 0) return { picked: 0, distanceM: 0 };
-	await applySelectionUpdate(() => [buildSelection({ type: "Manual", locations: ids })]);
+	await applySelectionUpdate(onActive(() => [buildSelection({ type: "Manual", locations: ids })]));
 
 	// Spacing only holds within a bucket - two buckets can each pick a coincident location.
 	const distanceM = results.length === 1 ? results[0].distanceM : 0;

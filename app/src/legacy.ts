@@ -3,8 +3,9 @@
 
 import { getMapHost, waitForMapHost } from "@/lib/map/mapState";
 import { hostInstance } from "@/lib/map/host";
-import { tagSelector } from "@/store/selections";
+import { addSelection, removeSelection, tagSelector } from "@/store/selections";
 import {
+	applySelectionUpdate,
 	getMapState,
 	getActiveSelections,
 	query,
@@ -200,4 +201,19 @@ export function removeTagFromLocations(tagId: number, locationIds: number[]) {
 /** @deprecated v0.10.5. Use `MMA.setTags([], [tagId], MMA.tagSelector(tagId))`. */
 export function removeTagFromAllLocations(tagId: number) {
 	return setTags([], [tagId], tagSelector(tagId));
+}
+
+/** @deprecated v0.11.3. Use `MMA.applySelectionUpdate(MMA.addSelection(...selectors))`. */
+export function addSelections(selectors: Selector[]) {
+	return applySelectionUpdate(addSelection(...selectors));
+}
+
+/** @deprecated v0.11.3. Use `MMA.applySelectionUpdate(MMA.removeSelection(...keys))`. */
+export function removeSelections(keys: string[]) {
+	return applySelectionUpdate(removeSelection(...keys));
+}
+
+/** @deprecated v0.11.3. Use `MMA.applySelectionUpdate(() => [])`. */
+export function resetSelections() {
+	return applySelectionUpdate(() => []);
 }

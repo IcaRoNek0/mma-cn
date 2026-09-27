@@ -11,9 +11,7 @@ vi.mock("@/store/useMapStore", () => ({
 	getMapState: () => store.mapState,
 	getActiveSelections: () => store.active,
 	setActiveLocation: vi.fn(),
-	addSelections: vi.fn(),
 	applySelectionUpdate: vi.fn(),
-	removeSelections: vi.fn(),
 	query: ({ locations }: { locations: number[] }) => ({
 		ids: async () => locations.filter((id) => store.liveIds.includes(id)),
 	}),
@@ -30,6 +28,8 @@ vi.mock("@/lib/commands", () => ({
 vi.mock("@/lib/events", () => ({ subscribe: () => () => {}, emit: vi.fn() }));
 vi.mock("@/store/selections", () => ({
 	selectionDisplayName: () => "x",
+	addSelection: vi.fn(),
+	removeSelection: vi.fn(),
 	buildSelection: () => ({ key: "" }),
 }));
 vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());

@@ -7,7 +7,8 @@ const {
 	ui: { Sidebar, Field, TextInput, Button, Bar, Slider },
 	useJob,
 	fetchAllLocations,
-	addSelections,
+	applySelectionUpdate,
+	addSelection,
 } = MMA;
 
 /** Top of the confidence slider, and so the scale every score is drawn against. */
@@ -137,9 +138,9 @@ export function VisionSidebar({ onClose }: { onClose: () => void }) {
 			.filter((id): id is number => id != null);
 
 		if (matchedIds.length > 0) {
-			await addSelections([
-				{ type: "Locations", locations: matchedIds, name: `Vision: "${q}"` },
-			]);
+			await applySelectionUpdate(
+				addSelection({ type: "Locations", locations: matchedIds, name: `Vision: "${q}"` }),
+			);
 		}
 		// When the threshold filtered everything out there is no score left to report, so
 		// ask for the single best regardless of it.

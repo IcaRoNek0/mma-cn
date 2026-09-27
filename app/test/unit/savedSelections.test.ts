@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
-import type { SavedSelection, Selection, Selector } from "@/bindings.gen";
+import type { ListedSelection, SavedSelection, Selection, Selector } from "@/bindings.gen";
 
 // The store binds tag lookups internally; back them with a settable fake tag set. The
 // Rust table is a plain array here, so the module's cache/refresh path is exercised.
@@ -12,7 +12,8 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@/store/useMapStore", () => ({
-	addSelections: (selectors: Selector[]) => h.added.push(selectors),
+	applySelectionUpdate: (op: (rows: ListedSelection[]) => ListedSelection[]) =>
+		h.added.push(op([]).map((r) => r.selection.selector)),
 	getTag: (id: number) => h.tags[id],
 	getVisibleTags: () => Object.values(h.tags).filter((t) => t.visible !== false),
 	getMapState: () => ({ fieldDefs: {} }),

@@ -133,7 +133,8 @@ var {
   ui: { Sidebar, Field, TextInput, Button, Bar, Slider },
   useJob,
   fetchAllLocations,
-  addSelections
+  applySelectionUpdate,
+  addSelection
 } = MMA;
 var MAX_SCORE = 0.3;
 function panoIdToLocId(locs, panoId) {
@@ -220,9 +221,9 @@ function VisionSidebar({ onClose }) {
     const results = await searchText(q, null, cut, signal, note);
     const matchedIds = results.map((r) => panoIdToLocId(locs, r.panoId)).filter((id) => id != null);
     if (matchedIds.length > 0) {
-      await addSelections([
-        { type: "Locations", locations: matchedIds, name: `Vision: "${q}"` }
-      ]);
+      await applySelectionUpdate(
+        addSelection({ type: "Locations", locations: matchedIds, name: `Vision: "${q}"` })
+      );
     }
     const top = results[0]?.score ?? (await searchText(q, 1, null, signal, note))[0]?.score ?? null;
     return {
@@ -266,7 +267,14 @@ function VisionSidebar({ onClose }) {
 
 // vision/src/FindSimilarButton.tsx
 var import_jsx_runtime2 = __toESM(require_jsx_runtime());
-var { ui: { Button: Button2 }, getMapState, useJob: useJob2, fetchAllLocations: fetchAllLocations2, addSelections: addSelections2 } = MMA;
+var {
+  ui: { Button: Button2 },
+  getMapState,
+  useJob: useJob2,
+  fetchAllLocations: fetchAllLocations2,
+  applySelectionUpdate: applySelectionUpdate2,
+  addSelection: addSelection2
+} = MMA;
 var SIMILARITY_THRESHOLD = 0.85;
 function FindSimilarButton() {
   const active = getMapState().activeLocation;
@@ -296,13 +304,13 @@ function FindSimilarButton() {
     const results = await searchImage(panoId, null, SIMILARITY_THRESHOLD);
     const matchedIds = results.map((r) => locs.find((l) => l.panoId === r.panoId)?.id).filter((id) => id != null);
     if (matchedIds.length > 0) {
-      await addSelections2([
-        {
+      await applySelectionUpdate2(
+        addSelection2({
           type: "Locations",
           locations: matchedIds,
           name: `Similar to ${panoId.slice(0, 8)}...`
-        }
-      ]);
+        })
+      );
     }
     return matchedIds.length;
   });

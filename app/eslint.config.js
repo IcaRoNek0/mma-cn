@@ -72,12 +72,14 @@ const E2E_TIMING_RULES = [
 			"No fixed sleeps in e2e. Wait on the real post-condition with a waitFor* helper or browser.waitUntil. To prove something did not happen, first wait on a signal that it would have by now: the work finished, or a later event landed.",
 	},
 	{
-		selector: "CallExpression[callee.name='setTimeout'][arguments.length=2]:not([arguments.1.value=0])",
+		selector:
+			"CallExpression[callee.name='setTimeout'][arguments.length=2]:not([arguments.1.value=0])",
 		message:
 			"No timed sleeps or cutoffs in e2e. Await the operation, or poll its post-condition from the spec with browser.waitUntil.",
 	},
 	{
-		selector: "CallExpression[callee.property.name=/^wait(Until|For)/] Property[key.name='timeout']",
+		selector:
+			"CallExpression[callee.property.name=/^wait(Until|For)/] Property[key.name='timeout']",
 		message:
 			"No per-wait timeouts in e2e. waitforTimeout in wdio.conf.ts is the one hang bound; a wait ends on its condition.",
 	},
@@ -243,6 +245,11 @@ export default defineConfig([
 	{
 		files: ["src/api.ts"],
 		rules: { "local/no-handwritten-api-surface": "error" },
+	},
+	{
+		// Legacy shims are the sanctioned aliases: they keep shipped plugins' calls working.
+		files: ["src/legacy.ts"],
+		rules: { "local/no-selection-alias": "off" },
 	},
 	{
 		files: ["src/store/commandDefs.ts"],

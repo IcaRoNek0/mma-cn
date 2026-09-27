@@ -414,62 +414,72 @@ export const unionSelections = mergeTargets(any);
  *  already inverted; several are inverted as their union. */
 export const invertSelections = mergeTargets((...selectors) => not(any(...selectors)));
 
-/** The listed selections once the active ones become `active`. Ghosted rows keep their places
- *  and `active` fills the others in order; a selection already listed as a ghosted row updates
- *  that row and stays ghosted. */
-export function withActive(rows: ListedSelection[], active: Selection[]): ListedSelection[] {
-	const ghostedAt = new Map<string, number>();
-	rows.forEach((r, i) => r.ghosted && ghostedAt.set(r.selection.key, i));
-	const landed = new Map<number, Selection>();
-	const fresh: Selection[] = [];
-	for (const s of active) {
-		const i = ghostedAt.get(s.key);
-		if (i === undefined) fresh.push(s);
-		else landed.set(i, s);
-	}
-	const queue = fresh.values();
-	const out: ListedSelection[] = [];
-	rows.forEach((r, i) => {
-		if (r.ghosted) {
-			const selection = landed.get(i);
-			out.push(selection ? { selection, ghosted: true } : r);
-			return;
+/** Run `op` on the active selections only. Ghosted rows keep their places and the result fills
+ *  the others in order; a selection already listed as a ghosted row updates that row and stays
+ *  ghosted. */
+export const onActive =
+	(op: (active: Selection[]) => Selection[]) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const active = rows.filter((r) => !r.ghosted).map((r) => r.selection);
+		const next = op(active);
+		if (next.length === active.length && next.every((s, i) => s === active[i])) return rows;
+		const ghostedAt = new Map<string, number>();
+		rows.forEach((r, i) => r.ghosted && ghostedAt.set(r.selection.key, i));
+		const landed = new Map<number, Selection>();
+		const fresh: Selection[] = [];
+		for (const s of next) {
+			const i = ghostedAt.get(s.key);
+			if (i === undefined) fresh.push(s);
+			else landed.set(i, s);
 		}
-		const next = queue.next();
-		if (!next.done) out.push({ selection: next.value, ghosted: false });
-	});
-	for (const selection of queue) out.push({ selection, ghosted: false });
-	return out;
-}
+		const queue = fresh.values();
+		const out: ListedSelection[] = [];
+		rows.forEach((r, i) => {
+			if (r.ghosted) {
+				const selection = landed.get(i);
+				out.push(selection ? { selection, ghosted: true } : r);
+				return;
+			}
+			const n = queue.next();
+			if (!n.done) out.push({ selection: n.value, ghosted: false });
+		});
+		for (const selection of queue) out.push({ selection, ghosted: false });
+		return out;
+	};
 
-/** List a selection built from `selector`. One already listed is updated in place, ghost and all. */
+/** List the selections built from `selectors`. One already listed is updated in place, ghost and all. */
 export const addSelection =
-	(selector: Selector) =>
-	(rows: ListedSelection[]): ListedSelection[] => {
-		const selection = buildSelection(selector);
-		const i = rows.findIndex((r) => r.selection.key === selection.key);
-		return i === -1
-			? [...rows, { selection, ghosted: false }]
-			: rows.with(i, { ...rows[i], selection });
-	};
+	(...selectors: Selector[]) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		selectors.reduce((acc, selector) => {
+			const selection = buildSelection(selector);
+			const i = acc.findIndex((r) => r.selection.key === selection.key);
+			return i === -1
+				? [...acc, { selection, ghosted: false }]
+				: acc.with(i, { ...acc[i], selection });
+		}, rows);
 
-/** Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place. */
+/** Remove the listed selections whose keys are `keys`. A removed group leaves its children behind in its place. */
 export const removeSelection =
-	(key: string) =>
-	(rows: ListedSelection[]): ListedSelection[] => {
-		const i = rows.findIndex((r) => r.selection.key === key);
-		return i === -1 ? rows : removeSelectionAt([i])(rows);
-	};
+	(...keys: string[]) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		keys.reduce((acc, key) => {
+			const i = acc.findIndex((r) => r.selection.key === key);
+			return i === -1 ? acc : removeSelectionAt([i])(acc);
+		}, rows);
 
-/** List the selection built from `selector`, or remove it when it is already listed. */
-export const toggleSelection = (selector: Selector) => {
-	const { key } = buildSelection(selector);
-	return toggle(
-		(rows: ListedSelection[]) => rows.some((r) => r.selection.key === key),
-		addSelection(selector),
-		removeSelection(key),
-	);
-};
+/** List each selection built from `selectors`, or remove it when it is already listed. */
+export const toggleSelection =
+	(...selectors: Selector[]) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		selectors.reduce((acc, selector) => {
+			const { key } = buildSelection(selector);
+			return toggle(
+				(r: ListedSelection[]) => r.some((row) => row.selection.key === key),
+				addSelection(selector),
+				removeSelection(key),
+			)(acc);
+		}, rows);
 
 /** Add or remove a location from the Manual selection, creating it if needed. */
 export const toggleManualSelection =

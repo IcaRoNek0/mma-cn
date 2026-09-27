@@ -1,10 +1,11 @@
 import { useCallback } from "react";
-import { addSelections } from "@/store/useMapStore";
+import { applySelectionUpdate } from "@/store/useMapStore";
 import { getSettings } from "@/store/settings";
 import { cmd } from "@/lib/commands";
 import { useHeldHotkeyClick } from "@/lib/map/useHeldHotkeyClick";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
+import { addSelection } from "@/store/selections";
 
 /** Select the country (or subdivision) containing a point, fetching the border file on
  *  first use. Shared by the hold-key gesture and the map context menu. */
@@ -30,7 +31,7 @@ export async function selectBorderAt(lat: number, lng: number, subdivision: bool
 		}
 		geometry = await lookup();
 	}
-	if (geometry) await addSelections([{ type: "Polygon", polygon: geometry }]);
+	if (geometry) await applySelectionUpdate(addSelection({ type: "Polygon", polygon: geometry }));
 }
 
 export function useCountrySelect() {

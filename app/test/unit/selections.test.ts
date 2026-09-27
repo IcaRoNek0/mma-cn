@@ -13,6 +13,7 @@ import {
 	has,
 	intersectSelections,
 	moveSelection,
+	onActive,
 	invertSelections,
 	isolateGhost,
 	lacks,
@@ -29,7 +30,6 @@ import {
 	tagSelector,
 	toggleGhost,
 	toggleGhostAll,
-	withActive,
 	toggleInvert,
 	toggleManualSelection,
 	toggleSelection,
@@ -499,23 +499,31 @@ describe("ghosting", () => {
 	});
 });
 
-describe("withActive", () => {
+describe("onActive", () => {
 	const [a, b, c, d] = [9, 8, 7, 6].map((id) => buildSelection(tagSelector(id)));
 	const row = (selection: Selection, ghosted = false): ListedSelection => ({ selection, ghosted });
 
 	it("keeps ghosted rows in place and fills the others in order", () => {
 		const rows = [row(a), row(b, true), row(c)];
-		expect(withActive(rows, [d])).toEqual([row(d), row(b, true)]);
-		expect(withActive(rows, [c, d, a])).toEqual([row(c), row(b, true), row(d), row(a)]);
+		expect(onActive(() => [d])(rows)).toEqual([row(d), row(b, true)]);
+		expect(onActive(() => [c, d, a])(rows)).toEqual([row(c), row(b, true), row(d), row(a)]);
 	});
 
 	it("drops every active row when the selection empties, and leaves ghosted ones", () => {
-		expect(withActive([row(a), row(b, true)], [])).toEqual([row(b, true)]);
+		expect(onActive(() => [])([row(a), row(b, true)])).toEqual([row(b, true)]);
+	});
+
+	it("shows the op only the active selections, and changes nothing when it returns them as they were", () => {
+		const rows = [row(a), row(b, true), row(c)];
+		let seen: Selection[] = [];
+		const same = onActive((active) => ((seen = active), [...active]))(rows);
+		expect(seen).toEqual([a, c]);
+		expect(same).toBe(rows);
 	});
 
 	it("lands a selection already listed as a ghosted row on that row, still ghosted", () => {
 		const updated = { ...b, color: [1, 2, 3] as RGB };
-		const result = withActive([row(a), row(b, true)], [a, updated]);
+		const result = onActive(() => [a, updated])([row(a), row(b, true)]);
 		expect(result).toEqual([row(a), row(updated, true)]);
 	});
 });
@@ -554,6 +562,18 @@ describe("row edits carry the ghost", () => {
 		const result = composeSelections([0], [1], "Union")([row(a, true), row(b)]);
 		expect(result).toHaveLength(1);
 		expect(result[0].ghosted).toBe(false);
+	});
+});
+
+describe("the list verbs take several at once", () => {
+	const [a, b] = [9, 8].map((id) => buildSelection(tagSelector(id)));
+	it("adds, removes and toggles each one", () => {
+		const both = addSelection(a.selector, b.selector)([]);
+		expect(both.map((r) => r.selection.key)).toEqual([a.key, b.key]);
+		expect(removeSelection(a.key, b.key)(both)).toEqual([]);
+		expect(
+			toggleSelection(a.selector, untaggedSelector())(both).map((r) => r.selection.key),
+		).toEqual([b.key, buildSelection(untaggedSelector()).key]);
 	});
 });
 

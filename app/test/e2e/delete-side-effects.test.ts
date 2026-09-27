@@ -153,7 +153,7 @@ describe("Delete syncs with selections", () => {
 		untaggedIds = await addLocs(untagged);
 	});
 	beforeEach(async () => {
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tag selection count decreases when tagged location is deleted", async () => {

@@ -3444,21 +3444,12 @@ declare function renameField(from: string, to: string, winner?: MergeWinner): Pr
 declare function deleteField(key: string): Promise<void>;
 /** Apply a field operation across all locations matching `selector`. Emits `location:invalidate`. @unstable */
 declare function applyFieldOp(selector: Selector, op: FieldOp, recordUndo: boolean): Promise<FieldOpResult>;
-/** Add selectors to the selection. */
-declare function addSelections(selectors: Selector[]): Promise<void>;
-/** Drop listed selections by key, ghosted ones included. */
-declare function removeSelections(keys: string[]): Promise<void>;
-/** Apply `op` to the selection. It sees only the active selections; ghosted ones keep their
- *  places in the list. No-op when nothing changed. @unstable */
-declare function applySelectionUpdate(op: (active: Selection[]) => Selection[]): Promise<void>;
-/** Apply `op` to the listed selections, ghosted ones included: the sidebar's own edits.
- *  No-op when nothing changed. @unstable */
-declare function applyListUpdate(op: (rows: ListedSelection[]) => ListedSelection[]): Promise<void>;
+/** Apply `op` to the listed selections and re-resolve them: the one way the selection changes.
+ *  Lift an op over the active selections alone with `onActive`. No-op when nothing changed. @unstable */
+declare function applySelectionUpdate(op: (rows: ListedSelection[]) => ListedSelection[]): Promise<void>;
 /** Re-resolve all selections against the current map data and update the overlay.
  *  Use when the underlying data changed but the selections themselves did not. @unstable */
 declare function syncSelections$1(): Promise<void>;
-/** Clear all selections, ghosted ones included. */
-declare function resetSelections(): Promise<void>;
 /** Replace the current selection with up to `count` ids picked at random.
  *  With `perSelection`, picks up to `count` from each active selection separately.
  *  Returns the number of ids actually picked (0 when nothing is selected). @unstable */
@@ -3556,11 +3547,8 @@ export type store_MapState = MapState;
 /** @unstable */
 export type store_UiState = UiState;
 declare const store_addLocations: typeof addLocations;
-declare const store_addSelections: typeof addSelections;
 /** @unstable */
 declare const store_applyFieldOp: typeof applyFieldOp;
-/** @unstable */
-declare const store_applyListUpdate: typeof applyListUpdate;
 /** @unstable */
 declare const store_applySelectionUpdate: typeof applySelectionUpdate;
 /** @unstable */
@@ -3611,11 +3599,9 @@ declare const store_redo: typeof redo;
 /** @unstable */
 declare const store_removeDuplicate: typeof removeDuplicate;
 declare const store_removeLocations: typeof removeLocations;
-declare const store_removeSelections: typeof removeSelections;
 declare const store_renameField: typeof renameField;
 declare const store_renameTagsIn: typeof renameTagsIn;
 declare const store_reorderTags: typeof reorderTags;
-declare const store_resetSelections: typeof resetSelections;
 declare const store_resolveLocation: typeof resolveLocation;
 /** @unstable */
 declare const store_scheduleAutoCommit: typeof scheduleAutoCommit;
@@ -3644,7 +3630,7 @@ declare const store_useMapState: typeof useMapState;
 /** @unstable */
 declare const store_waitForInflightPersist: typeof waitForInflightPersist;
 declare namespace store {
-  export { store_addLocations as addLocations, store_addSelections as addSelections, store_applyFieldOp as applyFieldOp, store_applyListUpdate as applyListUpdate, store_applySelectionUpdate as applySelectionUpdate, store_cancelAutosave as cancelAutosave, store_checkoutCommit as checkoutCommit, store_closeDuplicates as closeDuplicates, closeMap$1 as closeMap, store_commitMap as commitMap, store_createTags as createTags, store_currentSelection as currentSelection, store_deleteField as deleteField, store_deleteTags as deleteTags, store_discardOpenMap as discardOpenMap, store_duplicateLocation as duplicateLocation, store_emitBitmask as emitBitmask, store_exitPluginMode as exitPluginMode, store_flushSave as flushSave, store_getActiveSelections as getActiveSelections, store_getMapState as getMapState, store_getTag as getTag, store_getTagCounts as getTagCounts, store_getTags as getTags, store_getVisibleTags as getVisibleTags, store_holdAutosave as holdAutosave, store_initStore as initStore, store_mergeDuplicates as mergeDuplicates, store_mutate as mutate, store_openDuplicateLocation as openDuplicateLocation, openMap$1 as openMap, store_openStagedLocation as openStagedLocation, store_patchMapMeta as patchMapMeta, store_previewDuplicateGroups as previewDuplicateGroups, store_previewVirtualLocation as previewVirtualLocation, store_pruneDuplicates as pruneDuplicates, query$1 as query, store_redo as redo, store_removeDuplicate as removeDuplicate, store_removeLocations as removeLocations, store_removeSelections as removeSelections, store_renameField as renameField, store_renameTagsIn as renameTagsIn, store_reorderTags as reorderTags, store_resetSelections as resetSelections, store_resolveLocation as resolveLocation, store_scheduleAutoCommit as scheduleAutoCommit, store_scheduleSave as scheduleSave, store_selectEvenlySpacedFromSelection as selectEvenlySpacedFromSelection, store_selectRandomFromSelection as selectRandomFromSelection, store_selectSpacedFromSelection as selectSpacedFromSelection, store_setActiveLocation as setActiveLocation, store_setMapExtraFields as setMapExtraFields, store_setPluginMode as setPluginMode, store_setSelectedLocationIds as setSelectedLocationIds, store_setTags as setTags, store_setWorkArea as setWorkArea, syncSelections$1 as syncSelections, store_tagIdsToNames as tagIdsToNames, store_undo as undo, store_updateLocations as updateLocations, store_updateMapMeta as updateMapMeta, store_updateTags as updateTags, store_useMapState as useMapState, store_waitForInflightPersist as waitForInflightPersist };
+  export { store_addLocations as addLocations, store_applyFieldOp as applyFieldOp, store_applySelectionUpdate as applySelectionUpdate, store_cancelAutosave as cancelAutosave, store_checkoutCommit as checkoutCommit, store_closeDuplicates as closeDuplicates, closeMap$1 as closeMap, store_commitMap as commitMap, store_createTags as createTags, store_currentSelection as currentSelection, store_deleteField as deleteField, store_deleteTags as deleteTags, store_discardOpenMap as discardOpenMap, store_duplicateLocation as duplicateLocation, store_emitBitmask as emitBitmask, store_exitPluginMode as exitPluginMode, store_flushSave as flushSave, store_getActiveSelections as getActiveSelections, store_getMapState as getMapState, store_getTag as getTag, store_getTagCounts as getTagCounts, store_getTags as getTags, store_getVisibleTags as getVisibleTags, store_holdAutosave as holdAutosave, store_initStore as initStore, store_mergeDuplicates as mergeDuplicates, store_mutate as mutate, store_openDuplicateLocation as openDuplicateLocation, openMap$1 as openMap, store_openStagedLocation as openStagedLocation, store_patchMapMeta as patchMapMeta, store_previewDuplicateGroups as previewDuplicateGroups, store_previewVirtualLocation as previewVirtualLocation, store_pruneDuplicates as pruneDuplicates, query$1 as query, store_redo as redo, store_removeDuplicate as removeDuplicate, store_removeLocations as removeLocations, store_renameField as renameField, store_renameTagsIn as renameTagsIn, store_reorderTags as reorderTags, store_resolveLocation as resolveLocation, store_scheduleAutoCommit as scheduleAutoCommit, store_scheduleSave as scheduleSave, store_selectEvenlySpacedFromSelection as selectEvenlySpacedFromSelection, store_selectRandomFromSelection as selectRandomFromSelection, store_selectSpacedFromSelection as selectSpacedFromSelection, store_setActiveLocation as setActiveLocation, store_setMapExtraFields as setMapExtraFields, store_setPluginMode as setPluginMode, store_setSelectedLocationIds as setSelectedLocationIds, store_setTags as setTags, store_setWorkArea as setWorkArea, syncSelections$1 as syncSelections, store_tagIdsToNames as tagIdsToNames, store_undo as undo, store_updateLocations as updateLocations, store_updateMapMeta as updateMapMeta, store_updateTags as updateTags, store_useMapState as useMapState, store_waitForInflightPersist as waitForInflightPersist };
   export type { store_MapState as MapState, store_UiState as UiState };
 }
 
@@ -3723,16 +3709,16 @@ declare const unionSelections: (keys?: string[] | null) => (current: Selection[]
 /** Invert the targeted selections (or all, when `keys` is null). One is inverted, or restored when
  *  already inverted; several are inverted as their union. @unstable */
 declare const invertSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
-/** The listed selections once the active ones become `active`. Ghosted rows keep their places
- *  and `active` fills the others in order; a selection already listed as a ghosted row updates
- *  that row and stays ghosted. @unstable */
-declare function withActive(rows: ListedSelection[], active: Selection[]): ListedSelection[];
-/** List a selection built from `selector`. One already listed is updated in place, ghost and all. @unstable */
-declare const addSelection: (selector: Selector) => (rows: ListedSelection[]) => ListedSelection[];
-/** Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place. @unstable */
-declare const removeSelection: (key: string) => (rows: ListedSelection[]) => ListedSelection[];
-/** List the selection built from `selector`, or remove it when it is already listed. @unstable */
-declare const toggleSelection: (selector: Selector) => (state: ListedSelection[]) => ListedSelection[];
+/** Run `op` on the active selections only. Ghosted rows keep their places and the result fills
+ *  the others in order; a selection already listed as a ghosted row updates that row and stays
+ *  ghosted. @unstable */
+declare const onActive: (op: (active: Selection[]) => Selection[]) => (rows: ListedSelection[]) => ListedSelection[];
+/** List the selections built from `selectors`. One already listed is updated in place, ghost and all. @unstable */
+declare const addSelection: (...selectors: Selector[]) => (rows: ListedSelection[]) => ListedSelection[];
+/** Remove the listed selections whose keys are `keys`. A removed group leaves its children behind in its place. @unstable */
+declare const removeSelection: (...keys: string[]) => (rows: ListedSelection[]) => ListedSelection[];
+/** List each selection built from `selectors`, or remove it when it is already listed. @unstable */
+declare const toggleSelection: (...selectors: Selector[]) => (rows: ListedSelection[]) => ListedSelection[];
 /** Add or remove a location from the Manual selection, creating it if needed. @unstable */
 declare const toggleManualSelection: (locationId: number) => (rows: ListedSelection[]) => ListedSelection[];
 /** Ghost the listed selection at `index`, or un-ghost it. @unstable */
@@ -3824,6 +3810,8 @@ declare const selectionOps_moveSelection: typeof moveSelection;
 /** @unstable */
 declare const selectionOps_not: typeof not;
 /** @unstable */
+declare const selectionOps_onActive: typeof onActive;
+/** @unstable */
 declare const selectionOps_panoIdOf: typeof panoIdOf;
 /** @unstable */
 declare const selectionOps_panoIdSelector: typeof panoIdSelector;
@@ -3864,11 +3852,9 @@ declare const selectionOps_unpannedSelector: typeof unpannedSelector;
 /** @unstable */
 declare const selectionOps_untaggedSelector: typeof untaggedSelector;
 /** @unstable */
-declare const selectionOps_withActive: typeof withActive;
-/** @unstable */
 declare const selectionOps_withChildren: typeof withChildren;
 declare namespace selectionOps {
-  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_toggleSelection as toggleSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withActive as withActive, selectionOps_withChildren as withChildren };
+  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_onActive as onActive, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_toggleSelection as toggleSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withChildren as withChildren };
   export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPath as SelectionPath, selectionOps_UnaryType as UnaryType };
 }
 
@@ -4148,7 +4134,7 @@ declare const COMMANDS: {
         icon: string;
         group: "Selections";
         defaultBinding: string;
-        execute: typeof resetSelections;
+        execute: () => Promise<void>;
         enabled: typeof hasAnySelections;
     };
     "find-duplicates": {
@@ -7354,7 +7340,15 @@ declare function addTagToLocations(tagId: number, locationIds: number[]): Promis
 declare function removeTagFromLocations(tagId: number, locationIds: number[]): Promise<void> | Promise<FieldOpResult>;
 /** @deprecated v0.10.5. Use `MMA.setTags([], [tagId], MMA.tagSelector(tagId))`. @unstable */
 declare function removeTagFromAllLocations(tagId: number): Promise<void> | Promise<FieldOpResult>;
+/** @deprecated v0.11.3. Use `MMA.applySelectionUpdate(MMA.addSelection(...selectors))`. @unstable */
+declare function addSelections(selectors: Selector[]): Promise<void>;
+/** @deprecated v0.11.3. Use `MMA.applySelectionUpdate(MMA.removeSelection(...keys))`. @unstable */
+declare function removeSelections(keys: string[]): Promise<void>;
+/** @deprecated v0.11.3. Use `MMA.applySelectionUpdate(() => [])`. @unstable */
+declare function resetSelections(): Promise<void>;
 
+/** @unstable */
+declare const legacy_addSelections: typeof addSelections;
 /** @unstable */
 declare const legacy_addTagToLocations: typeof addTagToLocations;
 /** @unstable */
@@ -7410,11 +7404,15 @@ declare const legacy_registerEnrichFields: typeof registerEnrichFields;
 /** @unstable */
 declare const legacy_registerEnrichmentProvider: typeof registerEnrichmentProvider;
 /** @unstable */
+declare const legacy_removeSelections: typeof removeSelections;
+/** @unstable */
 declare const legacy_removeTagFromAllLocations: typeof removeTagFromAllLocations;
 /** @unstable */
 declare const legacy_removeTagFromLocations: typeof removeTagFromLocations;
 /** @unstable */
 declare const legacy_request: typeof request;
+/** @unstable */
+declare const legacy_resetSelections: typeof resetSelections;
 /** @unstable */
 declare const legacy_resolveIds: typeof resolveIds;
 /** @unstable */
@@ -7425,6 +7423,7 @@ declare const legacy_setUserFieldDefs: typeof setUserFieldDefs;
 declare const legacy_waitForGoogleMap: typeof waitForGoogleMap;
 declare namespace legacy {
   export {
+    legacy_addSelections as addSelections,
     legacy_addTagToLocations as addTagToLocations,
     legacy_countBy as countBy,
     legacy_countIn as countIn,
@@ -7452,9 +7451,11 @@ declare namespace legacy {
     legacy_partition as partition,
     legacy_registerEnrichFields as registerEnrichFields,
     legacy_registerEnrichmentProvider as registerEnrichmentProvider,
+    legacy_removeSelections as removeSelections,
     legacy_removeTagFromAllLocations as removeTagFromAllLocations,
     legacy_removeTagFromLocations as removeTagFromLocations,
     legacy_request as request,
+    legacy_resetSelections as resetSelections,
     legacy_resolveIds as resolveIds,
     legacy_sampleFrom as sampleFrom,
     legacy_setUserFieldDefs as setUserFieldDefs,

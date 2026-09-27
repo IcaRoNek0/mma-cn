@@ -13,7 +13,7 @@ import {
 	untaggedSelector,
 } from "@/store/selections";
 import {
-	applyListUpdate,
+	applySelectionUpdate,
 	getActiveSelections,
 	getMapState,
 	getTags,
@@ -545,7 +545,7 @@ function PivotTable({
 								}
 								onClick={(e) => {
 									if ((e.ctrlKey || e.metaKey) && col.selectable)
-										void applyListUpdate(toggleSelection(col.selector));
+										void applySelectionUpdate(toggleSelection(col.selector));
 									else handleSort(col.key);
 								}}
 							>
@@ -569,7 +569,7 @@ function PivotTable({
 									className={`pivot-sidebar__row-label${isSelected(row) ? " pivot-sidebar__row-label--selected" : ""}`}
 									onClick={(e) => {
 										if ((e.ctrlKey || e.metaKey) && row.selectable)
-											void applyListUpdate(toggleSelection(row.selector));
+											void applySelectionUpdate(toggleSelection(row.selector));
 									}}
 								>
 									{row.color && <Swatch color={row.color} size="sm" />}

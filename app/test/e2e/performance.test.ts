@@ -538,14 +538,14 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 		bench(route, scale, {
 			setup: async () => {
 				await ensureOpen(mapId, sceneFloor);
-				await withApi(async (api) => api.resetSelections());
+				await withApi(async (api) => api.applySelectionUpdate(() => []));
 			},
 			run: () =>
 				withApi(
 					async (api, selectionProps, minimum) => {
 						const start = performance.now();
 						// eslint-disable-next-line @typescript-eslint/no-explicit-any -- props are passed as plain JSON across the bridge
-						await api.addSelections([selectionProps as any]);
+						await api.applySelectionUpdate(api.addSelection(selectionProps as any));
 						const operationMs = performance.now() - start;
 						await new Promise<void>((resolve) =>
 							requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -580,9 +580,10 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 				await ensureOpen(mapId, sceneFloor);
 				await withApi(
 					async (api, id, op) => {
-						await api.resetSelections();
-						await api.addSelections([api.panoIdSelector(true)]);
-						if (op !== "invert") await api.addSelections([api.tagSelector(id)]);
+						await api.applySelectionUpdate(() => []);
+						await api.applySelectionUpdate(api.addSelection(api.panoIdSelector(true)));
+						if (op !== "invert")
+							await api.applySelectionUpdate(api.addSelection(api.tagSelector(id)));
 					},
 					tagId,
 					operation,
@@ -591,9 +592,11 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 			run: () =>
 				withApi(async (api, op) => {
 					const start = performance.now();
-					if (op === "intersection") await api.applySelectionUpdate(api.intersectSelections());
-					else if (op === "union") await api.applySelectionUpdate(api.unionSelections());
-					else await api.applySelectionUpdate(api.invertSelections());
+					if (op === "intersection")
+						await api.applySelectionUpdate(api.onActive(api.intersectSelections()));
+					else if (op === "union")
+						await api.applySelectionUpdate(api.onActive(api.unionSelections()));
+					else await api.applySelectionUpdate(api.onActive(api.invertSelections()));
 					const operationMs = performance.now() - start;
 					await new Promise<void>((resolve) =>
 						requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -612,8 +615,8 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 		setup: async () => {
 			await unwind(mapId, sceneFloor);
 			await withApi(async (api) => {
-				await api.resetSelections();
-				await api.addSelections([{ type: "Everything" }]);
+				await api.applySelectionUpdate(() => []);
+				await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			});
 		},
 		run: () =>
@@ -630,7 +633,7 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 			}),
 	});
 	await unwind(mapId, sceneFloor);
-	await withApi(async (api) => api.resetSelections());
+	await withApi(async (api) => api.applySelectionUpdate(() => []));
 
 	// --- mutation ---
 
@@ -742,8 +745,8 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 		setup: async () => {
 			await unwind(mapId, sceneFloor);
 			await withApi(async (api, id) => {
-				await api.resetSelections();
-				await api.addSelections([api.tagSelector(id)]);
+				await api.applySelectionUpdate(() => []);
+				await api.applySelectionUpdate(api.addSelection(api.tagSelector(id)));
 				if (api.getMapState().selectedLocationIds.size === 0) {
 					throw new Error("delete setup selected nothing");
 				}
@@ -792,8 +795,8 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 		setup: async () => {
 			await unwind(mapId, sceneFloor);
 			await withApi(async (api, id) => {
-				await api.resetSelections();
-				await api.addSelections([api.tagSelector(id)]);
+				await api.applySelectionUpdate(() => []);
+				await api.applySelectionUpdate(api.addSelection(api.tagSelector(id)));
 				await api.removeLocations(api.getMapState().selectedLocationIds);
 				api.cancelAutosave();
 				if (!api.getMapState().canUndo) throw new Error("bulk delete is not undoable");
@@ -818,8 +821,8 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 		setup: async () => {
 			await unwind(mapId, sceneFloor);
 			await withApi(async (api, id) => {
-				await api.resetSelections();
-				await api.addSelections([api.tagSelector(id)]);
+				await api.applySelectionUpdate(() => []);
+				await api.applySelectionUpdate(api.addSelection(api.tagSelector(id)));
 				await api.removeLocations(api.getMapState().selectedLocationIds);
 				await api.undo();
 				api.cancelAutosave();
@@ -841,7 +844,7 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 			}, baseline),
 	});
 	await unwind(mapId, sceneFloor);
-	await withApi(async (api) => api.resetSelections());
+	await withApi(async (api) => api.applySelectionUpdate(() => []));
 
 	// --- persistence ---
 

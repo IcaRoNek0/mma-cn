@@ -201,13 +201,13 @@ export const unpannedSelector = (): Selector => ({
 
 /** Add selections to the live map. */
 export async function select(...selector: Selector[]) {
-	await withApi(async (api, p) => api.addSelections(p), selector);
+	await withApi(async (api, p) => api.applySelectionUpdate(api.addSelection(...p)), selector);
 }
 
 /** Add selections and return how many locations they resolve to. */
 export async function selectCount(...selector: Selector[]): Promise<number> {
 	return withApi(async (api, p) => {
-		await api.addSelections(p);
+		await api.applySelectionUpdate(api.addSelection(...p));
 		return api.getMapState().selectedLocationIds.size;
 	}, selector);
 }

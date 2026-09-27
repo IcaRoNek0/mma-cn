@@ -4,15 +4,19 @@ import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import { emit, useEventValue, subscribe as onEvent } from "@/lib/events";
 import {
-	addSelections,
-	removeSelections,
+	applySelectionUpdate,
 	getActiveSelections,
 	getMapState,
 	query,
 	removeLocations,
 	setActiveLocation,
 } from "@/store/useMapStore";
-import { buildSelection, selectionDisplayName } from "@/store/selections";
+import {
+	addSelection,
+	buildSelection,
+	removeSelection,
+	selectionDisplayName,
+} from "@/store/selections";
 
 import type { ReviewSession, Selection, Selector } from "@/bindings.gen";
 import { t } from "@/lib/i18n";
@@ -341,7 +345,7 @@ const HISTORY_SESSION_ID = "history";
 export async function selectReviewedHistory(): Promise<void> {
 	const ids = reviewedHistoryIds(await listSessions());
 	if (ids.length === 0) return;
-	await addSelections([reviewSelector(HISTORY_SESSION_ID, "reviewed", ids)]);
+	await applySelectionUpdate(addSelection(reviewSelector(HISTORY_SESSION_ID, "reviewed", ids)));
 }
 
 /** The locations of review session `s` that are reviewed, or still to review. */
@@ -368,7 +372,9 @@ function clearProjectTimer() {
 function refreshProjection(): void {
 	const s = session;
 	if (!s) return;
-	void addSelections(REVIEW_MODES.map((mode) => reviewSetSelector(s, mode)));
+	void applySelectionUpdate(
+		addSelection(...REVIEW_MODES.map((mode) => reviewSetSelector(s, mode))),
+	);
 }
 
 function scheduleProjection(): void {
@@ -382,7 +388,7 @@ function scheduleProjection(): void {
 function clearProjection(id: string): void {
 	clearProjectTimer();
 	const keys = REVIEW_MODES.map((mode) => buildSelection(reviewSelector(id, mode)).key);
-	void removeSelections(keys);
+	void applySelectionUpdate(removeSelection(...keys));
 }
 
 /** Adopt a persisted session as active, pruning locations that no longer exist. */

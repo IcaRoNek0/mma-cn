@@ -19,9 +19,8 @@ import { Pill } from "@/components/primitives/Pill";
 import { mdiChevronDown, mdiChevronRight, mdiPencil, mdiFolder } from "@mdi/js";
 import { textColorFor, rgbToHex } from "@/lib/util/color";
 import { fmt } from "@/lib/util/format";
-import { applyListUpdate } from "@/store/useMapStore";
+import { applySelectionUpdate } from "@/store/useMapStore";
 import { tagSelector, toggleSelection } from "@/store/selections";
-import { batch } from "@/types/util";
 import { useStableHandler } from "@/lib/hooks/useStableHandler";
 import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import { useSetting } from "@/store/settings";
@@ -433,7 +432,7 @@ export function TagTreeView({
 					effectiveSelected ? selectedTagIds.has(id) : !selectedTagIds.has(id),
 				);
 			}
-			void applyListUpdate(batch(toggleSelection)(ids.map(tagSelector)));
+			void applySelectionUpdate(toggleSelection(...ids.map(tagSelector)));
 			anchorPathRef.current = node.fullPath;
 		},
 	);

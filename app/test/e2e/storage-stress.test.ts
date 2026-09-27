@@ -349,7 +349,7 @@ describe("Tag count accuracy", () => {
 		await seedLocs(20, (i) => ({ lat: 100 + i, lng: 100 + i }));
 
 		await withApi(async (api, tId) => {
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			await api.addTagToLocations(tId, [...api.getMapState().selectedLocationIds]);
 		}, tagId);
 
@@ -1052,8 +1052,8 @@ describe("Selection during mutation", () => {
 
 		// Re-select -- should now get 40
 		const count2 = await withApi(async (api, tid) => {
-			await api.resetSelections();
-			await api.addSelections([api.tagSelector(tid)]);
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(api.addSelection(api.tagSelector(tid)));
 			return api.getMapState().selectedLocationIds.size;
 		}, tag.id);
 		expect(count2).toBe(40);
@@ -1061,12 +1061,12 @@ describe("Selection during mutation", () => {
 
 	it("removing selected locations updates selection", async () => {
 		const result = await withApi(async (api) => {
-			await api.resetSelections();
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			const beforeCount = api.getMapState().selectedLocationIds.size;
 			const ids = [...api.getMapState().selectedLocationIds].slice(0, 5);
 			await api.removeLocations(new Set(ids));
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			return { before: beforeCount, after: api.getMapState().selectedLocationIds.size };
 		});
 		expect(result.after).toBe(result.before - 5);

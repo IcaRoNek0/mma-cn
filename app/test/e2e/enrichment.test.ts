@@ -650,13 +650,13 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 	});
 	it("numeric filter (altitude > 75) selects correct locations", async () => {
 		await withApi(async (api) => {
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "gt", value: 75 },
-				},
-			]);
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -667,14 +667,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("string equality filter (countryCode = US) selects correct location", async () => {
 		await withApi(async (api) => {
-			await api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "countryCode",
 					test: { op: "eq", value: "US" },
-				},
-			]);
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -685,14 +685,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("between filter (altitude 60-150) selects correct location", async () => {
 		await withApi(async (api) => {
-			await api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
 					test: { op: "between", lo: 60, hi: 150 },
-				},
-			]);
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -703,14 +703,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("string inequality filter (countryCode != US)", async () => {
 		await withApi(async (api) => {
-			await api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "countryCode",
 					test: { op: "neq", value: "US" },
-				},
-			]);
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -721,14 +721,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("month comparison filter (imageDate >= 2024-01)", async () => {
 		await withApi(async (api) => {
-			await api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "imageDate",
 					test: { op: "gte", value: "2024-01" },
-				},
-			]);
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -738,14 +738,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("filter on missing field excludes locations without it", async () => {
 		await withApi(async (api) => {
-			await api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "imageDate",
 					test: { op: "eq", value: "2023-06" },
-				},
-			]);
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();

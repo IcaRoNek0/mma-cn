@@ -17,7 +17,7 @@ describe("Duplicate detection via selectDuplicates", () => {
 		]);
 	});
 	beforeEach(async () => {
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("selectDuplicates with tight radius finds nearby locations", async () => {
