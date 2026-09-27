@@ -57,6 +57,28 @@ pub async fn store_open_map(
     state: tauri::State<'_, StoreState>,
     map_id: String,
 ) -> AppResult<StoreStatus> {
+    // Claim the window binding before the unlocked read, so a concurrent checkout's
+    // open-elsewhere guard sees this open from its first moment.
+    state
+        .lock()?
+        .window_map
+        .insert(label.0.clone(), map_id.clone());
+    let opened = open_claimed_map(&label, &state, map_id.clone()).await;
+    if opened.is_err() {
+        if let Ok(mut mgr) = state.lock() {
+            if mgr.window_map.get(&label.0) == Some(&map_id) {
+                mgr.window_map.remove(&label.0);
+            }
+        }
+    }
+    opened
+}
+
+async fn open_claimed_map(
+    label: &WindowLabel,
+    state: &tauri::State<'_, StoreState>,
+    map_id: String,
+) -> AppResult<StoreStatus> {
     let map_id2 = map_id.clone();
 
     let result = task::spawn_blocking(move || {

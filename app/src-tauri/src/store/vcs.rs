@@ -271,7 +271,8 @@ fn write_checkout(
     base: &Path,
     delta: &Path,
 ) -> AppResult<()> {
-    if mgr.stores.contains_key(map_id) {
+    // window_map covers an open still in flight, whose store lands only when it finishes.
+    if mgr.stores.contains_key(map_id) || mgr.window_map.values().any(|v| v == map_id) {
         return Err(AppError(
             "close this map in every other window before restoring a version".into(),
         ));
