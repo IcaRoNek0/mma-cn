@@ -183,22 +183,26 @@ pub async fn store_close_map(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
 ) -> AppResult<()> {
-    let (map_id, store) = {
-        let mut mgr = state.lock()?;
-        let Some(map_id) = mgr.window_map.remove(&label.0) else {
-            return Ok(());
-        };
-        if mgr.window_map.values().any(|v| v == &map_id) {
-            log::debug!("[close_map] {map_id} still open in another window, skipping flush");
-            return Ok(());
-        }
-        let Some(store) = mgr.stores.remove(&map_id) else {
-            log::debug!("[close_map] {map_id} has no store, nothing to flush");
-            return Ok(());
-        };
-        (map_id, store)
+    let Some((map_id, store)) = state.lock()?.unbind_window(&label.0) else {
+        return Ok(());
     };
     task::spawn_blocking(move || flush_closed_store(&map_id, &store)).await?
+}
+
+/// Close a window's map binding when its webview goes away without a proper close.
+pub fn release_window_binding(app: &tauri::AppHandle, label: &str) {
+    let Some(state) = tauri::Manager::try_state::<StoreState>(app) else {
+        return;
+    };
+    let unbound = state
+        .lock()
+        .ok()
+        .and_then(|mut mgr| mgr.unbind_window(label));
+    if let Some((map_id, store)) = unbound {
+        if let Err(e) = flush_closed_store(&map_id, &store) {
+            log::error!("[close_map] flush for released window '{label}' failed: {e} ({map_id})");
+        }
+    }
 }
 
 /// Add new locations, allocating sequential IDs. Undoable.

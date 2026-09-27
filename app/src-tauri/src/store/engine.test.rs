@@ -2506,6 +2506,33 @@ fn manager_map_id_for_window() {
 }
 
 #[test]
+fn manager_unbind_last_window_yields_store() {
+    let mut mgr = StoreManager::new();
+    mgr.stores.insert("map-a".into(), Store::new());
+    mgr.window_map.insert("win-1".into(), "map-a".into());
+
+    let (map_id, _store) = mgr.unbind_window("win-1").expect("last window flushes");
+    assert_eq!(map_id, "map-a");
+    assert!(mgr.window_map.is_empty());
+    assert!(mgr.stores.is_empty());
+}
+
+#[test]
+fn manager_unbind_keeps_store_open_elsewhere() {
+    let mut mgr = StoreManager::new();
+    mgr.stores.insert("map-a".into(), Store::new());
+    mgr.window_map.insert("win-1".into(), "map-a".into());
+    mgr.window_map.insert("win-2".into(), "map-a".into());
+
+    assert!(mgr.unbind_window("win-1").is_none());
+    assert!(mgr.stores.contains_key("map-a"));
+    assert_eq!(mgr.map_id_for_window("win-2").unwrap(), "map-a");
+
+    assert!(mgr.unbind_window("unknown").is_none());
+    assert!(mgr.unbind_window("win-2").is_some());
+}
+
+#[test]
 fn manager_remove_preserves_other() {
     let mut mgr = StoreManager::new();
     let mut s1 = Store::new();

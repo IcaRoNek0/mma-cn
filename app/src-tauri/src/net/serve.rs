@@ -8,9 +8,10 @@
 use tauri::http::header::CONTENT_TYPE;
 use tauri::http::Response as HttpResponse;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_webserve::{register_scheme, SchemeRequest, SchemeResponse};
+use tauri_plugin_webserve::{on_client_release, register_scheme, SchemeRequest, SchemeResponse};
 
 use crate::net::proxy;
+use crate::store::commands::release_window_binding;
 
 pub fn run_server() {
     crate::install_crypto_provider();
@@ -27,6 +28,10 @@ pub fn run_server() {
             crate::init_backend(app.handle())?;
             register_web_schemes();
             let handle = app.handle().clone();
+            on_client_release({
+                let handle = handle.clone();
+                move |label| release_window_binding(&handle, label)
+            });
             WebviewWindowBuilder::new(
                 &handle,
                 "main",

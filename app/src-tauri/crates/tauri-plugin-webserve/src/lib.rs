@@ -130,6 +130,23 @@ fn client_streams() -> &'static Mutex<HashMap<String, usize>> {
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+type ReleaseHandler = Box<dyn Fn(&str) + Send + Sync + 'static>;
+
+fn release_handlers() -> &'static RwLock<Vec<ReleaseHandler>> {
+    static HANDLERS: OnceLock<RwLock<Vec<ReleaseHandler>>> = OnceLock::new();
+    HANDLERS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a callback for a client that is gone for good: its last stream ended and
+/// the grace period passed. Runs with the client's label, before its webview is
+/// destroyed, so the app can release state it keys by that label.
+pub fn on_client_release<F>(handler: F)
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    release_handlers().write().unwrap().push(Box::new(handler));
+}
+
 fn client_webview<R: Runtime>(handle: &AppHandle<R>, label: &str) -> Result<Webview<R>, String> {
     static CREATING: Mutex<()> = Mutex::new(());
     let _creating = CREATING.lock().unwrap();
@@ -164,6 +181,9 @@ fn release_client<R: Runtime>(handle: AppHandle<R>, label: String) {
             return;
         }
         streams.remove(&label);
+    }
+    for handler in release_handlers().read().unwrap().iter() {
+        handler(&label);
     }
     if let Some(w) = handle.get_webview_window(&label) {
         let _ = w.destroy();

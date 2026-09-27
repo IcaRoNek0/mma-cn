@@ -670,6 +670,21 @@ impl StoreManager {
             .cloned()
             .ok_or_else(|| AppError(format!("no map open in window '{label}'")))
     }
+
+    /// Unbind `label` from its map, handing back the map's store to flush when no
+    /// other window still has it open.
+    pub fn unbind_window(&mut self, label: &str) -> Option<(String, Store)> {
+        let map_id = self.window_map.remove(label)?;
+        if self.window_map.values().any(|v| v == &map_id) {
+            log::debug!("[close_map] {map_id} still open in another window, skipping flush");
+            return None;
+        }
+        let Some(store) = self.stores.remove(&map_id) else {
+            log::debug!("[close_map] {map_id} has no store, nothing to flush");
+            return None;
+        };
+        Some((map_id, store))
+    }
 }
 
 pub type StoreState = Mutex<StoreManager>;
