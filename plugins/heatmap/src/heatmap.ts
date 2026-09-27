@@ -2,7 +2,6 @@ import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import type { DeckOverlayHandle, LatLng, SelectorPick } from "mma-plugin-types";
 import {
   DEFAULT_GRADIENT_ID,
-  gradientIdFromLegacyIndex,
   isBuiltinGradient,
   newCustomGradient,
   normalizeGradient,
@@ -49,8 +48,6 @@ function newLayer(): HeatmapLayerSettings {
   };
 }
 
-type StoredLayer = Partial<HeatmapLayerSettings> & { gradientIndex?: unknown };
-
 // Pre-1.2 versions stored the source as the old `{ kind }` scope. A saved-selection
 // source is no longer offered and falls back to all locations.
 function migrateSource(source: unknown): SelectorPick | undefined {
@@ -61,22 +58,17 @@ function migrateSource(source: unknown): SelectorPick | undefined {
   return source.kind === "selected" ? { pick: "selection" } : { pick: "all" };
 }
 
-function migrateLayer(stored: StoredLayer): HeatmapLayerSettings {
-  const { gradientIndex, ...rest } = stored;
-  const layer = { ...newLayer(), ...rest };
-  if (rest.gradientId === undefined)
-    layer.gradientId = gradientIdFromLegacyIndex(gradientIndex);
-  const source = migrateSource(rest.source);
+function migrateLayer(stored: Partial<HeatmapLayerSettings>): HeatmapLayerSettings {
+  const layer = { ...newLayer(), ...stored };
+  const source = migrateSource(stored.source);
   if (source) layer.source = source;
   return layer;
 }
 
-// Pre-1.1 versions stored a single settings object under "settings".
 function loadLayers(): HeatmapLayerSettings[] {
-  const stored = store.get<StoredLayer[]>("layers");
+  const stored = store.get<Partial<HeatmapLayerSettings>[]>("layers");
   if (stored?.length) return stored.map(migrateLayer);
-  const legacy = store.get<StoredLayer>("settings");
-  return [migrateLayer(legacy ?? {})];
+  return [newLayer()];
 }
 
 function loadGradients(): HeatmapGradient[] {

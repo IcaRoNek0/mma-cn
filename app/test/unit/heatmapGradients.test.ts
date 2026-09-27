@@ -7,7 +7,6 @@ import {
 	colorAt,
 	evenStops,
 	gradientCss,
-	gradientIdFromLegacyIndex,
 	hexToRgb,
 	isBuiltinGradient,
 	moveStop,
@@ -51,20 +50,6 @@ describe("builtin gradients", () => {
 	it("isBuiltinGradient only matches builtins", () => {
 		expect(isBuiltinGradient("classic")).toBe(true);
 		expect(isBuiltinGradient("custom-1")).toBe(false);
-	});
-});
-
-describe("gradientIdFromLegacyIndex", () => {
-	it("maps a stored index to the builtin at that position", () => {
-		BUILTIN_GRADIENTS.forEach((g, i) => {
-			expect(gradientIdFromLegacyIndex(i)).toBe(g.id);
-		});
-	});
-
-	it("falls back to the default for out-of-range or missing indexes", () => {
-		expect(gradientIdFromLegacyIndex(BUILTIN_GRADIENTS.length)).toBe(DEFAULT_GRADIENT_ID);
-		expect(gradientIdFromLegacyIndex(-1)).toBe(DEFAULT_GRADIENT_ID);
-		expect(gradientIdFromLegacyIndex(undefined)).toBe(DEFAULT_GRADIENT_ID);
 	});
 });
 

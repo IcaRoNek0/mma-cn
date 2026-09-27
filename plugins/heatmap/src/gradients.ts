@@ -177,12 +177,6 @@ export function isBuiltinGradient(id: string): boolean {
   return BUILTIN_IDS.has(id);
 }
 
-/** Layers written before 1.1 referenced gradients by position in BUILTIN_GRADIENTS. */
-export function gradientIdFromLegacyIndex(index: unknown): string {
-  if (typeof index !== "number") return DEFAULT_GRADIENT_ID;
-  return BUILTIN_GRADIENTS[index]?.id ?? DEFAULT_GRADIENT_ID;
-}
-
 /** Accepts both stop shapes: 1.1 stored bare colours at implicit even spacing. */
 export function normalizeStops(raw: unknown): GradientStop[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];

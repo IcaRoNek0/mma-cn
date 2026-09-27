@@ -1070,10 +1070,6 @@ var BUILTIN_IDS = new Set(BUILTIN_GRADIENTS.map((g) => g.id));
 function isBuiltinGradient(id) {
   return BUILTIN_IDS.has(id);
 }
-function gradientIdFromLegacyIndex(index) {
-  if (typeof index !== "number") return DEFAULT_GRADIENT_ID;
-  return BUILTIN_GRADIENTS[index]?.id ?? DEFAULT_GRADIENT_ID;
-}
 function normalizeStops(raw) {
   if (!Array.isArray(raw) || raw.length === 0) return [];
   if (Array.isArray(raw[0])) return evenStops(raw);
@@ -1200,19 +1196,15 @@ function migrateSource(source) {
   return source.kind === "selected" ? { pick: "selection" } : { pick: "all" };
 }
 function migrateLayer(stored) {
-  const { gradientIndex, ...rest } = stored;
-  const layer = { ...newLayer(), ...rest };
-  if (rest.gradientId === void 0)
-    layer.gradientId = gradientIdFromLegacyIndex(gradientIndex);
-  const source = migrateSource(rest.source);
+  const layer = { ...newLayer(), ...stored };
+  const source = migrateSource(stored.source);
   if (source) layer.source = source;
   return layer;
 }
 function loadLayers() {
   const stored = store.get("layers");
   if (stored?.length) return stored.map(migrateLayer);
-  const legacy = store.get("settings");
-  return [migrateLayer(legacy ?? {})];
+  return [newLayer()];
 }
 function loadGradients() {
   return (store.get("gradients") ?? []).map(
