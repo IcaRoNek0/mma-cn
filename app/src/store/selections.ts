@@ -1,19 +1,23 @@
 /** Pure selection transforms: build, compose, invert, rewrite, and remove selections. */
 
-import type { FilterOp, PolygonGeometry } from "@/bindings.gen";
+import type {
+	FilterOp,
+	ListedSelection,
+	PolygonGeometry,
+	Selection,
+	Selector,
+} from "@/bindings.gen";
 import type { Tag } from "@/types";
 import { getVisibleTags, getTag } from "@/store/useMapStore";
 import { hslToRgb, type RGB } from "@/lib/util/color";
 import { getFieldDef, fieldValueLabel } from "@/lib/data/fieldDefRegistry";
 import { formatDistance, localDateTime, utcDateTime } from "@/lib/util/format";
-import { clamp, isVariant, unionTuple, type Variant } from "@/types/util";
+import { isVariant, toggle, unionTuple, type Variant } from "@/types/util";
 import { ValidationState } from "@/bindings.consts";
 import { getSettings } from "@/store/settings";
 import { dayMonthFmt } from "@/lib/util/format";
 import { t, msg } from "@/lib/i18n";
 import { shortestUniqueSuffixes } from "@/lib/data/tagPaths";
-
-import type { ListedSelection, Selection, Selector } from "@/bindings.gen";
 
 /** Selector variants that wrap child selections (Intersection, Union, Invert). */
 export type CompositeType = Extract<Selector, { selections: Selection[] }>["type"];
@@ -83,6 +87,41 @@ export function panoIdSelector(on: boolean): Selector {
 	};
 	return on ? pinned : { type: "Invert", selections: [buildSelection(pinned)] };
 }
+
+/** Locations holding a value for `field`. */
+export const has = (field: string): Selector => ({ type: "Filter", field, test: { op: "has" } });
+
+/** Locations holding no value for `field`. */
+export const lacks = (field: string): Selector => ({
+	type: "Filter",
+	field,
+	test: { op: "nothas" },
+});
+
+function compose(type: GroupType, selectors: Selector[]): Selector {
+	const parts = selectors.flatMap((s): Selection[] => {
+		if (s.type === type) return s.selections;
+		if (type === "Intersection" && s.type === "Everything") return [];
+		return [buildSelection(s)];
+	});
+	if (parts.length === 1) return parts[0].selector;
+	if (parts.length === 0 && type === "Intersection") return { type: "Everything" };
+	return { type, selections: dedupe(parts) };
+}
+
+/** Locations matching every one of `selectors`; with none, every location. */
+export const all = (...selectors: Selector[]): Selector => compose("Intersection", selectors);
+
+/** Locations matching any of `selectors`; with none, no location. */
+export const any = (...selectors: Selector[]): Selector => compose("Union", selectors);
+
+const inverted = (s: Selection): Selection =>
+	s.selector.type === "Invert"
+		? s.selector.selections[0]
+		: buildSelection({ type: "Invert", selections: [s] });
+
+/** Locations not matching `selector`. */
+export const not = (selector: Selector): Selector => inverted(buildSelection(selector)).selector;
 
 /** The tag a selector names, or null when it names something else. The single place that
  *  recognises tag membership, so nothing else has to know its shape. */
@@ -167,39 +206,23 @@ export function locationsKey(ids: number[]): string {
 	return `locations:${ids.length}:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
 }
 
-/** Ghost the listed selection at `index`, or un-ghost it. */
-export const toggleGhost =
-	(index: number) =>
-	(rows: ListedSelection[]): ListedSelection[] =>
-		rows[index] ? rows.with(index, { ...rows[index], ghosted: !rows[index].ghosted }) : rows;
-
-/** Ghost every listed selection but the one at `index`, or un-ghost them all when it already
- *  is the only one left. */
-export const isolateGhost =
-	(index: number) =>
-	(rows: ListedSelection[]): ListedSelection[] => {
-		const isolated = rows.every((r, i) => r.ghosted === (i !== index));
-		return rows.map((r, i) => ({ ...r, ghosted: !isolated && i !== index }));
+// Key a polygon by hashing its raw coordinates: identical geometry = identical key.
+function polygonKey(geom: PolygonGeometry): string {
+	let h1 = 0xdeadbeef | 0;
+	let h2 = 0x41c6ce57 | 0;
+	const f64 = new Float64Array(2);
+	const u32 = new Uint32Array(f64.buffer);
+	const foldRing = (ring: [number, number][]) => {
+		for (const [lng, lat] of ring) {
+			f64[0] = lng;
+			f64[1] = lat;
+			h1 = Math.imul(h1 ^ u32[0], 2654435761) ^ u32[1];
+			h2 = Math.imul(h2 ^ u32[2], 1597334677) ^ u32[3];
+		}
 	};
-
-/** Ghost every listed selection, or un-ghost them all when every one already is. */
-export const toggleGhostAll =
-	() =>
-	(rows: ListedSelection[]): ListedSelection[] => {
-		const all = rows.length > 0 && rows.every((r) => r.ghosted);
-		return rows.map((r) => ({ ...r, ghosted: !all }));
-	};
-
-/** Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped to
- *  `[0, ids.length]`, so an over-large count returns all ids. `ids` is not mutated. */
-export function sampleIds(ids: number[], n: number): number[] {
-	const k = clamp(Math.floor(n), 0, ids.length);
-	const pool = ids.slice();
-	for (let i = 0; i < k; i += 1) {
-		const j = i + Math.floor(Math.random() * (pool.length - i));
-		[pool[i], pool[j]] = [pool[j], pool[i]];
-	}
-	return pool.slice(0, k);
+	for (const ring of geom.coordinates) foldRing(ring);
+	for (const poly of geom.extraPolygons ?? []) for (const ring of poly) foldRing(ring);
+	return `polygon:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
 }
 
 /** What one selection type answers about itself; optional answers default at the lookup. */
@@ -339,25 +362,6 @@ function descriptorFor(selector: Selector) {
 	};
 }
 
-// Key a polygon by hashing its raw coordinates: identical geometry = identical key.
-function polygonKey(geom: PolygonGeometry): string {
-	let h1 = 0xdeadbeef | 0;
-	let h2 = 0x41c6ce57 | 0;
-	const f64 = new Float64Array(2);
-	const u32 = new Uint32Array(f64.buffer);
-	const foldRing = (ring: [number, number][]) => {
-		for (const [lng, lat] of ring) {
-			f64[0] = lng;
-			f64[1] = lat;
-			h1 = Math.imul(h1 ^ u32[0], 2654435761) ^ u32[1];
-			h2 = Math.imul(h2 ^ u32[2], 1597334677) ^ u32[3];
-		}
-	};
-	for (const ring of geom.coordinates) foldRing(ring);
-	for (const poly of geom.extraPolygons ?? []) for (const ring of poly) foldRing(ring);
-	return `polygon:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
-}
-
 /** Every child selection a selector wraps, whatever shape it wraps them in. */
 export function childSelections(selector: Selector): Selection[] {
 	if ("selections" in selector) return selector.selections;
@@ -386,103 +390,29 @@ function dedupe(selections: Selection[]): Selection[] {
 	return map.size === selections.length ? selections : Array.from(map.values());
 }
 
-function compose(type: GroupType, selectors: Selector[]): Selector {
-	const parts = selectors.flatMap((s): Selection[] => {
-		if (s.type === type) return s.selections;
-		if (type === "Intersection" && s.type === "Everything") return [];
-		return [buildSelection(s)];
-	});
-	if (parts.length === 1) return parts[0].selector;
-	if (parts.length === 0 && type === "Intersection") return { type: "Everything" };
-	return { type, selections: dedupe(parts) };
-}
-
-/** Locations matching every one of `selectors`; with none, every location. */
-export const all = (...selectors: Selector[]): Selector => compose("Intersection", selectors);
-
-/** Locations matching any of `selectors`; with none, no location. */
-export const any = (...selectors: Selector[]): Selector => compose("Union", selectors);
-
-/** Locations not matching `selector`. */
-export const not = (selector: Selector): Selector =>
-	selector.type === "Invert"
-		? selector.selections[0].selector
-		: { type: "Invert", selections: [buildSelection(selector)] };
-
-/** Locations holding a value for `field`. */
-export const has = (field: string): Selector => ({ type: "Filter", field, test: { op: "has" } });
-
-/** Locations holding no value for `field`. */
-export const lacks = (field: string): Selector => ({
-	type: "Filter",
-	field,
-	test: { op: "nothas" },
-});
-
-/** List a selection built from `selector`. One already listed is updated in place, ghost and all. */
-export const addSelection =
-	(selector: Selector) =>
-	(rows: ListedSelection[]): ListedSelection[] => {
-		const selection = buildSelection(selector);
-		const i = rows.findIndex((r) => r.selection.key === selection.key);
-		return i === -1
-			? [...rows, { selection, ghosted: false }]
-			: rows.with(i, { ...rows[i], selection });
-	};
-
-/** Split selections into [matching the keys, everything else]. */
-function partitionByKeys(current: Selection[], keys: string[]): [Selection[], Selection[]] {
-	const targets: Selection[] = [];
-	const others: Selection[] = [];
-	for (const s of current) (keys.includes(s.key) ? targets : others).push(s);
-	return [targets, others];
-}
-
-/** Merge targeted selections into a single composite, flattening nested groups of the same type. */
-function composeSelectionGroup(
-	current: Selection[],
-	keys: string[] | null,
-	type: "Intersection" | "Union",
-): Selection[] {
-	const [targets, others] = partitionByKeys(current, keys ?? current.map((s) => s.key));
-	if (targets.length < 2) return current;
-	const flat = targets.flatMap((s) => (s.selector.type === type ? s.selector.selections : [s]));
-	return [...others, buildSelection({ type, selections: dedupe(flat) })];
-}
-
-/** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. */
-export const intersectSelections =
-	(keys: string[] | null = null) =>
-	(current: Selection[]) =>
-		composeSelectionGroup(current, keys, "Intersection");
-
-/** Merge the targeted selections (or all, when `keys` is null) into a single Union. */
-export const unionSelections =
-	(keys: string[] | null = null) =>
-	(current: Selection[]) =>
-		composeSelectionGroup(current, keys, "Union");
-
-const inverted = (s: Selection): Selection =>
-	s.selector.type === "Invert"
-		? s.selector.selections[0]
-		: buildSelection({ type: "Invert", selections: [s] });
-
-/** Invert the targeted selections (or all, when `keys` is null). A single target toggles in
- *  place; several are wrapped in Union then Invert. */
-export const invertSelections =
+// Replace the targeted selections (all of them, when `keys` is null) with the one `merge` makes
+// of them, where the first target stood.
+const mergeTargets =
+	(merge: (...selectors: Selector[]) => Selector) =>
 	(keys: string[] | null = null) =>
 	(current: Selection[]): Selection[] => {
-		const [targets, others] = partitionByKeys(current, keys ?? current.map((s) => s.key));
+		const targets = keys ? current.filter((s) => keys.includes(s.key)) : current;
 		if (targets.length === 0) return current;
-		if (targets.length === 1) {
-			return dedupe(current.with(current.indexOf(targets[0]), inverted(targets[0])));
-		}
-		const flat = targets.flatMap((s) =>
-			s.selector.type === "Union" ? s.selector.selections : [s],
-		);
-		const inner = flat.length === 1 ? flat[0] : buildSelection({ type: "Union", selections: flat });
-		return [...others, buildSelection({ type: "Invert", selections: [inner] })];
+		const merged = buildSelection(merge(...targets.map((s) => s.selector)));
+		if (targets.length === 1 && merged.key === targets[0].key) return current;
+		const at = current.indexOf(targets[0]);
+		return dedupe(current.filter((s) => !targets.includes(s)).toSpliced(at, 0, merged));
 	};
+
+/** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. */
+export const intersectSelections = mergeTargets(all);
+
+/** Merge the targeted selections (or all, when `keys` is null) into a single Union. */
+export const unionSelections = mergeTargets(any);
+
+/** Invert the targeted selections (or all, when `keys` is null). One is inverted, or restored when
+ *  already inverted; several are inverted as their union. */
+export const invertSelections = mergeTargets((...selectors) => not(any(...selectors)));
 
 /** The listed selections once the active ones become `active`. Ghosted rows keep their places
  *  and `active` fills the others in order; a selection already listed as a ghosted row updates
@@ -512,6 +442,17 @@ export function withActive(rows: ListedSelection[], active: Selection[]): Listed
 	return out;
 }
 
+/** List a selection built from `selector`. One already listed is updated in place, ghost and all. */
+export const addSelection =
+	(selector: Selector) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const selection = buildSelection(selector);
+		const i = rows.findIndex((r) => r.selection.key === selection.key);
+		return i === -1
+			? [...rows, { selection, ghosted: false }]
+			: rows.with(i, { ...rows[i], selection });
+	};
+
 /** Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place. */
 export const removeSelection =
 	(key: string) =>
@@ -520,26 +461,86 @@ export const removeSelection =
 		return i === -1 ? rows : removeSelectionAt([i])(rows);
 	};
 
+/** List the selection built from `selector`, or remove it when it is already listed. */
+export const toggleSelection = (selector: Selector) => {
+	const { key } = buildSelection(selector);
+	return toggle(
+		(rows: ListedSelection[]) => rows.some((r) => r.selection.key === key),
+		addSelection(selector),
+		removeSelection(key),
+	);
+};
+
 /** Add or remove a location from the Manual selection, creating it if needed. */
 export const toggleManualSelection =
 	(locationId: number) =>
 	(rows: ListedSelection[]): ListedSelection[] => {
-		const idx = rows.findIndex((r) => r.selection.key === "manual");
-		if (idx === -1) {
-			const selection = buildSelection({ type: "Manual", locations: [locationId] });
-			return [...rows, { selection, ghosted: false }];
-		}
-		const row = rows[idx];
-		const ids = (row.selection.selector as Variant<Selector, "Manual">).locations.slice();
-		const at = ids.indexOf(locationId);
-		if (at === -1) ids.push(locationId);
-		else ids.splice(at, 1);
-		if (ids.length === 0) return rows.toSpliced(idx, 1);
-		return rows.with(idx, {
-			...row,
-			selection: buildSelection({ type: "Manual", locations: ids }),
-		});
+		const manual = rows.find((r) => r.selection.key === "manual")?.selection.selector;
+		const ids = toggle(
+			(ids: number[]) => ids.includes(locationId),
+			(ids) => [...ids, locationId],
+			(ids) => ids.filter((id) => id !== locationId),
+		)(manual?.type === "Manual" ? manual.locations : []);
+		return ids.length > 0
+			? addSelection({ type: "Manual", locations: ids })(rows)
+			: removeSelection("manual")(rows);
 	};
+
+// The one writer of the ghost flag.
+const ghostWhere =
+	(ghosted: (row: ListedSelection, index: number) => boolean) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const next = rows.map((r, i) =>
+			r.ghosted === ghosted(r, i) ? r : { ...r, ghosted: !r.ghosted },
+		);
+		return next.every((r, i) => r === rows[i]) ? rows : next;
+	};
+
+/** Ghost the listed selection at `index`, or un-ghost it. */
+export const toggleGhost = (index: number) => ghostWhere((r, i) => r.ghosted !== (i === index));
+
+// Ghost the rows `ghosted` picks, or un-ghost them all when they already stand that way.
+const ghostOrClear = (ghosted: (index: number) => boolean) =>
+	toggle(
+		(rows: ListedSelection[]) => rows.every((r, i) => r.ghosted === ghosted(i)),
+		ghostWhere((_, i) => ghosted(i)),
+		ghostWhere(() => false),
+	);
+
+/** Ghost every listed selection but the one at `index`, or un-ghost them all when it already
+ *  is the only one left. */
+export const isolateGhost = (index: number) => ghostOrClear((i) => i !== index);
+
+/** Ghost every listed selection, or un-ghost them all when every one already is. */
+export const toggleGhostAll = ghostOrClear(() => true);
+
+// Rewrite Filter `field` references in a selection tree: `from` -> `to`, or drop the
+// Filter when `to` is null. Composites collapse if emptied or unwrap to their sole survivor.
+function rewriteSelection(sel: Selection, from: string, to: string | null): Selection | null {
+	const p = sel.selector;
+	if (p.type === "Filter") {
+		if (p.field !== from) return sel;
+		return to === null ? null : buildSelection({ ...p, field: to });
+	}
+	if ("selections" in p) {
+		const children = p.selections
+			.map((c) => rewriteSelection(c, from, to))
+			.filter((c): c is Selection => c !== null);
+		if (children.length === 0) return null;
+		if (children.length === 1 && p.type !== "Invert") return children[0];
+		return buildSelection({ ...p, selections: children } as Selector);
+	}
+	return sel;
+}
+
+/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. */
+export const rewriteSelectionFields =
+	(from: string, to: string | null) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		rows.flatMap((r) => {
+			const selection = rewriteSelection(r.selection, from, to);
+			return selection ? [{ ...r, selection }] : [];
+		});
 
 /** Where a selection sits: its index in the list, then its index among the children of each
  *  selection it is nested in. */
@@ -693,6 +694,30 @@ export const replaceSelection =
 	(rows: ListedSelection[]): ListedSelection[] =>
 		spliceRows(rows, [{ path, edit: () => [buildSelection(selector)] }]);
 
+/** Recolor the selection at `path`. */
+export const setSelectionColor =
+	(path: SelectionPath, color: RGB) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [{ path, edit: (s) => [{ ...s, color }] }]);
+
+/** Rename a Polygon selection's display name. */
+export const setPolygonName =
+	(path: SelectionPath, name: string) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [
+			{
+				path,
+				edit: (s) => {
+					if (s.selector.type !== "Polygon") return [s];
+					const polygon = {
+						...s.selector.polygon,
+						properties: { ...s.selector.polygon.properties, name },
+					};
+					return [{ ...s, selector: { ...s.selector, polygon } }];
+				},
+			},
+		]);
+
 /** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
  *  rather than the open map's tags. */
 export function selectionDisplayName(sel: Selection, tagNames?: Record<number, string>): string {
@@ -738,55 +763,3 @@ function validationStateLabel(state: ValidationState): string {
 			return msg("Badcam, but good coverage available");
 	}
 }
-
-/** Recolor the selection at `path`. */
-export const setSelectionColor =
-	(path: SelectionPath, color: RGB) =>
-	(rows: ListedSelection[]): ListedSelection[] =>
-		spliceRows(rows, [{ path, edit: (s) => [{ ...s, color }] }]);
-
-/** Rename a Polygon selection's display name. */
-export const setPolygonName =
-	(path: SelectionPath, name: string) =>
-	(rows: ListedSelection[]): ListedSelection[] =>
-		spliceRows(rows, [
-			{
-				path,
-				edit: (s) => {
-					if (s.selector.type !== "Polygon") return [s];
-					const polygon = {
-						...s.selector.polygon,
-						properties: { ...s.selector.polygon.properties, name },
-					};
-					return [{ ...s, selector: { ...s.selector, polygon } }];
-				},
-			},
-		]);
-
-// Rewrite Filter `field` references in a selection tree: `from` -> `to`, or drop the
-// Filter when `to` is null. Composites collapse if emptied or unwrap to their sole survivor.
-function rewriteSelection(sel: Selection, from: string, to: string | null): Selection | null {
-	const p = sel.selector;
-	if (p.type === "Filter") {
-		if (p.field !== from) return sel;
-		return to === null ? null : buildSelection({ ...p, field: to });
-	}
-	if ("selections" in p) {
-		const children = p.selections
-			.map((c) => rewriteSelection(c, from, to))
-			.filter((c): c is Selection => c !== null);
-		if (children.length === 0) return null;
-		if (children.length === 1 && p.type !== "Invert") return children[0];
-		return buildSelection({ ...p, selections: children } as Selector);
-	}
-	return sel;
-}
-
-/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. */
-export const rewriteSelectionFields =
-	(from: string, to: string | null) =>
-	(rows: ListedSelection[]): ListedSelection[] =>
-		rows.flatMap((r) => {
-			const selection = rewriteSelection(r.selection, from, to);
-			return selection ? [{ ...r, selection }] : [];
-		});

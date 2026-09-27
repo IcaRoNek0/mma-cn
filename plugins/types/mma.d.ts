@@ -3677,6 +3677,16 @@ declare const unpannedSelector: () => Selector;
 /** Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
  *  `Selector::pano_ids`), or the locations not pinned. @unstable */
 declare function panoIdSelector(on: boolean): Selector;
+/** Locations holding a value for `field`. @unstable */
+declare const has: (field: string) => Selector;
+/** Locations holding no value for `field`. @unstable */
+declare const lacks: (field: string) => Selector;
+/** Locations matching every one of `selectors`; with none, every location. @unstable */
+declare const all: (...selectors: Selector[]) => Selector;
+/** Locations matching any of `selectors`; with none, no location. @unstable */
+declare const any: (...selectors: Selector[]) => Selector;
+/** Locations not matching `selector`. @unstable */
+declare const not: (selector: Selector) => Selector;
 /** The tag a selector names, or null when it names something else. The single place that
  *  recognises tag membership, so nothing else has to know its shape. @unstable */
 declare function tagIdOf(selector: Selector): number | null;
@@ -3688,16 +3698,6 @@ declare function colorForKey(key: string): RGB;
 /** Key an id list by hashing it: the same ids in the same order give the same key.
  *  Order-sensitive, like the list it identifies. Key length is constant. @unstable */
 declare function locationsKey(ids: number[]): string;
-/** Ghost the listed selection at `index`, or un-ghost it. @unstable */
-declare const toggleGhost: (index: number) => (rows: ListedSelection[]) => ListedSelection[];
-/** Ghost every listed selection but the one at `index`, or un-ghost them all when it already
- *  is the only one left. @unstable */
-declare const isolateGhost: (index: number) => (rows: ListedSelection[]) => ListedSelection[];
-/** Ghost every listed selection, or un-ghost them all when every one already is. @unstable */
-declare const toggleGhostAll: () => (rows: ListedSelection[]) => ListedSelection[];
-/** Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped to
- *  `[0, ids.length]`, so an over-large count returns all ids. `ids` is not mutated. @unstable */
-declare function sampleIds(ids: number[], n: number): number[];
 /** What one selection type answers about itself; optional answers default at the lookup. @unstable */
 export interface SelectionDescriptor<K extends Selector["type"]> {
     key(selector: Variant<Selector, K>, locations: number[]): string;
@@ -3716,33 +3716,34 @@ declare function childSelections(selector: Selector): Selection[];
 declare function withChildren(selector: Selector, children: Selection[]): Selector;
 /** Create a Selection with a deterministic key and color from its selector. @unstable */
 declare function buildSelection(selector: Selector): Selection;
-/** Locations matching every one of `selectors`; with none, every location. @unstable */
-declare const all: (...selectors: Selector[]) => Selector;
-/** Locations matching any of `selectors`; with none, no location. @unstable */
-declare const any: (...selectors: Selector[]) => Selector;
-/** Locations not matching `selector`. @unstable */
-declare const not: (selector: Selector) => Selector;
-/** Locations holding a value for `field`. @unstable */
-declare const has: (field: string) => Selector;
-/** Locations holding no value for `field`. @unstable */
-declare const lacks: (field: string) => Selector;
-/** List a selection built from `selector`. One already listed is updated in place, ghost and all. @unstable */
-declare const addSelection: (selector: Selector) => (rows: ListedSelection[]) => ListedSelection[];
 /** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. @unstable */
 declare const intersectSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
 /** Merge the targeted selections (or all, when `keys` is null) into a single Union. @unstable */
 declare const unionSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
-/** Invert the targeted selections (or all, when `keys` is null). A single target toggles in
- *  place; several are wrapped in Union then Invert. @unstable */
+/** Invert the targeted selections (or all, when `keys` is null). One is inverted, or restored when
+ *  already inverted; several are inverted as their union. @unstable */
 declare const invertSelections: (keys?: string[] | null) => (current: Selection[]) => Selection[];
 /** The listed selections once the active ones become `active`. Ghosted rows keep their places
  *  and `active` fills the others in order; a selection already listed as a ghosted row updates
  *  that row and stays ghosted. @unstable */
 declare function withActive(rows: ListedSelection[], active: Selection[]): ListedSelection[];
+/** List a selection built from `selector`. One already listed is updated in place, ghost and all. @unstable */
+declare const addSelection: (selector: Selector) => (rows: ListedSelection[]) => ListedSelection[];
 /** Remove the listed selection whose key is `key`. A removed group leaves its children behind in its place. @unstable */
 declare const removeSelection: (key: string) => (rows: ListedSelection[]) => ListedSelection[];
+/** List the selection built from `selector`, or remove it when it is already listed. @unstable */
+declare const toggleSelection: (selector: Selector) => (state: ListedSelection[]) => ListedSelection[];
 /** Add or remove a location from the Manual selection, creating it if needed. @unstable */
 declare const toggleManualSelection: (locationId: number) => (rows: ListedSelection[]) => ListedSelection[];
+/** Ghost the listed selection at `index`, or un-ghost it. @unstable */
+declare const toggleGhost: (index: number) => (rows: ListedSelection[]) => ListedSelection[];
+/** Ghost every listed selection but the one at `index`, or un-ghost them all when it already
+ *  is the only one left. @unstable */
+declare const isolateGhost: (index: number) => (state: ListedSelection[]) => ListedSelection[];
+/** Ghost every listed selection, or un-ghost them all when every one already is. @unstable */
+declare const toggleGhostAll: (state: ListedSelection[]) => ListedSelection[];
+/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. @unstable */
+declare const rewriteSelectionFields: (from: string, to: string | null) => (rows: ListedSelection[]) => ListedSelection[];
 /** Where a selection sits: its index in the list, then its index among the children of each
  *  selection it is nested in. @unstable */
 export type SelectionPath = readonly number[];
@@ -3761,18 +3762,16 @@ declare const removeSelectionAt: (path: SelectionPath) => (rows: ListedSelection
 /** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
  *  the existing sibling wins and the replacement is dropped. @unstable */
 declare const replaceSelection: (path: SelectionPath, selector: Selector) => (rows: ListedSelection[]) => ListedSelection[];
+/** Recolor the selection at `path`. @unstable */
+declare const setSelectionColor: (path: SelectionPath, color: RGB) => (rows: ListedSelection[]) => ListedSelection[];
+/** Rename a Polygon selection's display name. @unstable */
+declare const setPolygonName: (path: SelectionPath, name: string) => (rows: ListedSelection[]) => ListedSelection[];
 /** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
  *  rather than the open map's tags. @unstable */
 declare function selectionDisplayName(sel: Selection, tagNames?: Record<number, string>): string;
 /** Display label for a tag name. In tree view with `truncateTagPaths` on, collapses
  *  the `/`-path to its shortest unique suffix; otherwise returns the name verbatim. @unstable */
 declare function displayTagName(name: string): string;
-/** Recolor the selection at `path`. @unstable */
-declare const setSelectionColor: (path: SelectionPath, color: RGB) => (rows: ListedSelection[]) => ListedSelection[];
-/** Rename a Polygon selection's display name. @unstable */
-declare const setPolygonName: (path: SelectionPath, name: string) => (rows: ListedSelection[]) => ListedSelection[];
-/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. @unstable */
-declare const rewriteSelectionFields: (from: string, to: string | null) => (rows: ListedSelection[]) => ListedSelection[];
 
 /** @unstable */
 export type selectionOps_CompositeType = CompositeType;
@@ -3837,8 +3836,6 @@ declare const selectionOps_replaceSelection: typeof replaceSelection;
 /** @unstable */
 declare const selectionOps_rewriteSelectionFields: typeof rewriteSelectionFields;
 /** @unstable */
-declare const selectionOps_sampleIds: typeof sampleIds;
-/** @unstable */
 declare const selectionOps_selectionAt: typeof selectionAt;
 /** @unstable */
 declare const selectionOps_selectionDisplayName: typeof selectionDisplayName;
@@ -3859,6 +3856,8 @@ declare const selectionOps_toggleInvert: typeof toggleInvert;
 /** @unstable */
 declare const selectionOps_toggleManualSelection: typeof toggleManualSelection;
 /** @unstable */
+declare const selectionOps_toggleSelection: typeof toggleSelection;
+/** @unstable */
 declare const selectionOps_unionSelections: typeof unionSelections;
 /** @unstable */
 declare const selectionOps_unpannedSelector: typeof unpannedSelector;
@@ -3869,12 +3868,10 @@ declare const selectionOps_withActive: typeof withActive;
 /** @unstable */
 declare const selectionOps_withChildren: typeof withChildren;
 declare namespace selectionOps {
-  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_sampleIds as sampleIds, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withActive as withActive, selectionOps_withChildren as withChildren };
+  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_toggleSelection as toggleSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withActive as withActive, selectionOps_withChildren as withChildren };
   export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPath as SelectionPath, selectionOps_UnaryType as UnaryType };
 }
 
-/** Toggle tag selections on or off for the given tags. @unstable */
-declare function toggleTagSelections(tagIds: number[]): void;
 /** Tag ids that have a top-level Tag selection listed, ghosted or not. @unstable */
 declare const getSelectedTagIds: () => ReadonlySet<number>;
 /** Tag ids of every Tag leaf in the active selection tree, in list order.
@@ -3885,13 +3882,10 @@ declare const getSelectedTagIdsDeep: () => readonly number[];
 declare const selectionActions_getSelectedTagIds: typeof getSelectedTagIds;
 /** @unstable */
 declare const selectionActions_getSelectedTagIdsDeep: typeof getSelectedTagIdsDeep;
-/** @unstable */
-declare const selectionActions_toggleTagSelections: typeof toggleTagSelections;
 declare namespace selectionActions {
   export {
     selectionActions_getSelectedTagIds as getSelectedTagIds,
     selectionActions_getSelectedTagIdsDeep as getSelectedTagIdsDeep,
-    selectionActions_toggleTagSelections as toggleTagSelections,
   };
 }
 

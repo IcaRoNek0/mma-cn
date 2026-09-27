@@ -3285,8 +3285,8 @@ invertSelections(
 ): (current: Selection[]) => Selection[]
 ```
 
-Invert the targeted selections (or all, when `keys` is null). A single target toggles in
-place; several are wrapped in Union then Invert.
+Invert the targeted selections (or all, when `keys` is null). One is inverted, or restored when
+already inverted; several are inverted as their union.
 
 ### isolateGhost
 
@@ -3295,7 +3295,7 @@ place; several are wrapped in Union then Invert.
 ```ts
 isolateGhost(
   index: number,
-): (rows: ListedSelection[]) => ListedSelection[]
+): (state: ListedSelection[]) => ListedSelection[]
 ```
 
 Ghost every listed selection but the one at `index`, or un-ghost them all when it already
@@ -3441,17 +3441,6 @@ rewriteSelectionFields(
 
 Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped.
 
-### sampleIds
-
-`unstable` · since v0.10.3
-
-```ts
-sampleIds(ids: number[], n: number): number[]
-```
-
-Pick `n` distinct ids uniformly at random from `ids`. `n` is floored and clamped to
-`[0, ids.length]`, so an over-large count returns all ids. `ids` is not mutated.
-
 ### selectionAt
 
 `unstable` · unreleased
@@ -3565,7 +3554,7 @@ Ghost the listed selection at `index`, or un-ghost it.
 `unstable` · since v0.10.3
 
 ```ts
-toggleGhostAll(): (rows: ListedSelection[]) => ListedSelection[]
+toggleGhostAll(state: ListedSelection[]): ListedSelection[]
 ```
 
 Ghost every listed selection, or un-ghost them all when every one already is.
@@ -3593,6 +3582,18 @@ toggleManualSelection(
 ```
 
 Add or remove a location from the Manual selection, creating it if needed.
+
+### toggleSelection
+
+`unstable` · unreleased
+
+```ts
+toggleSelection(
+  selector: Selector,
+): (state: ListedSelection[]) => ListedSelection[]
+```
+
+List the selection built from `selector`, or remove it when it is already listed.
 
 ### UNARY_TYPES
 
@@ -3683,16 +3684,6 @@ getSelectedTagIdsDeep(): readonly number[]
 
 Tag ids of every Tag leaf in the active selection tree, in list order.
 Includes composite children, excludes ghosted selections; ids may repeat.
-
-### toggleTagSelections
-
-`unstable` · since v0.4.0
-
-```ts
-toggleTagSelections(tagIds: number[]): void
-```
-
-Toggle tag selections on or off for the given tags.
 
 ## SavedSelections
 

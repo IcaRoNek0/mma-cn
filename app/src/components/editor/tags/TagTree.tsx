@@ -19,7 +19,9 @@ import { Pill } from "@/components/primitives/Pill";
 import { mdiChevronDown, mdiChevronRight, mdiPencil, mdiFolder } from "@mdi/js";
 import { textColorFor, rgbToHex } from "@/lib/util/color";
 import { fmt } from "@/lib/util/format";
-import { toggleTagSelections } from "@/store/selectionActions";
+import { applyListUpdate } from "@/store/useMapStore";
+import { tagSelector, toggleSelection } from "@/store/selections";
+import { batch } from "@/types/util";
 import { useStableHandler } from "@/lib/hooks/useStableHandler";
 import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import { useSetting } from "@/store/settings";
@@ -418,20 +420,20 @@ export function TagTreeView({
 			const anchorIdx =
 				anchorPathRef.current != null ? rowIndex.get(anchorPathRef.current) : undefined;
 
+			let ids: number[];
 			if (shiftKey && anchorIdx != null && targetIdx != null && anchorIdx !== targetIdx) {
-				const ids = rangeToggleTagIds(visibleRows, anchorIdx, targetIdx);
-				if (ids.length > 0) toggleTagSelections(ids);
+				ids = rangeToggleTagIds(visibleRows, anchorIdx, targetIdx);
 			} else if (altKey && node.tag) {
 				// Solo: toggle only this node's own tag, ignoring descendants.
-				toggleTagSelections([node.tag.id]);
+				ids = [node.tag.id];
 			} else {
 				// Single-node select/deselect of its whole subtree.
 				const effectiveSelected = isEffectivelySelected(node, selectedTagIds);
-				const ids = node.subtreeTagIds.filter((id) =>
+				ids = node.subtreeTagIds.filter((id) =>
 					effectiveSelected ? selectedTagIds.has(id) : !selectedTagIds.has(id),
 				);
-				if (ids.length > 0) toggleTagSelections(ids);
 			}
+			void applyListUpdate(batch(toggleSelection)(ids.map(tagSelector)));
 			anchorPathRef.current = node.fullPath;
 		},
 	);

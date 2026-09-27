@@ -360,7 +360,7 @@ const COMMANDS = {
 		icon: mdiGhostOutline,
 		group: msg("Selections"),
 		aliases: ["hide selections", "dim selections"],
-		execute: () => applyListUpdate(toggleGhostAll()),
+		execute: () => applyListUpdate(toggleGhostAll),
 		enabled: hasAnySelections,
 	},
 	"save-selections": {

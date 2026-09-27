@@ -107,6 +107,12 @@ export const batch =
 	(state: S): S =>
 		items.reduce((s, item) => op(item)(s), state);
 
+/** A switch: `off` when `isOn` already holds, else `on`. */
+export const toggle =
+	<S>(isOn: (state: S) => boolean, on: (state: S) => S, off: (state: S) => S) =>
+	(state: S): S =>
+		isOn(state) ? off(state) : on(state);
+
 export type RequireNonNull<T> = { [P in keyof T]-?: NonNullable<T[P]> };
 export type Nullable<T> = { [K in keyof T]: T[K] | null };
 export type Rename<T, Map extends Record<string, string>> = {

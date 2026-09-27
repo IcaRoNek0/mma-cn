@@ -23,7 +23,6 @@ import {
 	removeSelectionAt,
 	replaceSelection,
 	rewriteSelectionFields,
-	sampleIds,
 	selectionDisplayName,
 	setSelectionColor,
 	SELECTIONS,
@@ -33,6 +32,7 @@ import {
 	withActive,
 	toggleInvert,
 	toggleManualSelection,
+	toggleSelection,
 	unionSelections,
 	unpannedSelector,
 	untaggedSelector,
@@ -493,9 +493,9 @@ describe("ghosting", () => {
 	});
 
 	it("toggleGhostAll ghosts every row, or un-ghosts them all when every one is", () => {
-		expect(flags(toggleGhostAll()([row(a), row(b, true)]))).toEqual([true, true]);
-		expect(flags(toggleGhostAll()([row(a, true), row(b, true)]))).toEqual([false, false]);
-		expect(toggleGhostAll()([])).toEqual([]);
+		expect(flags(toggleGhostAll([row(a), row(b, true)]))).toEqual([true, true]);
+		expect(flags(toggleGhostAll([row(a, true), row(b, true)]))).toEqual([false, false]);
+		expect(toggleGhostAll([])).toEqual([]);
 	});
 });
 
@@ -557,7 +557,28 @@ describe("row edits carry the ghost", () => {
 	});
 });
 
+describe("toggleSelection", () => {
+	it("lists a selection, then removes it again", () => {
+		const on = toggleSelection(untaggedSelector())([]);
+		expect(on.map((r) => r.selection.key)).toEqual([buildSelection(untaggedSelector()).key]);
+		expect(toggleSelection(untaggedSelector())(on)).toEqual([]);
+	});
+
+	it("removes a listed selection even when it is ghosted", () => {
+		const rows = [{ selection: buildSelection(untaggedSelector()), ghosted: true }];
+		expect(toggleSelection(untaggedSelector())(rows)).toEqual([]);
+	});
+});
+
 describe("toggleManualSelection", () => {
+	it("edits a ghosted Manual row and leaves it ghosted", () => {
+		const rows = [{ selection: buildSelection({ type: "Manual", locations: [1] }), ghosted: true }];
+		const result = toggleManualSelection(2)(rows);
+		expect(result).toHaveLength(1);
+		expect(result[0].ghosted).toBe(true);
+		expect(result[0].selection.selector).toEqual({ type: "Manual", locations: [1, 2] });
+	});
+
 	it("creates manual selection if none exists", () => {
 		const result = bare(toggleManualSelection(1))([]);
 		expect(result).toHaveLength(1);
@@ -1328,47 +1349,6 @@ describe("replaceSelection", () => {
 		const result = bare(replaceSelection([1, 1], filterA))([g1, g2]); // edit c -> b's value
 		expect(result).toHaveLength(1);
 		expect(result[0].key).toBe(g1.key); // g2 became g1 -> kept the pre-existing g1
-	});
-});
-
-describe("sampleIds", () => {
-	const ids = Array.from({ length: 20 }, (_, i) => i + 1);
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	it("returns exactly n distinct ids drawn from the input", () => {
-		const out = sampleIds(ids, 5);
-		expect(out).toHaveLength(5);
-		expect(new Set(out).size).toBe(5); // no duplicates
-		for (const x of out) expect(ids).toContain(x);
-	});
-
-	it("clamps n to the input length", () => {
-		const out = sampleIds(ids, 999);
-		expect(out).toHaveLength(ids.length);
-		expect(new Set(out)).toEqual(new Set(ids)); // a permutation of all ids
-	});
-
-	it("floors fractional counts", () => {
-		expect(sampleIds(ids, 3.9)).toHaveLength(3);
-	});
-
-	it("returns an empty array for non-positive counts", () => {
-		expect(sampleIds(ids, 0)).toEqual([]);
-		expect(sampleIds(ids, -4)).toEqual([]);
-	});
-
-	it("does not mutate the input array", () => {
-		const input = ids.slice();
-		sampleIds(input, 10);
-		expect(input).toEqual(ids);
-	});
-
-	it("is deterministic given a fixed RNG", () => {
-		vi.spyOn(Math, "random").mockReturnValue(0); // always pick the first remaining element
-		expect(sampleIds([10, 20, 30, 40], 2)).toEqual([10, 20]);
 	});
 });
 

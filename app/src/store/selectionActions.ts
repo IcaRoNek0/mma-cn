@@ -1,26 +1,7 @@
 import { memoOnRefs } from "@/lib/util/memoOnRefs";
 import type { Selection } from "@/bindings.gen";
-import { applyListUpdate, getActiveSelections, getMapState } from "@/store/useMapStore";
-import {
-	addSelection,
-	buildSelection,
-	removeSelection,
-	tagIdOf,
-	tagSelector,
-} from "@/store/selections";
-
-/** Toggle tag selections on or off for the given tags. */
-export function toggleTagSelections(tagIds: number[]) {
-	if (tagIds.length === 0) return;
-	void applyListUpdate((rows) =>
-		tagIds.reduce((result, tagId) => {
-			const key = buildSelection(tagSelector(tagId)).key;
-			return result.some((r) => r.selection.key === key)
-				? removeSelection(key)(result)
-				: addSelection(tagSelector(tagId))(result);
-		}, rows),
-	);
-}
+import { getActiveSelections, getMapState } from "@/store/useMapStore";
+import { tagIdOf } from "@/store/selections";
 
 /** Tag ids that have a top-level Tag selection listed, ghosted or not. */
 export const getSelectedTagIds: () => ReadonlySet<number> = (() => {
