@@ -2,7 +2,6 @@ import { memo, useState, useEffect, useRef } from "react";
 import {
 	applySelectionUpdate,
 	createTags,
-	getTags,
 	getVisibleTags,
 	pruneDuplicates,
 	query,
@@ -11,6 +10,7 @@ import {
 import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import {
 	composeSelections,
+	displayColor,
 	filterIsLocalTime,
 	isolateGhost,
 	moveSelection,
@@ -124,10 +124,7 @@ export const SelectionRow = memo(function SelectionRow({
 	ghosted: boolean;
 }) {
 	const map = useMapState((s) => s.map);
-	const tagColor = useMapState(() => {
-		const id = tagIdOf(innerOf(selection).selector);
-		return id == null ? undefined : getTags()[id]?.color;
-	});
+	const colorBlockCss = useMapState(() => rgbCss(displayColor(selection)));
 	const count = useMapState((s) => s.selectionCounts[selection.key] ?? 0);
 	const isTopLevel = depth === 0;
 	const onRemove = () => void applySelectionUpdate(removeSelectionAt(path));
@@ -187,10 +184,6 @@ export const SelectionRow = memo(function SelectionRow({
 	})();
 	const showChildren = inner.selector.type === "Intersection" || inner.selector.type === "Union";
 	const isPoly = selection.selector.type === "Polygon";
-	const colorBlockCss =
-		tagIdOf(inner.selector) != null
-			? (tagColor ?? rgbCss(selection.color))
-			: rgbCss(selection.color);
 
 	const handleRename = () => {
 		if (selection.selector.type !== "Polygon") return;

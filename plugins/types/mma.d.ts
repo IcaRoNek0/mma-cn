@@ -3676,6 +3676,8 @@ declare const not: (selector: Selector) => Selector;
 /** The tag a selector names, or null when it names something else. The single place that
  *  recognises tag membership, so nothing else has to know its shape. @unstable */
 declare function tagIdOf(selector: Selector): number | null;
+/** The color a selection displays as. @unstable */
+declare function displayColor(s: Selection): RGB;
 /** Whether a selector is the pinned composite `panoIdSelector` builds (`true`), its
  *  inversion (`false`), or something else (`null`). Display-only. @unstable */
 declare function panoIdOf(selector: Selector): boolean | null;
@@ -3790,6 +3792,8 @@ declare const selectionOps_colorForKey: typeof colorForKey;
 /** @unstable */
 declare const selectionOps_composeSelections: typeof composeSelections;
 /** @unstable */
+declare const selectionOps_displayColor: typeof displayColor;
+/** @unstable */
 declare const selectionOps_displayTagName: typeof displayTagName;
 /** @unstable */
 declare const selectionOps_filterIsLocalTime: typeof filterIsLocalTime;
@@ -3854,7 +3858,7 @@ declare const selectionOps_untaggedSelector: typeof untaggedSelector;
 /** @unstable */
 declare const selectionOps_withChildren: typeof withChildren;
 declare namespace selectionOps {
-  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_onActive as onActive, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_toggleSelection as toggleSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withChildren as withChildren };
+  export { selectionOps_OP_LABELS as OP_LABELS, selectionOps_SELECTIONS as SELECTIONS, selectionOps_UNARY_TYPES as UNARY_TYPES, selectionOps_addSelection as addSelection, selectionOps_all as all, selectionOps_any as any, selectionOps_buildSelection as buildSelection, selectionOps_childSelections as childSelections, selectionOps_colorForKey as colorForKey, selectionOps_composeSelections as composeSelections, selectionOps_displayColor as displayColor, selectionOps_displayTagName as displayTagName, selectionOps_filterIsLocalTime as filterIsLocalTime, selectionOps_has as has, selectionOps_intersectSelections as intersectSelections, selectionOps_invertSelections as invertSelections, selectionOps_isolateGhost as isolateGhost, selectionOps_lacks as lacks, selectionOps_locationsKey as locationsKey, selectionOps_moveSelection as moveSelection, selectionOps_not as not, selectionOps_onActive as onActive, selectionOps_panoIdOf as panoIdOf, selectionOps_panoIdSelector as panoIdSelector, selectionOps_removeSelection as removeSelection, selectionOps_removeSelectionAt as removeSelectionAt, selectionOps_replaceSelection as replaceSelection, selectionOps_rewriteSelectionFields as rewriteSelectionFields, selectionOps_selectionAt as selectionAt, selectionOps_selectionDisplayName as selectionDisplayName, selectionOps_setPolygonName as setPolygonName, selectionOps_setSelectionColor as setSelectionColor, selectionOps_tagIdOf as tagIdOf, selectionOps_tagSelector as tagSelector, selectionOps_toggleGhost as toggleGhost, selectionOps_toggleGhostAll as toggleGhostAll, selectionOps_toggleInvert as toggleInvert, selectionOps_toggleManualSelection as toggleManualSelection, selectionOps_toggleSelection as toggleSelection, selectionOps_unionSelections as unionSelections, selectionOps_unpannedSelector as unpannedSelector, selectionOps_untaggedSelector as untaggedSelector, selectionOps_withChildren as withChildren };
   export type { selectionOps_CompositeType as CompositeType, selectionOps_FilterOpKind as FilterOpKind, selectionOps_GroupType as GroupType, selectionOps_SelectionPath as SelectionPath, selectionOps_UnaryType as UnaryType };
 }
 

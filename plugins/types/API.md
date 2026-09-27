@@ -3191,6 +3191,16 @@ composeSelections(
 Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
 `drop` when that already is one. Nothing happens when either contains the other.
 
+### displayColor
+
+`unstable` · unreleased
+
+```ts
+displayColor(s: Selection): RGB
+```
+
+The color a selection displays as.
+
 ### displayTagName
 
 `unstable` · since v0.10.3

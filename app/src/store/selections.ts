@@ -9,7 +9,7 @@ import type {
 } from "@/bindings.gen";
 import type { Tag } from "@/types";
 import { getVisibleTags, getTag } from "@/store/useMapStore";
-import { hslToRgb, type RGB } from "@/lib/util/color";
+import { hexToRgb, hslToRgb, type RGB } from "@/lib/util/color";
 import { getFieldDef, fieldValueLabel } from "@/lib/data/fieldDefRegistry";
 import { formatDistance, localDateTime, utcDateTime } from "@/lib/util/format";
 import { isVariant, toggle, unionTuple, type Variant } from "@/types/util";
@@ -132,6 +132,14 @@ export function tagIdOf(selector: Selector): number | null {
 		typeof selector.test.value === "number"
 		? selector.test.value
 		: null;
+}
+
+/** The color a selection displays as. */
+export function displayColor(s: Selection): RGB {
+	const inner = s.selector.type === "Invert" ? s.selector.selections[0] : s;
+	const tagId = tagIdOf(inner.selector);
+	const tag = tagId == null ? undefined : getTag(tagId);
+	return tag ? hexToRgb(tag.color) : s.color;
 }
 
 /** Whether a selector is the pinned composite `panoIdSelector` builds (`true`), its

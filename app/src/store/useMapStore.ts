@@ -14,7 +14,7 @@ import type {
 } from "@/bindings.gen";
 import { emit as emitEvent, useEventValue } from "@/lib/events";
 import { log } from "@/lib/util/log";
-import { colorForName, hexToRgb, type RGB } from "@/lib/util/color";
+import { colorForName } from "@/lib/util/color";
 import { toast } from "@/lib/util/toast";
 import { storeWarningText } from "@/lib/util/format";
 import { mapOpen, trace } from "@/lib/util/debug";
@@ -40,6 +40,7 @@ import {
 	all,
 	any,
 	buildSelection,
+	displayColor,
 	removeSelection,
 	tagIdOf,
 	tagSelector,
@@ -677,16 +678,6 @@ async function migrateFieldReferences(from: string, to: string | null) {
 
 // --- Selections ---
 
-/** Resolve a selection's overlay color, substituting the live tag color for Tag selections. */
-function selectionSyncColor(s: Selection): RGB {
-	const tagId = tagIdOf(s.selector);
-	if (tagId != null) {
-		const tag = getTags()[tagId];
-		if (tag) return hexToRgb(tag.color);
-	}
-	return s.color;
-}
-
 /** Apply `op` to the listed selections and re-resolve them: the one way the selection changes.
  *  Lift an op over the active selections alone with `onActive`. No-op when nothing changed. @unstable */
 export async function applySelectionUpdate(op: (rows: ListedSelection[]) => ListedSelection[]) {
@@ -705,7 +696,7 @@ export async function syncSelections() {
 	const result = await cmd.storeSyncSelections(
 		state.selectionList.map((r) => ({
 			...r,
-			selection: { ...r.selection, color: selectionSyncColor(r.selection) },
+			selection: { ...r.selection, color: displayColor(r.selection) },
 		})),
 	);
 	t.step("ipc");

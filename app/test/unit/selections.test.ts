@@ -9,6 +9,7 @@ import {
 	childSelections,
 	colorForKey,
 	composeSelections,
+	displayColor,
 	displayTagName,
 	has,
 	intersectSelections,
@@ -100,6 +101,23 @@ describe("colorForKey", () => {
 
 	it("produces different colors for different keys", () => {
 		expect(colorForKey("alpha")).not.toEqual(colorForKey("beta"));
+	});
+});
+
+describe("displayColor", () => {
+	it("a tag selection wears its tag's live color, inverted or not", () => {
+		h.tags = { 7: { id: 7, name: "A", color: "#ff0000", visible: true } };
+		const tag = buildSelection(tagSelector(7));
+		const inverted = buildSelection(not(tagSelector(7)));
+		expect(displayColor(tag)).toEqual([255, 0, 0]);
+		expect(displayColor(inverted)).toEqual([255, 0, 0]);
+	});
+
+	it("anything else keeps its own color", () => {
+		const manual = buildSelection({ type: "Manual", locations: [1] });
+		expect(displayColor(manual)).toEqual(manual.color);
+		const deadTag = buildSelection(tagSelector(99));
+		expect(displayColor(deadTag)).toEqual(deadTag.color);
 	});
 });
 
