@@ -23,7 +23,7 @@ function member(key: string): PivotMember {
 		label: key,
 		color: null,
 		selector: { type: "Filter", field: "f", test: { op: "eq", value: key } },
-		selectable: true,
+		pick: { type: "Filter", field: "f", test: { op: "eq", value: key } },
 	};
 }
 
@@ -100,7 +100,7 @@ function selectionAxis(sets: Record<string, number[]>): ResolvedAxis {
 	const members = Object.entries(sets).map(([key, locations]) => ({
 		...member(key),
 		selector: { type: "Manual", locations } as Selector,
-		selectable: false,
+		pick: null,
 	}));
 	return {
 		members,

@@ -8,8 +8,8 @@ export interface PivotMember {
 	label: string;
 	color: RGB | null;
 	selector: Selector;
-	/** Whether Ctrl+Click adds `selector` as a selection. */
-	selectable: boolean;
+	/** What Ctrl+Click selects: the member alone, scope left out. Null when the member is only a count. */
+	pick: Selector | null;
 }
 
 export interface PivotRow extends PivotMember {

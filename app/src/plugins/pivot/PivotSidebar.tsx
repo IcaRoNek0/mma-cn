@@ -69,7 +69,7 @@ async function selectionAxis(kind: "all" | "active", scope: Selector): Promise<R
 						label: t("All locations"),
 						color: [140, 140, 140],
 						selector: scope,
-						selectable: false,
+						pick: null,
 					},
 				]
 			: getActiveSelections().map((s: Selection) => ({
@@ -77,7 +77,7 @@ async function selectionAxis(kind: "all" | "active", scope: Selector): Promise<R
 					label: selectionDisplayName(s),
 					color: s.color,
 					selector: all(scope, s.selector),
-					selectable: false,
+					pick: null,
 				}));
 	const sizes = await Promise.all(members.map((m) => query(m.selector).count()));
 	return { members, sizes, tally: null, binned: false };
@@ -174,21 +174,19 @@ async function fieldAxis(
 	// filters, plain values `eq` filters.
 	const member = (key: string, i: number): PivotMember => {
 		const bin = buckets?.[i]?.bin;
+		const pick: Selector = isTags
+			? tagSelector(Number(key))
+			: bin
+				? { type: "Filter", field: fieldKey, test: { op: "between", lo: bin[0], hi: bin[1] } }
+				: { type: "Filter", field: fieldKey, test: { op: "eq", value: key } };
 		return {
 			key,
 			label: isTags
 				? (tagMap[Number(key)]?.name ?? t("Tag {id}", { id: key }))
 				: (extraLabels[key] ?? key),
 			color: null,
-			selector: all(
-				scope,
-				isTags
-					? tagSelector(Number(key))
-					: bin
-						? { type: "Filter", field: fieldKey, test: { op: "between", lo: bin[0], hi: bin[1] } }
-						: { type: "Filter", field: fieldKey, test: { op: "eq", value: key } },
-			),
-			selectable: true,
+			selector: all(scope, pick),
+			pick,
 		};
 	};
 	const members = keys.map(member);
@@ -196,15 +194,15 @@ async function fieldAxis(
 
 	const naCount = (await query(scope).count()) - whole.withValue;
 	if (naCount > 0) {
+		const pick: Selector = isTags
+			? untaggedSelector()
+			: { type: "Filter", field: fieldKey, test: { op: "nothas" } };
 		members.push({
 			key: NA_KEY,
 			label: t("N/A"),
 			color: null,
-			selector: all(
-				scope,
-				isTags ? untaggedSelector() : { type: "Filter", field: fieldKey, test: { op: "nothas" } },
-			),
-			selectable: true,
+			selector: all(scope, pick),
+			pick,
 		});
 		sizes.push(naCount);
 	}
@@ -462,9 +460,9 @@ function PivotTable({
 	const selectionKeys = useMemo(
 		() =>
 			new Map<PivotMember, string>(
-				[...data.columns, ...data.rows]
-					.filter((m) => m.selectable)
-					.map((m) => [m, buildSelection(m.selector).key]),
+				[...data.columns, ...data.rows].flatMap((m) =>
+					m.pick ? [[m, buildSelection(m.pick).key]] : [],
+				),
 			),
 		[data],
 	);
@@ -539,13 +537,13 @@ function PivotTable({
 								key={col.key}
 								className={`pivot-sidebar__th-sort${isSelected(col) ? " pivot-sidebar__th-selected" : ""}`}
 								title={
-									col.selectable
+									col.pick
 										? t("Click to sort. Ctrl+Click to select matching locations.")
 										: undefined
 								}
 								onClick={(e) => {
-									if ((e.ctrlKey || e.metaKey) && col.selectable)
-										void applySelectionUpdate(toggleSelection(col.selector));
+									if ((e.ctrlKey || e.metaKey) && col.pick)
+										void applySelectionUpdate(toggleSelection(col.pick));
 									else handleSort(col.key);
 								}}
 							>
@@ -568,8 +566,8 @@ function PivotTable({
 								<td
 									className={`pivot-sidebar__row-label${isSelected(row) ? " pivot-sidebar__row-label--selected" : ""}`}
 									onClick={(e) => {
-										if ((e.ctrlKey || e.metaKey) && row.selectable)
-											void applySelectionUpdate(toggleSelection(row.selector));
+										if ((e.ctrlKey || e.metaKey) && row.pick)
+											void applySelectionUpdate(toggleSelection(row.pick));
 									}}
 								>
 									{row.color && <Swatch color={row.color} size="sm" />}
