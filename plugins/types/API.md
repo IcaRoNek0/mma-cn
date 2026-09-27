@@ -3397,7 +3397,8 @@ removeSelectionAt(
 ): (rows: ListedSelection[]) => ListedSelection[]
 ```
 
-Remove the selection at `path`. A removed group leaves its children behind in its place.
+Remove the selection at `path`. A removed group, inverted or not, leaves its children
+behind in its place.
 
 ### replaceSelection
 

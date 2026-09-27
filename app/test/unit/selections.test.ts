@@ -730,6 +730,14 @@ describe("removeSelectionAt", () => {
 		expect(bare(removeSelectionAt([0]))([inv])).toEqual([]);
 	});
 
+	it("ungroups an inverted group, dropping the inversion with the wrapper", () => {
+		const a = buildSelection(tagSelector(9));
+		const b = buildSelection(untaggedSelector());
+		const group = buildSelection({ type: "Union", selections: [a, b] });
+		const inv = buildSelection({ type: "Invert", selections: [group] });
+		expect(bare(removeSelectionAt([0]))([inv])).toEqual([a, b]);
+	});
+
 	it("merges a removed group's children into equal selections already in the list", () => {
 		const a = buildSelection(tagSelector(9));
 		const b = buildSelection(untaggedSelector());

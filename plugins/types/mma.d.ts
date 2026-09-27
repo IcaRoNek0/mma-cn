@@ -3745,7 +3745,8 @@ declare const composeSelections: (drag: SelectionPath, drop: SelectionPath, mode
 /** Move the selection at `from` to just before or after the one at `to`, which must sit in the
  *  list or directly in a group. Nothing happens when `to` is inside the moved selection. @unstable */
 declare const moveSelection: (from: SelectionPath, to: SelectionPath, position: "before" | "after") => (rows: ListedSelection[]) => ListedSelection[];
-/** Remove the selection at `path`. A removed group leaves its children behind in its place. @unstable */
+/** Remove the selection at `path`. A removed group, inverted or not, leaves its children
+ *  behind in its place. @unstable */
 declare const removeSelectionAt: (path: SelectionPath) => (rows: ListedSelection[]) => ListedSelection[];
 /** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
  *  the existing sibling wins and the replacement is dropped. @unstable */

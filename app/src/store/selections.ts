@@ -694,14 +694,18 @@ export const moveSelection =
 		]);
 	};
 
-/** Remove the selection at `path`. A removed group leaves its children behind in its place. */
+/** Remove the selection at `path`. A removed group, inverted or not, leaves its children
+ *  behind in its place. */
 export const removeSelectionAt =
 	(path: SelectionPath) =>
 	(rows: ListedSelection[]): ListedSelection[] =>
 		spliceRows(rows, [
 			{
 				path,
-				edit: (node) => (isVariant(node.selector, GROUP_TYPES) ? node.selector.selections : []),
+				edit: (node) => {
+					const inner = isVariant(node.selector, UNARY_TYPES) ? node.selector.selections[0] : node;
+					return isVariant(inner.selector, GROUP_TYPES) ? inner.selector.selections : [];
+				},
 			},
 		]);
 
