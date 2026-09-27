@@ -1,18 +1,23 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createFieldDef } from "@/types";
-import { tagSelector, untaggedSelector } from "@/store/selections";
 import type { PartitionBucket, Selection, Selector } from "@/bindings.gen";
 import { NSelect } from "@/components/primitives/NSelect";
 import { SwitchRow } from "@/components/primitives/SwitchRow";
 import { useDebouncedCallback } from "@/lib/hooks/useDebouncedCallback";
-import { all, selectionDisplayName, buildSelection } from "@/store/selections";
 import {
-	addSelections,
+	all,
+	buildSelection,
+	selectionDisplayName,
+	tagSelector,
+	toggleSelection,
+	untaggedSelector,
+} from "@/store/selections";
+import {
+	applyListUpdate,
 	getActiveSelections,
 	getMapState,
 	getTags,
 	query,
-	removeSelections,
 } from "@/store/useMapStore";
 import { subscribe } from "@/lib/events";
 import { Sidebar, Field, SegmentedControl } from "@/components/primitives/Sidebar";
@@ -463,21 +468,8 @@ function PivotTable({
 			),
 		[data],
 	);
-	const liveKeys = new Set(getActiveSelections().map((s) => s.key));
-	const isSelected = (m: PivotMember) => liveKeys.has(selectionKeys.get(m) ?? "");
-
-	const toggleSelection = useCallback(
-		(m: PivotMember) => {
-			const key = selectionKeys.get(m);
-			if (!key) return;
-			if (getActiveSelections().some((s) => s.key === key)) {
-				void removeSelections([key]);
-			} else {
-				void addSelections([m.selector]);
-			}
-		},
-		[selectionKeys],
-	);
+	const listedKeys = new Set(getMapState().selectionList.map((r) => r.selection.key));
+	const isSelected = (m: PivotMember) => listedKeys.has(selectionKeys.get(m) ?? "");
 
 	const handleSort = useCallback((key: SortKey) => {
 		setSortKey((prev) => {
@@ -552,7 +544,8 @@ function PivotTable({
 										: undefined
 								}
 								onClick={(e) => {
-									if ((e.ctrlKey || e.metaKey) && col.selectable) toggleSelection(col);
+									if ((e.ctrlKey || e.metaKey) && col.selectable)
+										void applyListUpdate(toggleSelection(col.selector));
 									else handleSort(col.key);
 								}}
 							>
@@ -575,7 +568,8 @@ function PivotTable({
 								<td
 									className={`pivot-sidebar__row-label${isSelected(row) ? " pivot-sidebar__row-label--selected" : ""}`}
 									onClick={(e) => {
-										if ((e.ctrlKey || e.metaKey) && row.selectable) toggleSelection(row);
+										if ((e.ctrlKey || e.metaKey) && row.selectable)
+											void applyListUpdate(toggleSelection(row.selector));
 									}}
 								>
 									{row.color && <Swatch color={row.color} size="sm" />}
