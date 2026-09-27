@@ -467,7 +467,7 @@ export function RoundPlayer({
 								<span className="lg-result-bar__value">
 									{lastResult.distanceMeters != null
 										? formatDistance(lastResult.distanceMeters, 0)
-										: "—"}
+										: "-"}
 								</span>
 								<span className="lg-result-bar__label">
 									{lastResult.guess ? t("from the location") : t("No guess made")}

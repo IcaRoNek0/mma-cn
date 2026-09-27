@@ -64,9 +64,9 @@ function removeTag(name: string) {
 	const pill = [...container.querySelectorAll(".tag")].find(
 		(e) => e.querySelector(".tag__text")?.textContent === name,
 	)!;
-	act(() =>
-		pill.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })),
-	);
+	act(() => {
+		pill.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+	});
 }
 
 async function clickImport() {

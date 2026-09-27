@@ -2,7 +2,7 @@
 // driven in Chrome over the HTTP IPC bridge instead of in the native shell. Only the
 // driver and the app URL differ -- specs go through window.MMA either way.
 //
-// Expects `map-making-app --serve` already listening (see scripts/docker-web-e2e.sh).
+// Expects `map-making-app --serve` already listening (see scripts/internal/e2e-web.sh).
 
 import { config as base, SHARED_EXCLUDES, TEST_TIMEOUT } from "./wdio.conf";
 

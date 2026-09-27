@@ -25,8 +25,6 @@
 		"test": "vitest run && npm run test:procedures",
 		"test:procedures": "npm run build:procedures && node --test procedures/*/test/*.test.mjs ../plugins/*/test/*.test.mjs",
 		"test:watch": "vitest",
-		"test:integration": "vitest run -c vitest.integration.config.ts",
-		"bench": "vitest bench --run",
 		"build:e2e": "cargo tauri build --debug --features e2e",
 		"test:e2e": "wdio run wdio.conf.ts",
 		"prepare": "husky || true"
