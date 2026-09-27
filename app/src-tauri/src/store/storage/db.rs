@@ -99,9 +99,6 @@ pub(crate) fn set_map_counts(
 }
 
 /// Apply all pending schema migrations from [`MIGRATIONS`] in order.
-///
-/// On first run after migrating from the old `tauri-plugin-sql` system, seeds
-/// already-applied versions from `_sqlx_migrations` so they aren't replayed.
 /// Sets WAL mode and foreign keys as part of the connection setup.
 pub(crate) fn run_migrations() -> AppResult<()> {
     let conn = open_db()?;
@@ -135,22 +132,6 @@ pub(crate) fn run_migrations_on(conn: &Connection) -> AppResult<bool> {
         "CREATE TABLE IF NOT EXISTS _mma_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
         [],
     )?;
-
-    // Seed from tauri-plugin-sql's migration table if upgrading from old system
-    let sqlx_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if sqlx_exists {
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO _mma_migrations (version, applied_at)
-             SELECT version, installed_on FROM _sqlx_migrations WHERE success = 1",
-        )
-        .ok();
-    }
 
     let applied: HashSet<u32> = conn
         .prepare("SELECT version FROM _mma_migrations")?

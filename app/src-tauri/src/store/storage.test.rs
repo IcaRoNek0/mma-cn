@@ -911,41 +911,6 @@ fn run_migrations_on_is_idempotent() {
 }
 
 #[test]
-fn sqlx_seeding_skips_already_applied() {
-    let conn = Connection::open_in_memory().unwrap();
-    configure_connection(&conn).unwrap();
-    apply_prefix(&conn, 5);
-    conn.execute("DELETE FROM _mma_migrations", []).unwrap();
-
-    conn.execute_batch(
-        "CREATE TABLE _sqlx_migrations (version INTEGER PRIMARY KEY, installed_on TEXT, success INTEGER);
-         INSERT INTO _sqlx_migrations (version, installed_on, success) VALUES
-            (1, '2024-01-01T00:00:00Z', 1),
-            (2, '2024-01-01T00:00:00Z', 1),
-            (3, '2024-01-01T00:00:00Z', 1),
-            (4, '2024-01-01T00:00:00Z', 1),
-            (5, '2024-01-01T00:00:00Z', 1),
-            (6, '2024-01-01T00:00:00Z', 0);",
-    )
-    .unwrap();
-
-    // If seeding failed to skip versions 1-5, re-running v5's non-idempotent
-    // ALTER TABLE ADD COLUMN against already-altered columns fails here.
-    let result = run_migrations_on(&conn);
-    assert!(
-        result.is_ok(),
-        "seeded versions must not be re-executed: {result:?}"
-    );
-
-    let versions = migration_versions(&conn);
-    let expected = all_versions();
-    assert_eq!(
-        versions, expected,
-        "versions 6 onward must still be applied after seeding"
-    );
-}
-
-#[test]
 fn populated_v10_rebuild_preserves_rows() {
     let conn = Connection::open_in_memory().unwrap();
     configure_connection(&conn).unwrap();
