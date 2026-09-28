@@ -972,6 +972,7 @@
 		"other": "{n} doublons élagués"
 	},
 	"Pseudolocale": "Pseudolocale",
+	"Pulled +{lc} ~{lu} -{ld}": "Reçus +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "Violet-Orange",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "Envoyés +{pc} ~{pu} -{pd} · Reçus +{lc} ~{lu} -{ld}",
 	"Q": "Q",

@@ -949,6 +949,7 @@
 		"other": "{n} Duplikate entfernt"
 	},
 	"Pseudolocale": "Pseudolocale",
+	"Pulled +{lc} ~{lu} -{ld}": "Empfangen +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "Lila-Orange",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "Gesendet +{pc} ~{pu} -{pd} · Empfangen +{lc} ~{lu} -{ld}",
 	"Q": "Q",

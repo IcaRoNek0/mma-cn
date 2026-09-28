@@ -949,6 +949,7 @@
 		"other": "Pruned {n} duplicates"
 	},
 	"Pseudolocale": "Pseudolocale",
+	"Pulled +{lc} ~{lu} -{ld}": "Pulled +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "Purple-Orange",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}",
 	"Q": "Q",

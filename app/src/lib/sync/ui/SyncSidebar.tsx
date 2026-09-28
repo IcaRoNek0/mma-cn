@@ -9,7 +9,7 @@ import { SuggestInput } from "@/components/primitives/SuggestInput";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiInformationOutline } from "@mdi/js";
 import type { Conflict, NormalizedSyncLocation } from "@/bindings.gen";
-import type { FirstSyncMode } from "@/bindings.consts";
+import { SyncDirection, type FirstSyncMode } from "@/bindings.consts";
 import type { SyncController } from "../controller";
 import type { SyncOutcome } from "../engine";
 import type { RemoteMapSummary } from "../provider";
@@ -163,6 +163,7 @@ export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: S
 	const [pendingLink, setPendingLink] = useState<RemoteMapSummary | null>(null);
 
 	const mapId = controller.currentMapId();
+	const pullOnly = controller.direction === SyncDirection.PullOnly;
 	const checking = identity === undefined;
 	const authed = !checking && identity !== null;
 
@@ -402,14 +403,20 @@ export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: S
 					)}
 					{outcome && (
 						<p>
-							{t("Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}", {
-								pc: outcome.pushed.create,
-								pu: outcome.pushed.update,
-								pd: outcome.pushed.delete,
-								lc: outcome.pulled.create,
-								lu: outcome.pulled.update,
-								ld: outcome.pulled.delete,
-							})}
+							{pullOnly
+								? t("Pulled +{lc} ~{lu} -{ld}", {
+										lc: outcome.pulled.create,
+										lu: outcome.pulled.update,
+										ld: outcome.pulled.delete,
+									})
+								: t("Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}", {
+										pc: outcome.pushed.create,
+										pu: outcome.pushed.update,
+										pd: outcome.pushed.delete,
+										lc: outcome.pulled.create,
+										lu: outcome.pulled.update,
+										ld: outcome.pulled.delete,
+									})}
 							{outcome.adopted ? " · " + t("Adopted {n}", { n: outcome.adopted }) : ""}
 							{outcome.conflicts.length
 								? " · " +
@@ -519,13 +526,15 @@ export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: S
 					>
 						{t("Use remote · delete local-only pins")}
 					</Button>
-					<Button
-						disabled={busy}
-						style={{ display: "block", width: "100%", textAlign: "left" }}
-						onClick={() => void performLink(pendingLink, "mirrorFromLocal")}
-					>
-						{t("Use local · delete remote-only pins")}
-					</Button>
+					{!pullOnly && (
+						<Button
+							disabled={busy}
+							style={{ display: "block", width: "100%", textAlign: "left" }}
+							onClick={() => void performLink(pendingLink, "mirrorFromLocal")}
+						>
+							{t("Use local · delete remote-only pins")}
+						</Button>
+					)}
 					<Button disabled={busy} onClick={() => setPendingLink(null)}>
 						{t("Cancel")}
 					</Button>

@@ -197,6 +197,15 @@ declare const ValidationState: {
     readonly NotFound: 3;
 };
 type ValidationState = (typeof ValidationState)[keyof typeof ValidationState];
+/** Which way a link carries changes. @unstable */
+declare const SyncDirection: {
+    /** Changes travel both ways, and conflicts wait for review. */
+    readonly Bidirectional: "bidirectional";
+    /** Changes only come in from the remote, which wins every conflict. */
+    readonly PullOnly: "pullOnly";
+};
+/** @unstable */
+type SyncDirection = (typeof SyncDirection)[keyof typeof SyncDirection];
 declare const BUILTIN_FIELDS: readonly [{
     readonly key: "id";
     readonly label: "ID";
@@ -409,6 +418,17 @@ declare const PROJECTIONS: readonly [{
     readonly appliesTo: readonly ["date"];
     readonly needsTz: true;
 }];
+/** Every sync provider: which way it carries changes, and what it keeps of a map. @unstable */
+declare const SYNC_PROVIDERS: {
+    readonly geoguessr: {
+        readonly direction: "bidirectional";
+        readonly shape: "geoguessr";
+    };
+    readonly "map-making.app": {
+        readonly direction: "bidirectional";
+        readonly shape: "mapMaking";
+    };
+};
 /** @unstable */
 declare const SCRATCH_MAP_ID: "scratch";
 /** @unstable */
@@ -465,16 +485,20 @@ declare const consts_ResolutionSide: typeof ResolutionSide;
 /** @unstable */
 export type consts_ResolutionSide = ResolutionSide;
 declare const consts_SCRATCH_MAP_ID: typeof SCRATCH_MAP_ID;
+declare const consts_SYNC_PROVIDERS: typeof SYNC_PROVIDERS;
 declare const consts_Sink: typeof Sink;
 /** @unstable */
 export type consts_Sink = Sink;
+declare const consts_SyncDirection: typeof SyncDirection;
+/** @unstable */
+export type consts_SyncDirection = SyncDirection;
 declare const consts_VIRTUAL_FLAGS: typeof VIRTUAL_FLAGS;
 declare const consts_ValidationState: typeof ValidationState;
 /** @unstable */
 export type consts_ValidationState = ValidationState;
 declare namespace consts {
-  export { consts_BUILTIN_FIELDS as BUILTIN_FIELDS, consts_CLEARABLE_BUILTINS as CLEARABLE_BUILTINS, consts_DEFAULT_DUPLICATE_SCORE as DEFAULT_DUPLICATE_SCORE, consts_EFFECT_CALLS as EFFECT_CALLS, consts_ERROR_CODES as ERROR_CODES, consts_KNOWN_FIELDS as KNOWN_FIELDS, consts_OFFICIAL_ID_PATTERN as OFFICIAL_ID_PATTERN, consts_PLAIN_CALLS as PLAIN_CALLS, consts_PROJECTIONS as PROJECTIONS, consts_SCRATCH_MAP_ID as SCRATCH_MAP_ID, consts_VIRTUAL_FLAGS as VIRTUAL_FLAGS };
-  export { consts_CameraType as CameraType, consts_CapturePick as CapturePick, consts_DatePart as DatePart, consts_FieldType as FieldType, consts_FirstSyncMode as FirstSyncMode, consts_IssueState as IssueState, consts_LocationFlag as LocationFlag, consts_MapShape as MapShape, consts_MergeWinner as MergeWinner, consts_PanoType as PanoType, consts_RankingStrategy as RankingStrategy, consts_RateCost as RateCost, consts_ResolutionSide as ResolutionSide, consts_Sink as Sink, consts_ValidationState as ValidationState };
+  export { consts_BUILTIN_FIELDS as BUILTIN_FIELDS, consts_CLEARABLE_BUILTINS as CLEARABLE_BUILTINS, consts_DEFAULT_DUPLICATE_SCORE as DEFAULT_DUPLICATE_SCORE, consts_EFFECT_CALLS as EFFECT_CALLS, consts_ERROR_CODES as ERROR_CODES, consts_KNOWN_FIELDS as KNOWN_FIELDS, consts_OFFICIAL_ID_PATTERN as OFFICIAL_ID_PATTERN, consts_PLAIN_CALLS as PLAIN_CALLS, consts_PROJECTIONS as PROJECTIONS, consts_SCRATCH_MAP_ID as SCRATCH_MAP_ID, consts_SYNC_PROVIDERS as SYNC_PROVIDERS, consts_VIRTUAL_FLAGS as VIRTUAL_FLAGS };
+  export { consts_CameraType as CameraType, consts_CapturePick as CapturePick, consts_DatePart as DatePart, consts_FieldType as FieldType, consts_FirstSyncMode as FirstSyncMode, consts_IssueState as IssueState, consts_LocationFlag as LocationFlag, consts_MapShape as MapShape, consts_MergeWinner as MergeWinner, consts_PanoType as PanoType, consts_RankingStrategy as RankingStrategy, consts_RateCost as RateCost, consts_ResolutionSide as ResolutionSide, consts_Sink as Sink, consts_SyncDirection as SyncDirection, consts_ValidationState as ValidationState };
 }
 
 /** Commands @unstable */
@@ -7783,5 +7807,5 @@ declare global {
     const MMA: MMA;
 }
 
-export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, Sink, VIRTUAL_FLAGS, ValidationState, commands$1 as commands, events };
+export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, SYNC_PROVIDERS, Sink, SyncDirection, VIRTUAL_FLAGS, ValidationState, commands$1 as commands, events };
 export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SaveResult, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };

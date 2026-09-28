@@ -1,8 +1,11 @@
 use super::*;
 use crate::sync::SyncLocalPin;
-use crate::sync::{sync_hash, IdentityModel, NormalizedSyncLocation, ProviderSpec, RemoteSnapshot};
+use crate::sync::{
+    sync_hash, IdentityModel, NormalizedSyncLocation, ProviderSpec, RemoteSnapshot, SyncDirection,
+};
 use crate::types::shape::MapShape;
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -82,12 +85,14 @@ struct Recorded {
 const STABLE: ProviderSpec = ProviderSpec {
     id: "fake",
     identity: IdentityModel::Stable,
+    direction: SyncDirection::Bidirectional,
     shape: MapShape::MapMaking,
 };
 
 const POSITIONAL: ProviderSpec = ProviderSpec {
     id: "fake",
     identity: IdentityModel::Positional,
+    direction: SyncDirection::Bidirectional,
     shape: MapShape::MapMaking,
 };
 
@@ -1136,9 +1141,9 @@ fn positional_pull_update_moves_to_its_new_index_but_keeps_its_base_hash_until_a
 // ---------------------------------------------------------------------------
 
 #[test]
-fn content_keyed_entries_never_produce_conflict_rows_or_mapping_deletes() {
+fn content_keyed_entries_never_produce_held_rows_or_mapping_deletes() {
     // With mapping: the same two locations get L:N keys. Both sides changed from base
-    // differently, so the diff produces a conflict. The plan writes a conflict_row to
+    // differently, so the diff produces a conflict. The plan writes a held row to
     // preserve the base hash.
     let provider = Fake::stable(vec![raw(|n| n.lat = 3.0, Some(7))]);
     let locs = [loc(1, |l| l.lat = 2.0)];
@@ -1156,12 +1161,12 @@ fn content_keyed_entries_never_produce_conflict_rows_or_mapping_deletes() {
     })
     .unwrap();
     assert_eq!(planned_mapped.conflicts.len(), 1);
-    assert_eq!(planned_mapped.conflict_rows.len(), 1);
+    assert_eq!(planned_mapped.held_rows.len(), 1);
 
     // Without mapping: both pins are content-keyed. Different content -> different keys,
     // so no conflict arises. A content-keyed AddAdd conflict would require a cyrb53
     // collision; in that case the base guard (no base entry for unmapped keys) still
-    // prevents a conflict_row, and parse_local_key rejects the C:hash#N key format.
+    // prevents a held row, and parse_local_key rejects the C:hash#N key format.
     let snap_b = provider.pull("r").unwrap();
     let planned_unmapped = plan(&ReconcileInput {
         provider: &provider,
@@ -1174,7 +1179,7 @@ fn content_keyed_entries_never_produce_conflict_rows_or_mapping_deletes() {
     })
     .unwrap();
     assert!(planned_unmapped.conflicts.is_empty());
-    assert!(planned_unmapped.conflict_rows.is_empty());
+    assert!(planned_unmapped.held_rows.is_empty());
     assert!(planned_unmapped.mapping_delete_ids.is_empty());
     assert_eq!(planned_unmapped.counts_push.create, 1);
     assert_eq!(planned_unmapped.counts_pull.create, 1);
@@ -1250,4 +1255,176 @@ fn unchanged_map_touches_neither_the_remote_nor_the_sink() {
     assert!(out.conflicts.is_empty());
     assert!(provider.pushes.borrow().is_empty());
     assert!(sink.untouched());
+}
+
+// ---------------------------------------------------------------------------
+// pull-only
+// ---------------------------------------------------------------------------
+
+const PULL_ONLY_STABLE: ProviderSpec = ProviderSpec {
+    direction: SyncDirection::PullOnly,
+    ..STABLE
+};
+
+const PULL_ONLY_POSITIONAL: ProviderSpec = ProviderSpec {
+    direction: SyncDirection::PullOnly,
+    ..POSITIONAL
+};
+
+/// Land a result the way the apply step does: pulled creates get a never-used local id and a row,
+/// pulled updates patch in place, pulled and mirrored deletes leave.
+fn land(out: &SyncReconcileResult, locs: &mut Vec<SyncLocalPin>, sink: &mut MemSink) {
+    static NEXT_ID: AtomicU32 = AtomicU32::new(100);
+    for c in &out.pull_creates {
+        let next = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let f = &c.fields;
+        locs.push(loc(next, |l| {
+            l.lat = f.lat;
+            l.lng = f.lng;
+            l.pano_id.clone_from(&f.pano_id);
+            l.flags = f.flags;
+        }));
+        sink.upsert(&[row(next, c.remote_id, c.hash.clone())])
+            .unwrap();
+    }
+    for u in &out.pull_updates {
+        let l = locs.iter_mut().find(|l| l.id == u.local_id).unwrap();
+        if let Some(v) = u.patch.lat {
+            l.lat = v;
+        }
+        if let Some(v) = u.patch.lng {
+            l.lng = v;
+        }
+    }
+    sink.apply_pulls(out);
+    locs.retain(|l| {
+        !out.pull_delete_ids.contains(&l.id) && !out.mirror_local_delete_ids.contains(&l.id)
+    });
+}
+
+/// One reconcile against the sink's own rows, landed.
+fn pull_once(
+    provider: &Fake,
+    locs: &mut Vec<SyncLocalPin>,
+    sink: &mut MemSink,
+) -> SyncReconcileResult {
+    let mapping = sink.mapping();
+    let out = sync(provider, locs, &mapping, &no_tags(), sink);
+    land(&out, locs, sink);
+    out
+}
+
+#[test]
+fn pull_only_keeps_local_additions_and_never_pushes() {
+    let provider = Fake::new(&PULL_ONLY_POSITIONAL, vec![raw(|n| n.lat = 1.0, None)]);
+    let mut locs = vec![loc(1, |l| l.lat = 9.0)];
+    let mut sink = MemSink::new();
+
+    let out = pull_once(&provider, &mut locs, &mut sink);
+    assert_eq!(out.pulled, side(1, 0, 0));
+    assert_eq!(out.pushed, side(0, 0, 0));
+
+    let again = pull_once(&provider, &mut locs, &mut sink);
+    assert_eq!(again.pulled, side(0, 0, 0));
+    assert!(provider.pushes.borrow().is_empty());
+    assert_eq!(provider.items(), vec![raw(|n| n.lat = 1.0, None)]);
+    assert!(locs.iter().any(|l| l.id == 1 && l.lat == 9.0));
+    assert!(
+        !sink.rows.contains_key(&1),
+        "a local addition is never mapped"
+    );
+}
+
+#[test]
+fn pull_only_holds_a_local_edit_until_upstream_changes_that_location() {
+    let provider = Fake::new(&PULL_ONLY_POSITIONAL, vec![raw(|n| n.lat = 1.0, None)]);
+    let mut locs = vec![];
+    let mut sink = MemSink::new();
+    pull_once(&provider, &mut locs, &mut sink);
+    let id = locs[0].id;
+
+    locs[0].lat = 5.0;
+    for _ in 0..2 {
+        let out = pull_once(&provider, &mut locs, &mut sink);
+        assert_eq!(out.pulled, side(0, 0, 0));
+        assert_eq!(out.pushed, side(0, 0, 0));
+        assert_eq!(locs[0].lat, 5.0);
+        assert_eq!(sink.rows[&id].hash, nhash(|n| n.lat = 1.0));
+    }
+
+    provider.items.borrow_mut()[0].n.lat = 2.0;
+    let out = pull_once(&provider, &mut locs, &mut sink);
+    assert!(out.conflicts.is_empty());
+    assert_eq!(out.pulled, side(0, 1, 0));
+    assert_eq!(locs[0].lat, 2.0);
+    assert!(provider.pushes.borrow().is_empty());
+}
+
+#[test]
+fn pull_only_keeps_a_local_delete_until_upstream_changes_that_location() {
+    let provider = Fake::new(&PULL_ONLY_STABLE, vec![raw(|n| n.lat = 1.0, Some(7))]);
+    let mut locs = vec![];
+    let mut sink = MemSink::new();
+    pull_once(&provider, &mut locs, &mut sink);
+    let deleted = locs[0].id;
+
+    locs.clear();
+    for _ in 0..2 {
+        let out = pull_once(&provider, &mut locs, &mut sink);
+        assert_eq!(out.pulled, side(0, 0, 0));
+        assert!(locs.is_empty());
+        assert!(sink.rows.contains_key(&deleted));
+    }
+
+    provider.items.borrow_mut()[0].n.lat = 2.0;
+    let out = pull_once(&provider, &mut locs, &mut sink);
+    assert!(out.conflicts.is_empty());
+    assert_eq!(out.pulled, side(1, 0, 0));
+    assert!(!sink.rows.contains_key(&deleted));
+    assert_eq!(locs.len(), 1);
+
+    let settled = pull_once(&provider, &mut locs, &mut sink);
+    assert_eq!(settled.pulled, side(0, 0, 0));
+    assert_eq!(locs.len(), 1);
+}
+
+#[test]
+fn pull_only_follows_a_regenerated_upstream_and_keeps_local_additions() {
+    let provider = Fake::new(
+        &PULL_ONLY_POSITIONAL,
+        (1..=3)
+            .map(|i| raw(|n| n.lat = f64::from(i), None))
+            .collect(),
+    );
+    let mut locs = vec![];
+    let mut sink = MemSink::new();
+    pull_once(&provider, &mut locs, &mut sink);
+    locs.push(loc(1, |l| l.lat = 99.0));
+
+    *provider.items.borrow_mut() = (10..=11)
+        .map(|i| raw(|n| n.lat = f64::from(i), None))
+        .collect();
+    let out = pull_once(&provider, &mut locs, &mut sink);
+
+    assert_eq!(out.pulled, side(2, 0, 3));
+    let mut lats: Vec<f64> = locs.iter().map(|l| l.lat).collect();
+    lats.sort_by(f64::total_cmp);
+    assert_eq!(lats, vec![10.0, 11.0, 99.0]);
+    assert!(provider.pushes.borrow().is_empty());
+}
+
+#[test]
+fn pull_only_refuses_to_mirror_from_local() {
+    let provider = Fake::new(&PULL_ONLY_POSITIONAL, vec![raw(|n| n.lat = 1.0, None)]);
+    let err = plan(&ReconcileInput {
+        provider: &provider,
+        local_locs: &[loc(1, |l| l.lat = 2.0)],
+        remote: provider.pull("r").unwrap(),
+        mapping: &[],
+        tag_names: &no_tags(),
+        first_sync: Some(FirstSyncMode::MirrorFromLocal),
+        resolutions: &[],
+    })
+    .err();
+    assert!(err.is_some());
 }

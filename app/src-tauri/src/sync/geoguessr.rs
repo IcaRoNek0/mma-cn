@@ -10,7 +10,7 @@ use crate::net::proxy;
 use crate::store::storage;
 use crate::sync::{
     has_pano, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch, PushedId,
-    RemoteSnapshot, SyncProvider,
+    RemoteSnapshot, SyncDirection, SyncProvider,
 };
 use crate::types::shape::MapShape;
 use crate::types::{AppError, AppResult, ErrCode, LocationFlags};
@@ -156,6 +156,7 @@ impl GeoGuessrProvider {
     pub(crate) const SPEC: ProviderSpec = ProviderSpec {
         id: "geoguessr",
         identity: IdentityModel::Positional,
+        direction: SyncDirection::Bidirectional,
         shape: MapShape::GeoGuessr,
     };
 

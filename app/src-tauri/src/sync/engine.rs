@@ -24,8 +24,8 @@ use crate::sync::map_making::MapMakingProvider;
 use crate::sync::remote_mapping::{self, RemoteMappingRow};
 use crate::sync::{
     parse_local_key, sync_hash, Conflict, DesiredEntry, FirstSyncMode, IdentityKey, IdentityModel,
-    NormalizedSyncLocation, PushBatch, PushedId, RemoteSnapshot, SideCounts, SyncLocalPin,
-    SyncPlan, SyncProvider,
+    NormalizedSyncLocation, ProviderSpec, PushBatch, PushedId, RemoteSnapshot, SideCounts,
+    SyncDirection, SyncLocalPin, SyncPlan, SyncProvider,
 };
 use crate::types::shape::MapPart;
 use crate::types::{AppError, AppResult};
@@ -133,8 +133,8 @@ pub(crate) struct PlannedReconcile<R> {
     /// Rows to write with final handles baked in (changed vs mapping only). Pushed keys for a
     /// stable provider are excluded here; the commit path writes them.
     pub rows: Vec<RemoteMappingRow>,
-    /// Held-back conflicts keep their BASE hash but take the post-push handle.
-    pub conflict_rows: Vec<RemoteMappingRow>,
+    /// Held keys keep their BASE hash but take the post-push handle.
+    pub held_rows: Vec<RemoteMappingRow>,
     pub mapping_delete_ids: Vec<u32>,
 }
 
@@ -241,6 +241,13 @@ pub(crate) fn plan<P: SyncProvider>(
     }
     let provider = input.provider;
     let positional = provider.spec().identity == IdentityModel::Positional;
+    let pull_only = provider.spec().direction == SyncDirection::PullOnly;
+    if pull_only && input.first_sync == Some(FirstSyncMode::MirrorFromLocal) {
+        return Err(AppError(
+            "A pull-only link never writes to its source, so it cannot mirror this map onto it."
+                .into(),
+        ));
+    }
 
     let tag_name = |id: u32| input.tag_names.get(&id).cloned();
     let keyed = build_keyed_inputs(
@@ -253,14 +260,18 @@ pub(crate) fn plan<P: SyncProvider>(
     let mut plan = compute_sync_plan(&keyed.base, &keyed.local, &keyed.remote);
 
     // Resolved conflicts become ordinary applies on the losing side, so the key advances its base
-    // instead of re-conflicting on the next poll.
-    if !input.resolutions.is_empty() {
+    // instead of re-conflicting on the next poll. A pull-only link resolves every one to the remote.
+    if pull_only || !input.resolutions.is_empty() {
         let res: HashMap<&IdentityKey, ResolutionSide> =
             input.resolutions.iter().map(|(k, s)| (k, *s)).collect();
         let mut resolved: HashSet<IdentityKey> = HashSet::new();
         let conflicts = mem::take(&mut plan.conflicts);
         for c in &conflicts {
-            let Some(&side) = res.get(&c.key) else {
+            let side = if pull_only {
+                ResolutionSide::Remote
+            } else if let Some(&side) = res.get(&c.key) {
+                side
+            } else {
                 continue;
             };
             resolved.insert(c.key.clone());
@@ -314,6 +325,15 @@ pub(crate) fn plan<P: SyncProvider>(
         }
     }
 
+    // Keys whose base must not advance: held conflicts, and on a pull-only link the local edits
+    // and deletes that never go up, so the next pull neither pushes nor reverts them.
+    let mut held: Vec<IdentityKey> = plan.conflicts.iter().map(|c| c.key.clone()).collect();
+    if pull_only {
+        let kept_local = mem::take(&mut plan.push);
+        held.extend(kept_local.update);
+        held.extend(kept_local.delete);
+    }
+
     // Local tags the incoming pulls reference that don't exist yet (created by the apply step).
     let name_set: HashSet<&str> = input.tag_names.values().map(String::as_str).collect();
     let mut needed_tags: Vec<String> = Vec::new();
@@ -341,8 +361,8 @@ pub(crate) fn plan<P: SyncProvider>(
     for key in &plan.pull.delete {
         settled.remove(key);
     }
-    for c in &plan.conflicts {
-        settled.remove(&c.key);
+    for key in &held {
+        settled.remove(key);
     }
 
     // The JS side records a pulled update's hash once applied; until then only its handle moves.
@@ -508,28 +528,26 @@ pub(crate) fn plan<P: SyncProvider>(
         }
     }
 
-    // A held-back conflict keeps its BASE hash so it re-conflicts next time, but must still take
-    // the new remote handle - a positional push that reindexes would otherwise strand it.
-    let mut conflict_rows = Vec::new();
-    for c in &plan.conflicts {
-        let Some(base) = keyed.base.get(&c.key) else {
+    // A held key keeps its BASE hash, but must still take the new remote handle - a positional push
+    // that reindexes would otherwise strand it.
+    let mut held_rows = Vec::new();
+    for key in &held {
+        let (Some(base), Some(local_id), Some(remote_id)) =
+            (keyed.base.get(key), parse_local_key(key), handle_of(key))
+        else {
             continue;
         };
-        let Some(&local_id) = keyed.local_id_of.get(&c.key) else {
-            continue;
-        };
-        let Some(remote_id) = handle_of(&c.key) else {
-            continue;
-        };
-        conflict_rows.push(RemoteMappingRow {
+        held_rows.push(RemoteMappingRow {
             local_id,
             remote_id,
             hash: base.clone(),
         });
     }
 
+    // A pulled create on a mapped key re-creates a location deleted here under a fresh id; the row
+    // of the deleted one must go, or it claims the remote location again on the next pull.
     let mut mapping_delete_ids: Vec<u32> = Vec::new();
-    for key in &plan.push.delete {
+    for key in plan.push.delete.iter().chain(plan.pull.create.iter()) {
         if let Some(id) = parse_local_key(key) {
             mapping_delete_ids.push(id);
         }
@@ -560,7 +578,7 @@ pub(crate) fn plan<P: SyncProvider>(
         push_batch,
         push_hashes,
         rows,
-        conflict_rows,
+        held_rows,
         mapping_delete_ids,
     })
 }
@@ -605,7 +623,7 @@ pub(crate) fn execute<P: SyncProvider>(
     }
 
     let mut final_rows = planned.rows;
-    final_rows.extend(planned.conflict_rows);
+    final_rows.extend(planned.held_rows);
     if !final_rows.is_empty() {
         sink.upsert(&final_rows)?;
     }
@@ -713,6 +731,10 @@ fn reconcile_with<P: SyncProvider>(
     log::info!("[sync] execute: {:.1}s", t.elapsed().as_secs_f64());
     result
 }
+
+/// Every provider this app syncs with.
+pub(crate) const PROVIDERS: [&ProviderSpec; 2] =
+    [&MapMakingProvider::SPEC, &GeoGuessrProvider::SPEC];
 
 fn run_reconcile(
     provider_name: &str,

@@ -995,6 +995,7 @@
 		"other": "Usunięto {n} duplikatów"
 	},
 	"Pseudolocale": "Pseudolokalizacja",
+	"Pulled +{lc} ~{lu} -{ld}": "Pobrano +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "Fioletowo-pomarańczowy",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "Wysłano +{pc} ~{pu} -{pd} · Pobrano +{lc} ~{lu} -{ld}",
 	"Q": "Q",

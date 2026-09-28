@@ -35,12 +35,27 @@ pub enum IdentityModel {
     Positional,
 }
 
+wire_str_enum! {
+    /// Which way a link carries changes.
+    derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)
+    pub enum SyncDirection {
+        /// Changes travel both ways, and conflicts wait for review.
+        Bidirectional = "bidirectional",
+        /// Changes only come in from the remote, which wins every conflict.
+        PullOnly = "pullOnly",
+    }
+}
+
 /// What a sync provider is, declared once per provider.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSpec {
     /// The `provider` its links and mapping rows are stored under. Never changes once shipped.
+    #[serde(skip)]
     pub id: &'static str,
+    #[serde(skip)]
     pub identity: IdentityModel,
+    pub direction: SyncDirection,
     /// What the remote keeps of a map; local content is collapsed onto it before diffing.
     pub shape: MapShape,
 }

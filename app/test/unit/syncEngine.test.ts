@@ -11,7 +11,7 @@ import {
 } from "@/lib/sync/syncStore";
 
 const MAP = "map-a";
-const PROVIDER = "fake";
+const PROVIDER = "geoguessr";
 
 const noPatch = {
 	lat: null,

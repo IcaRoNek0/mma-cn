@@ -101,7 +101,7 @@ function makeMma() {
 
 function makeProvider(): SyncProvider {
 	return {
-		id: "fake",
+		id: "geoguessr",
 		label: "Fake",
 		icon: "M0 0",
 		remoteMapUrl: (id) => `https://fake.test/maps/${id}`,
@@ -177,7 +177,7 @@ describe("createSyncController", () => {
 		const mma = makeMma();
 		mma.install();
 		const controller = createSyncController(makeProvider(), PLUGIN);
-		const other = createSyncController({ ...makeProvider(), id: "other" }, PLUGIN);
+		const other = createSyncController({ ...makeProvider(), id: "map-making.app" }, PLUGIN);
 
 		await controller.link(REMOTE, null);
 		mma.setMapId("map-b");
@@ -214,17 +214,20 @@ describe("createSyncController", () => {
 
 	it("a linked map carries its provider's badge only while the plugin is enabled", async () => {
 		makeMma().install();
-		const controller = createSyncController({ ...makeProvider(), id: "badged" }, "badge-plugin");
+		const controller = createSyncController(
+			{ ...makeProvider(), id: "map-making.app" },
+			"badge-plugin",
+		);
 		const badgeKeys = () => (getMapBadges().get("map-a") ?? []).map((b) => b.key);
 
 		await controller.link(REMOTE, null);
-		expect(badgeKeys()).not.toContain("sync:badged");
+		expect(badgeKeys()).not.toContain("sync:map-making.app");
 
 		setPluginEnabled("badge-plugin", true);
-		expect(badgeKeys()).toContain("sync:badged");
+		expect(badgeKeys()).toContain("sync:map-making.app");
 
 		await controller.unlink();
-		expect(badgeKeys()).not.toContain("sync:badged");
+		expect(badgeKeys()).not.toContain("sync:map-making.app");
 		setPluginEnabled("badge-plugin", false);
 	});
 });

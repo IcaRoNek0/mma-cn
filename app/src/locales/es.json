@@ -972,6 +972,7 @@
 		"other": "Se han depurado {n} duplicados"
 	},
 	"Pseudolocale": "Pseudolocale",
+	"Pulled +{lc} ~{lu} -{ld}": "Recibidos +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "Morado-Naranja",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "Enviados +{pc} ~{pu} -{pd} · Recibidos +{lc} ~{lu} -{ld}",
 	"Q": "Q",

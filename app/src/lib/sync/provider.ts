@@ -1,4 +1,7 @@
-import type { ERROR_CODES } from "@/bindings.consts";
+import type { ERROR_CODES, SYNC_PROVIDERS } from "@/bindings.consts";
+
+/** A provider the backend declares; its direction and shape come with it. */
+export type SyncProviderId = keyof typeof SYNC_PROVIDERS;
 
 export interface RemoteMapSummary {
 	id: string;
@@ -21,7 +24,7 @@ export const isAuthPrefixed = (e: unknown): boolean =>
  */
 export interface SyncProvider {
 	/** Persisted as the `provider` column of `remote_mapping`. Never change it for a shipped provider. */
-	readonly id: string;
+	readonly id: SyncProviderId;
 	readonly label: string;
 	/** Provider mark (SVG path) for any UI that has to say which provider this is. */
 	readonly icon: string;

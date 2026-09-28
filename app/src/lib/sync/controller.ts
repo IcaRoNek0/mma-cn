@@ -4,6 +4,7 @@ import { isPluginEnabled } from "@/plugins/pluginHost";
 import { registerMapBadges } from "@/store/mapList";
 import { msg, t } from "@/lib/i18n";
 import { errText } from "@/lib/util/format";
+import { SYNC_PROVIDERS, type SyncDirection } from "@/bindings.consts";
 import { reconcile, type FirstSyncMode, type ReconcileOptions, type SyncOutcome } from "./engine";
 import { createMappingBackend } from "./mappingBackend";
 import { createScheduler, type Scheduler, type SyncStatus } from "./scheduler";
@@ -19,6 +20,7 @@ import {
 
 export interface SyncController {
 	readonly provider: Pick<SyncProvider, "id" | "label" | "icon">;
+	readonly direction: SyncDirection;
 	readonly pluginId: string;
 	currentMapId(): string | null;
 	getLink(): SyncLink | null;
@@ -167,6 +169,7 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 
 	const controller: SyncController = {
 		provider: { id: provider.id, label: provider.label, icon: provider.icon },
+		direction: SYNC_PROVIDERS[provider.id].direction,
 		pluginId,
 		currentMapId,
 		getLink,

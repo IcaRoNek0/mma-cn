@@ -926,6 +926,7 @@
 		"other": "已剔除 {n} 个重复项"
 	},
 	"Pseudolocale": "伪本地化",
+	"Pulled +{lc} ~{lu} -{ld}": "拉取 +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "紫-橙",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "推送 +{pc} ~{pu} -{pd} · 拉取 +{lc} ~{lu} -{ld}",
 	"Q": "Q",

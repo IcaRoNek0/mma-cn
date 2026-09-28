@@ -926,6 +926,7 @@
 		"other": "{n} 件の重複を除去しました"
 	},
 	"Pseudolocale": "疑似ロケール",
+	"Pulled +{lc} ~{lu} -{ld}": "プル +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "紫-橙",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "プッシュ +{pc} ~{pu} -{pd}・プル +{lc} ~{lu} -{ld}",
 	"Q": "Q",

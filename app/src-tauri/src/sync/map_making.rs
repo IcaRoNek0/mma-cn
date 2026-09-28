@@ -11,7 +11,7 @@ use crate::net::proxy;
 use crate::store::storage;
 use crate::sync::{
     canon_tags, sync_flags, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch,
-    PushedId, RemoteSnapshot, SyncProvider,
+    PushedId, RemoteSnapshot, SyncDirection, SyncProvider,
 };
 use crate::types::shape::MapShape;
 use crate::types::{AppError, AppResult, ErrCode};
@@ -193,6 +193,7 @@ impl MapMakingProvider {
     pub(crate) const SPEC: ProviderSpec = ProviderSpec {
         id: "map-making.app",
         identity: IdentityModel::Stable,
+        direction: SyncDirection::Bidirectional,
         shape: MapShape::MapMaking,
     };
 

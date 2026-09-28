@@ -3,7 +3,7 @@ use crate::sync::diff::compute_sync_plan;
 use crate::sync::SyncLocalPin;
 use crate::sync::{
     local_to_normalized, sync_hash, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch,
-    PushedId, RemoteSnapshot,
+    PushedId, RemoteSnapshot, SyncDirection,
 };
 use crate::types::shape::MapShape;
 use crate::types::AppResult;
@@ -19,12 +19,14 @@ struct Raw {
 const STABLE: ProviderSpec = ProviderSpec {
     id: "test",
     identity: IdentityModel::Stable,
+    direction: SyncDirection::Bidirectional,
     shape: MapShape::MapMaking,
 };
 
 const POSITIONAL: ProviderSpec = ProviderSpec {
     id: "test",
     identity: IdentityModel::Positional,
+    direction: SyncDirection::Bidirectional,
     shape: MapShape::MapMaking,
 };
 

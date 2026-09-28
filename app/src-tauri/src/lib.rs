@@ -3,6 +3,7 @@
 
 use crate::types::TsConst;
 use specta_typescript::semantic::Configuration;
+use std::collections::BTreeMap;
 use std::error;
 use std::fs;
 use std::panic;
@@ -404,6 +405,7 @@ fn export_consts() -> Result<(), String> {
         ("PanoType", sv::schema::PanoType::ts_const()),
         ("RankingStrategy", sv::schema::RankingStrategy::ts_const()),
         ("ValidationState", types::ValidationState::ts_const()),
+        ("SyncDirection", sync::SyncDirection::ts_const().unstable()),
         ("BUILTIN_FIELDS", TsConst::value(selections::BUILTIN_FIELDS)),
         (
             "OFFICIAL_ID_PATTERN",
@@ -429,6 +431,19 @@ fn export_consts() -> Result<(), String> {
         (
             "PROJECTIONS",
             TsConst::value(selections::PROJECTIONS).unstable(),
+        ),
+        (
+            "SYNC_PROVIDERS",
+            TsConst::value(
+                sync::engine::PROVIDERS
+                    .iter()
+                    .map(|s| (s.id, s))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+            .with_doc(&[
+                "Every sync provider: which way it carries changes, and what it keeps of a map.",
+            ])
+            .unstable(),
         ),
         (
             "SCRATCH_MAP_ID",

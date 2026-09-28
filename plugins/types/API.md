@@ -607,6 +607,38 @@ Where a provider's results go. `Patch` applies them to the locations they name;
 `Collect` delivers them to the caller and writes nothing. The declaration decides
 this, never the contents of a result.
 
+### SYNC_PROVIDERS
+
+`unstable` · unreleased
+
+```ts
+SYNC_PROVIDERS: {
+  readonly geoguessr: {
+    readonly direction: "bidirectional";
+    readonly shape: "geoguessr";
+  };
+  readonly "map-making.app": {
+    readonly direction: "bidirectional";
+    readonly shape: "mapMaking";
+  };
+}
+```
+
+Every sync provider: which way it carries changes, and what it keeps of a map.
+
+### SyncDirection
+
+`unstable` · unreleased
+
+```ts
+SyncDirection: {
+  readonly Bidirectional: "bidirectional";
+  readonly PullOnly: "pullOnly";
+}
+```
+
+Which way a link carries changes.
+
 ### ValidationState
 
 `stable` · since v0.11.0

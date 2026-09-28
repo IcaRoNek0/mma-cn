@@ -995,6 +995,7 @@
 		"other": "Удалено {n} дубликата"
 	},
 	"Pseudolocale": "Псевдолокаль",
+	"Pulled +{lc} ~{lu} -{ld}": "Получено +{lc} ~{lu} -{ld}",
 	"Purple-Orange": "Фиолетово-оранжевый",
 	"Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}": "Отправлено +{pc} ~{pu} -{pd} · Получено +{lc} ~{lu} -{ld}",
 	"Q": "Q",
