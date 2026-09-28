@@ -1,3 +1,33 @@
+## v0.11.3 - 2026-09-28
+- The export dialog now can save three formats: GeoGuessr, map-making.app, or local
+- Map clicks can create a location, select only, or snap to the nearest location via map settings
+- Pivot table rows and columns each take all locations, the active selections, or a field
+- Map list shows which sync providers a map is linked to, and can show uncommitted changes
+- The tag menu acts on every selected tag, including recoloring them all at once
+- Rename in selection can merge several tags into one, moving only the selected locations
+- "Remove from this tag only" allows a folder tag to be removed on its own, keeping the tags under it
+- Bulk tagging on import can take several tags
+- LocalGuessr guess pins are now ringed badges, with the answer carrying a flag and the guess icon optionally using your GitHub avatar
+- The trail's position indicator follows your marker style
+- Copyright results stream in as each panorama finishes
+- Pano look speed can be set up to 20
+- Escape cancels any in-progress drag
+- A commit without a message stays blank instead of getting a generated summary
+- Faster bulk checks of dead panoramas
+- Fixed syncing against an empty remote map deleting every synced location
+- Fixed a failed save during commit marking changes as saved
+- Fixed a failed version restore leaving the window without a map or its selections
+- Fixed a polygon that crosses itself shading a different area than it selects
+- Fixed markers and the sidebar disagreeing on an inverted selection's color
+- Fixed a slow location switch overwriting a newer one
+- Fixed previewing several import files keeping only the last one parsed
+- Fixed import previews being shared between windows
+- Fixed cancelling a run leaving its requests queued on the rate limiter
+- Fixed one plugin failing to activate stopping the rest
+- Fixed resuming a review losing its place when its location was deleted
+- Fixed a tag folder created through an alias disappearing once emptied
+- Fixed a slow command in one browser tab stalling every other tab, and opening a map in one tab swapping another's
+
 ## v0.11.2 - 2026-09-20
 - Duplicate preference and review order explain themselves on hover instead of a line under them
 - The bottom corner bars are dark again, with their buttons dim until hovered
