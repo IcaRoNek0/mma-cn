@@ -103,6 +103,7 @@ fn base_norm() -> NormalizedSyncLocation {
         pano_id: None,
         flags: 0,
         tags: vec![],
+        extra: None,
     }
 }
 
@@ -126,6 +127,7 @@ fn loc(id: u32, f: impl FnOnce(&mut SyncLocalPin)) -> SyncLocalPin {
         pano_id: None,
         flags: 0,
         tags: vec![],
+        extra: None,
     };
     f(&mut l);
     l

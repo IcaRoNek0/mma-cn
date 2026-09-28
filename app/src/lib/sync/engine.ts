@@ -44,6 +44,7 @@ function fieldsToLocal(
 		panoId: n.panoId,
 		flags: n.flags,
 		tags: n.tags.map(tagId).filter((id): id is number => id != null),
+		extra: n.extra,
 	};
 }
 
@@ -58,6 +59,7 @@ function patchToLocal(p: SyncPatch, tagId: TagId): LocationPatch_Deserialize {
 	if (p.panoIdSet) patch.panoId = p.panoId;
 	if (p.flags !== null) patch.flags = p.flags;
 	if (p.tags !== null) patch.tags = p.tags.map(tagId).filter((id): id is number => id != null);
+	if (p.extra !== null) patch.extra = p.extra;
 	return patch;
 }
 

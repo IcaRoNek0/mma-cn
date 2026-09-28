@@ -14,10 +14,12 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::store::engine::StoreState;
 use crate::store::storage;
 use crate::sync::diff::{compute_sync_plan, summarize};
+use crate::sync::file::FileProvider;
 use crate::sync::geoguessr::GeoGuessrProvider;
 use crate::sync::keying::{build_keyed_inputs, KeyedInputs};
 use crate::sync::map_making::MapMakingProvider;
@@ -82,6 +84,9 @@ pub struct SyncPatch {
     pub pano_id: Option<String>,
     pub flags: Option<u32>,
     pub tags: Option<Vec<String>>,
+    /// A merge patch onto the custom fields: changed fields, and `null` for removed ones.
+    #[specta(type = Option<HashMap<String, specta_typescript::Unknown>>)]
+    pub extra: Option<Map<String, Value>>,
 }
 
 /// Everything the reconcile settled to, for the JS side. Every array is empty on an unchanged map.
@@ -154,7 +159,25 @@ fn changed_patch(prev: &NormalizedSyncLocation, next: &NormalizedSyncLocation) -
         },
         flags: (prev.flags != next.flags).then_some(next.flags),
         tags: (prev.tags != next.tags).then(|| next.tags.clone()),
+        extra: extra_patch(prev.extra.as_ref(), next.extra.as_ref()),
     }
+}
+
+fn extra_patch(
+    prev: Option<&Map<String, Value>>,
+    next: Option<&Map<String, Value>>,
+) -> Option<Map<String, Value>> {
+    let none = Map::new();
+    let (prev, next) = (prev.unwrap_or(&none), next.unwrap_or(&none));
+    let mut patch: Map<String, Value> = next
+        .iter()
+        .filter(|(k, v)| prev.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for k in prev.keys().filter(|k| !next.contains_key(*k)) {
+        patch.insert(k.clone(), Value::Null);
+    }
+    (!patch.is_empty()).then_some(patch)
 }
 
 /// Express the remote half of the plan both ways: as a delta, and as the full desired document.
@@ -733,8 +756,11 @@ fn reconcile_with<P: SyncProvider>(
 }
 
 /// Every provider this app syncs with.
-pub(crate) const PROVIDERS: [&ProviderSpec; 2] =
-    [&MapMakingProvider::SPEC, &GeoGuessrProvider::SPEC];
+pub(crate) const PROVIDERS: [&ProviderSpec; 3] = [
+    &MapMakingProvider::SPEC,
+    &GeoGuessrProvider::SPEC,
+    &FileProvider::SPEC,
+];
 
 fn run_reconcile(
     provider_name: &str,
@@ -749,6 +775,8 @@ fn run_reconcile(
     } else if provider_name == GeoGuessrProvider::SPEC.id {
         let provider = GeoGuessrProvider::from_session()?;
         reconcile_with(&provider, req, &mapping, &mut conn)
+    } else if provider_name == FileProvider::SPEC.id {
+        reconcile_with(&FileProvider, req, &mapping, &mut conn)
     } else {
         Err(AppError(format!("unknown sync provider '{provider_name}'")))
     }
@@ -766,15 +794,22 @@ pub async fn sync_reconcile(
     first_sync: Option<FirstSyncMode>,
     resolutions: Option<Vec<(String, ResolutionSide)>>,
 ) -> AppResult<SyncReconcileResult> {
+    let keeps_extra = PROVIDERS
+        .iter()
+        .any(|s| s.id == provider && s.shape.keeps(MapPart::AppData));
     let (local_locs, tag_names) = {
         let mut mgr = state.lock()?;
         let store = mgr.store_for_map(&map_id)?;
-        // Stream rows into the slim sync shape so each full Location (with its arbitrarily large
-        // `extra`) is dropped immediately - never a whole-map copy of fields sync cannot see.
+        // Stream rows into the slim sync shape so each full Location is dropped immediately -
+        // never a whole-map copy of fields sync cannot see.
         let t = Instant::now();
         let mut pins: Vec<SyncLocalPin> = Vec::new();
         for row in store.all().rows() {
-            pins.push(SyncLocalPin::from(row.to_location()));
+            let mut loc = row.to_location();
+            if !keeps_extra {
+                loc.extra = None;
+            }
+            pins.push(SyncLocalPin::from(loc));
         }
         log::info!(
             "[sync] snapshot: {} pins in {:.1}s (store lock held)",

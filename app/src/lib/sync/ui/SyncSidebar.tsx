@@ -6,6 +6,7 @@ import { Notice } from "@/components/primitives/Hint";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { Spinner } from "@/components/primitives/Spinner";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
+import { TextInput } from "@/components/primitives/TextInput";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiInformationOutline } from "@mdi/js";
 import type { Conflict, NormalizedSyncLocation } from "@/bindings.gen";
@@ -26,16 +27,94 @@ type Side = "local" | "remote";
 export interface SyncSidebarProps {
 	onClose: () => void;
 	controller: SyncController;
-	/** Rendered in the Connection section: the provider's own auth affordance. */
-	auth: ReactNode;
+	/** Rendered in the Connection section: the provider's own auth affordance. A provider
+	 *  with no account to connect omits it, and the section with it. */
+	auth?: ReactNode;
 	/**
 	 * `undefined` while the provider is still working out whether it has a session, `null` once
 	 * it knows there is none. The distinction matters: treating "not yet known" as "signed out"
 	 * flashes the whole sign-in UI for a moment on every open.
 	 */
 	identity: { id: string | null } | null | undefined;
-	/** Fetch linkable remote maps. Called when authenticated and unlinked. */
-	listMaps: () => Promise<RemoteMapSummary[]>;
+	source: LinkSource;
+}
+
+/** How the user picks what to link: a map from the provider's list, or an address they give. */
+export type LinkSource =
+	| {
+			kind: "list";
+			/** Fetch linkable remote maps. Called when authenticated and unlinked. */
+			listMaps: () => Promise<RemoteMapSummary[]>;
+	  }
+	| {
+			kind: "address";
+			placeholder: string;
+			/** Pick an address with a native dialog; null when cancelled. */
+			browse: () => Promise<string | null>;
+			/** Read what is at an address, to link to it. */
+			resolve: (address: string) => Promise<RemoteMapSummary>;
+	  };
+
+function AddressPicker({
+	source,
+	busy,
+	onPick,
+}: {
+	source: Extract<LinkSource, { kind: "address" }>;
+	busy: boolean;
+	onPick: (m: RemoteMapSummary) => void;
+}) {
+	const [address, setAddress] = useState("");
+	const [reading, setReading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const read = async (value: string) => {
+		const trimmed = value.trim();
+		if (!trimmed) return;
+		setReading(true);
+		setError(null);
+		try {
+			onPick(await source.resolve(trimmed));
+		} catch (e) {
+			setError(errText(e));
+		} finally {
+			setReading(false);
+		}
+	};
+
+	const browse = async () => {
+		const picked = await source.browse();
+		if (picked) {
+			setAddress(picked);
+			await read(picked);
+		}
+	};
+
+	return (
+		<Field label={t("Map file")}>
+			<div style={{ display: "flex", gap: 8 }}>
+				<TextInput
+					style={{ flex: 1 }}
+					value={address}
+					placeholder={source.placeholder}
+					disabled={busy || reading}
+					onChange={(e) => setAddress(e.target.value)}
+					onKeyDown={(e) => e.key === "Enter" && void read(address)}
+				/>
+				<Button disabled={busy || reading} onClick={() => void browse()}>
+					{t("Browse")}
+				</Button>
+			</div>
+			<Button
+				variant="primary"
+				disabled={busy || reading || !address.trim()}
+				onClick={() => void read(address)}
+			>
+				{reading ? t("Reading...") : t("Link")}
+			</Button>
+			{error && <Notice tone="error">{error}</Notice>}
+		</Field>
+	);
 }
 
 /** Compact signed-in row for the Connection section: avatar (or initial), name, action. */
@@ -89,6 +168,7 @@ const FIELD_TEXT: {
 	panoId: (v) => v ?? "none",
 	flags: (v) => String(v),
 	tags: (v) => (v.length ? v.join(", ") : "none"),
+	extra: (v) => (v ? JSON.stringify(v) : "none"),
 };
 
 const FIELDS = Object.keys(FIELD_TEXT) as (keyof NormalizedSyncLocation)[];
@@ -150,7 +230,7 @@ function ConflictItem({
 	);
 }
 
-export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: SyncSidebarProps) {
+export function SyncSidebar({ onClose, controller, auth, identity, source }: SyncSidebarProps) {
 	const icon = controller.provider.icon;
 	const [maps, setMaps] = useState<RemoteMapSummary[] | null>(null);
 	const [filter, setFilter] = useState("");
@@ -181,17 +261,18 @@ export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: S
 	);
 
 	// The prop is typically an inline arrow, so it can't be an effect dep.
+	const listMaps = source.kind === "list" ? source.listMaps : null;
 	const fetchMaps = useRef(listMaps);
 	fetchMaps.current = listMaps;
 	const [mapsAttempt, setMapsAttempt] = useState(0);
 
 	useEffect(() => {
-		if (!authed || !mapId || link) return;
+		const list = fetchMaps.current;
+		if (!list || !authed || !mapId || link) return;
 		let cancelled = false;
 		setMaps(null);
 		setError(null);
-		fetchMaps
-			.current()
+		list()
 			.then((m) => !cancelled && setMaps(m))
 			.catch((e: unknown) => !cancelled && setError(errText(e)));
 		return () => {
@@ -314,23 +395,25 @@ export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: S
 				) : undefined
 			}
 		>
-			<Section title={t("Connection")} defaultOpen>
-				{/* 2rem is the button height both auth states resolve to, so the swap does not shift. */}
-				{checking ? (
-					<div
-						style={{
-							display: "flex",
-							alignItems: "center",
-							justifyContent: "center",
-							minHeight: "2rem",
-						}}
-					>
-						<Spinner label={t("Checking connection")} />
-					</div>
-				) : (
-					auth
-				)}
-			</Section>
+			{(checking || auth != null) && (
+				<Section title={t("Connection")} defaultOpen>
+					{/* 2rem is the button height both auth states resolve to, so the swap does not shift. */}
+					{checking ? (
+						<div
+							style={{
+								display: "flex",
+								alignItems: "center",
+								justifyContent: "center",
+								minHeight: "2rem",
+							}}
+						>
+							<Spinner label={t("Checking connection")} />
+						</div>
+					) : (
+						auth
+					)}
+				</Section>
+			)}
 
 			{authed && !mapId && <EmptyState>{t("Open a map to link it.")}</EmptyState>}
 
@@ -455,7 +538,9 @@ export function SyncSidebar({ onClose, controller, auth, identity, listMaps }: S
 
 			{authed && mapId && !link && !pendingLink && (
 				<Section title={t("Link this map")} defaultOpen>
-					{!maps && error ? (
+					{source.kind === "address" ? (
+						<AddressPicker source={source} busy={busy} onPick={doLink} />
+					) : !maps && error ? (
 						<Button onClick={() => setMapsAttempt((n) => n + 1)}>{t("Retry loading maps")}</Button>
 					) : !maps ? (
 						<div style={{ display: "flex", justifyContent: "center", padding: "0.5rem 0" }}>

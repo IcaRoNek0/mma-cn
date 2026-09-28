@@ -613,6 +613,7 @@ this, never the contents of a result.
 
 ```ts
 SYNC_PROVIDERS: {
+  readonly file: { readonly direction: "pullOnly"; readonly shape: "local" };
   readonly geoguessr: {
     readonly direction: "bidirectional";
     readonly shape: "geoguessr";
@@ -4865,6 +4866,16 @@ cmd.fieldExprError(src: string): Promise<ExprError | null>
 ```
 
 The parse error for `src`, or `null` when it parses.
+
+#### cmd.fileSourceProbe
+
+`unstable` · unreleased
+
+```ts
+cmd.fileSourceProbe(address: string): Promise<FileSource>
+```
+
+Read the map file at a path or http(s) URL, to link a map to it.
 
 #### cmd.geoguessrHasSession
 

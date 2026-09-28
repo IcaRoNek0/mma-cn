@@ -109,6 +109,7 @@ fn norm(over: impl FnOnce(&mut NormalizedSyncLocation)) -> NormalizedSyncLocatio
         pano_id: None,
         flags: 0,
         tags: vec![],
+        extra: None,
     };
     over(&mut n);
     n

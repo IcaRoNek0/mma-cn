@@ -15,6 +15,7 @@ fn n(over: impl FnOnce(&mut NormalizedSyncLocation)) -> NormalizedSyncLocation {
         pano_id: None,
         flags: 0,
         tags: vec![],
+        extra: None,
     };
     over(&mut loc);
     loc

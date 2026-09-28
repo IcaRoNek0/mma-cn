@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ConnectionUser, SyncSidebar } from "@/lib/sync/ui/SyncSidebar";
 import { log } from "@/lib/util/log";
 import { errText } from "@/lib/util/format";
-import { controller, geoguessrProvider, PLUGIN_ID } from "./provider";
+import { controller, listMaps, PLUGIN_ID } from "./provider";
 import { t } from "@/lib/i18n";
 import { Button } from "@/components/primitives/Button";
 import { Notice } from "@/components/primitives/Hint";
@@ -94,7 +94,7 @@ export function GeoGuessrSidebar({ onClose }: { onClose: () => void }) {
 			controller={controller}
 			auth={auth}
 			identity={user === undefined ? undefined : user ? { id: user.id } : null}
-			listMaps={() => geoguessrProvider.listMaps()}
+			source={{ kind: "list", listMaps: () => listMaps() }}
 		/>
 	);
 }

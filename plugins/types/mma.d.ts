@@ -420,6 +420,10 @@ declare const PROJECTIONS: readonly [{
 }];
 /** Every sync provider: which way it carries changes, and what it keeps of a map. @unstable */
 declare const SYNC_PROVIDERS: {
+    readonly file: {
+        readonly direction: "pullOnly";
+        readonly shape: "local";
+    };
     readonly geoguessr: {
         readonly direction: "bidirectional";
         readonly shape: "geoguessr";
@@ -1012,6 +1016,8 @@ declare const commands$1: {
     mapMakingSetKey: (key: string | null) => Promise<null>;
     /**  Local-only check: is a key stored? Says nothing about its validity. @unstable */
     mapMakingHasKey: () => Promise<boolean>;
+    /**  Read the map file at a path or http(s) URL, to link a map to it. @unstable */
+    fileSourceProbe: (address: string) => Promise<FileSource>;
     /**
      *  Open the GeoGuessr sign-in window and wait for authentication to complete.
      *  Returns the signed-in nickname.
@@ -1608,6 +1614,12 @@ type FieldValuesResult = {
     resolved: number[];
     mutation: MutationResult;
 };
+/**  A map file as the link picker shows it. @unstable */
+type FileSource = {
+    /**  The name the file gives its map; empty when it names none. */
+    name: string;
+    locationCount: number;
+};
 /**
  *  A filter's predicate: the operator with its operands. Single source of truth: specta
  *  renders the tagged union, so the TS `FilterOp` type and `OP_LABELS` derive from it.
@@ -2031,6 +2043,10 @@ type NormalizedSyncLocation = {
     flags: number;
     /**  Tag names, deduped and sorted. Empty for providers with no tag support. */
     tags: string[];
+    /**  Custom fields, for a remote that keeps them; `null` for one that does not, or when empty. */
+    extra: {
+        [key in string]: unknown;
+    } | null;
 };
 /**  Equal-width bin sizing. `count` derives the width from the data range; `width` fixes it. */
 type NumericBinning = {
@@ -2752,6 +2768,10 @@ type SyncPatch = {
     panoId: string | null;
     flags: number | null;
     tags: string[] | null;
+    /**  A merge patch onto the custom fields: changed fields, and `null` for removed ones. */
+    extra: {
+        [key in string]: unknown;
+    } | null;
 };
 /**  Everything the reconcile settled to, for the JS side. Every array is empty on an unchanged map. @unstable */
 type SyncReconcileResult = {
@@ -7808,4 +7828,4 @@ declare global {
 }
 
 export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, SYNC_PROVIDERS, Sink, SyncDirection, VIRTUAL_FLAGS, ValidationState, commands$1 as commands, events };
-export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SaveResult, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };
+export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FileSource, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SaveResult, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };

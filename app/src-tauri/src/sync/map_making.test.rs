@@ -25,6 +25,7 @@ fn norm() -> NormalizedSyncLocation {
         pano_id: None,
         flags: 0,
         tags: vec![],
+        extra: None,
     }
 }
 
@@ -129,6 +130,7 @@ fn materialize_then_normalize_round_trips() {
         pano_id: Some("abc".into()),
         flags: 1, // LoadAsPanoId
         tags: vec!["blue".into(), "red".into()],
+        extra: None,
     };
     let item = p.materialize(&n);
     assert_eq!(item.id, 0);

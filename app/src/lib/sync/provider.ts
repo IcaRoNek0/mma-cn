@@ -20,7 +20,7 @@ export const isAuthPrefixed = (e: unknown): boolean =>
 
 /**
  * The UI half of a sync backend. The merge itself lives in Rust (see `syncReconcile`), which also
- * owns the credential; a provider only supplies the map picker and the browser URL.
+ * owns the credential; a provider only supplies its label, icon and browser URL.
  */
 export interface SyncProvider {
 	/** Persisted as the `provider` column of `remote_mapping`. Never change it for a shipped provider. */
@@ -29,11 +29,8 @@ export interface SyncProvider {
 	/** Provider mark (SVG path) for any UI that has to say which provider this is. */
 	readonly icon: string;
 
-	/** Web URL of a remote map, for opening it in the user's browser. */
-	remoteMapUrl(remoteMapId: string): string;
-
-	/** Maps the signed-in user can link to. */
-	listMaps(signal?: AbortSignal): Promise<RemoteMapSummary[]>;
+	/** Web URL of a remote map, for opening it in the user's browser; null when it has none. */
+	remoteMapUrl(remoteMapId: string): string | null;
 
 	/**
 	 * Whether an error from the reconcile means the session or key is no longer valid. The live

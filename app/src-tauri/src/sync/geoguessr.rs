@@ -198,6 +198,7 @@ impl SyncProvider for GeoGuessrProvider {
                 0
             },
             tags: vec![],
+            extra: None,
         }
         .onto(Self::SPEC.shape)
     }

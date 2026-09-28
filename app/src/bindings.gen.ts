@@ -464,6 +464,8 @@ export const commands = {
 	mapMakingSetKey: (key: string | null) => __TAURI_INVOKE<null>("map_making_set_key", { key }),
 	/**  Local-only check: is a key stored? Says nothing about its validity. */
 	mapMakingHasKey: () => __TAURI_INVOKE<boolean>("map_making_has_key"),
+	/**  Read the map file at a path or http(s) URL, to link a map to it. */
+	fileSourceProbe: (address: string) => __TAURI_INVOKE<FileSource>("file_source_probe", { address }),
 	/**
 	 *  Open the GeoGuessr sign-in window and wait for authentication to complete.
 	 *  Returns the signed-in nickname.
@@ -894,6 +896,13 @@ export type FieldValuesResult = {
 	mutation: MutationResult,
 };
 
+/**  A map file as the link picker shows it. */
+export type FileSource = {
+	/**  The name the file gives its map; empty when it names none. */
+	name: string,
+	locationCount: number,
+};
+
 /**
  *  A filter's predicate: the operator with its operands. Single source of truth: specta
  *  renders the tagged union, so the TS `FilterOp` type and `OP_LABELS` derive from it.
@@ -1253,6 +1262,8 @@ export type NormalizedSyncLocation = {
 	flags: number,
 	/**  Tag names, deduped and sorted. Empty for providers with no tag support. */
 	tags: string[],
+	/**  Custom fields, for a remote that keeps them; `null` for one that does not, or when empty. */
+	extra: { [key in string]: unknown } | null,
 };
 
 /**  Equal-width bin sizing. `count` derives the width from the data range; `width` fixes it. */
@@ -1949,6 +1960,8 @@ export type SyncPatch = {
 	panoId: string | null,
 	flags: number | null,
 	tags: string[] | null,
+	/**  A merge patch onto the custom fields: changed fields, and `null` for removed ones. */
+	extra: { [key in string]: unknown } | null,
 };
 
 /**  Everything the reconcile settled to, for the JS side. Every array is empty on an unchanged map. */

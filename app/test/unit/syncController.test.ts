@@ -105,7 +105,6 @@ function makeProvider(): SyncProvider {
 		label: "Fake",
 		icon: "M0 0",
 		remoteMapUrl: (id) => `https://fake.test/maps/${id}`,
-		listMaps: async () => [],
 	};
 }
 

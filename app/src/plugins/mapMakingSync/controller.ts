@@ -51,4 +51,5 @@ export async function adoptStoredKey(): Promise<void> {
 	if (kv.get<string>("apiKey", "")) kv.remove("apiKey");
 }
 
-export const listMaps = (): Promise<RemoteMapSummary[]> => mapMakingProvider.listMaps();
+/** Maps the stored key can link to. */
+export const listMaps = (): Promise<RemoteMapSummary[]> => window.MMA.cmd.mapMakingMaps();

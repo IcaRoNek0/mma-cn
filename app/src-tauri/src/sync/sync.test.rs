@@ -2,6 +2,7 @@ use super::*;
 use crate::sync::SyncLocalPin;
 use crate::types::shape::MapShape;
 use crate::types::{Location, LocationFlags};
+use serde_json::json;
 
 fn norm(over: impl FnOnce(&mut NormalizedSyncLocation)) -> NormalizedSyncLocation {
     let mut n = NormalizedSyncLocation {
@@ -13,6 +14,7 @@ fn norm(over: impl FnOnce(&mut NormalizedSyncLocation)) -> NormalizedSyncLocatio
         pano_id: None,
         flags: 0,
         tags: vec![],
+        extra: None,
     };
     over(&mut n);
     n
@@ -30,6 +32,7 @@ fn sync_key_distinguishes_every_contract_field() {
         norm(|n| n.pano_id = Some("p".into())),
         norm(|n| n.flags = 1),
         norm(|n| n.tags = vec!["a".into()]),
+        norm(|n| n.extra = json!({ "a": 1 }).as_object().cloned()),
     ];
     for v in &variants {
         assert_ne!(sync_key(&base), sync_key(v));
@@ -50,6 +53,18 @@ fn sync_hash_is_deterministic_and_compact() {
     assert!(h
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+}
+
+#[test]
+fn a_location_without_extra_keeps_the_hash_existing_links_stored() {
+    let n = norm(|n| {
+        n.lat = 51.5007;
+        n.lng = -0.1246;
+        n.pano_id = Some("OhCEnVaJyDMAAAQZLBEJPQ".into());
+        n.flags = 1;
+        n.tags = vec!["a".into(), "b".into()];
+    });
+    assert_eq!(sync_hash(&n), "280k4lz9iqc");
 }
 
 #[test]
@@ -127,4 +142,11 @@ fn onto_map_making_keeps_the_whole_contract() {
         n.tags = vec!["a".into()];
     });
     assert_eq!(n.clone().onto(MapShape::MapMaking), n);
+}
+
+#[test]
+fn onto_keeps_custom_fields_only_for_local() {
+    let n = norm(|n| n.extra = json!({ "score": 3 }).as_object().cloned());
+    assert_eq!(n.clone().onto(MapShape::Local), n);
+    assert_eq!(n.onto(MapShape::MapMaking).extra, None);
 }

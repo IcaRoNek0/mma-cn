@@ -136,6 +136,7 @@ impl SyncProvider for MapMakingProvider {
             pano_id: item.pano_id.clone(),
             flags: sync_flags(item.flags),
             tags: canon_tags(item.tags.iter().cloned()),
+            extra: None,
         }
     }
 

@@ -23,6 +23,7 @@ const noPatch = {
 	panoId: null,
 	flags: null,
 	tags: null,
+	extra: null,
 };
 
 /** Location 2 was edited remotely and location 3 was deleted remotely. */
@@ -66,9 +67,11 @@ function memMapping(seed: RemoteMappingRow[]): MappingBackend {
 type Step = "reconcile" | "update" | "remove";
 
 /** Fake MMA whose open map switches away right after `switchAfter` completes. */
-function setup(switchAfter: Step | null) {
+function setup(switchAfter: Step | null, result: SyncReconcileResult = RESULT) {
 	let mapId = MAP;
 	const calls: Step[] = [];
+	const added: Record<string, unknown>[] = [];
+	const updated: unknown[] = [];
 	const step = (s: Step) => {
 		calls.push(s);
 		if (s === switchAfter) mapId = "map-b";
@@ -78,13 +81,19 @@ function setup(switchAfter: Step | null) {
 		getTags: () => ({}),
 		createTags: async () => [],
 		createLocation: (p: unknown) => p,
-		addLocations: async () => {},
-		updateLocations: async () => step("update"),
+		addLocations: async (locs: Record<string, unknown>[]) => {
+			locs.forEach((l, i) => (l.id = 50 + i));
+			added.push(...locs);
+		},
+		updateLocations: async (u: unknown[]) => {
+			updated.push(...u);
+			step("update");
+		},
 		removeLocations: async () => step("remove"),
 		cmd: {
 			syncReconcile: async () => {
 				step("reconcile");
-				return RESULT;
+				return result;
 			},
 		},
 	};
@@ -98,7 +107,7 @@ function setup(switchAfter: Step | null) {
 		lastSyncedAt: null,
 	});
 	const provider = { id: PROVIDER } as SyncProvider;
-	return { store, calls, run: () => reconcile(provider, store) };
+	return { store, calls, added, updated, run: () => reconcile(provider, store) };
 }
 
 describe("sync reconcile apply step", () => {
@@ -130,5 +139,37 @@ describe("sync reconcile apply step", () => {
 
 		expect(calls).toEqual(["reconcile", "update", "remove"]);
 		expect(await store.getMapping()).toEqual([{ localId: 2, remoteId: 8, hash: "remote-2" }]);
+	});
+
+	it("lands custom fields: a pulled create carries them, a pulled update merges them", async () => {
+		const fields = {
+			lat: 1,
+			lng: 2,
+			heading: 0,
+			pitch: 0,
+			zoom: 0,
+			panoId: null,
+			flags: 0,
+			tags: [],
+			extra: { score: 3 },
+		};
+		const { added, updated, run } = setup(null, {
+			...RESULT,
+			pullCreates: [{ fields, remoteId: 0, hash: "h" }],
+			pullUpdates: [
+				{
+					localId: 2,
+					patch: { ...noPatch, extra: { score: 4, note: null } },
+					remoteId: 8,
+					hash: "u",
+				},
+			],
+			pullDeleteIds: [],
+		});
+
+		await run();
+
+		expect(added[0]).toMatchObject({ extra: { score: 3 } });
+		expect(updated).toEqual([{ id: 2, patch: { extra: { score: 4, note: null } } }]);
 	});
 });

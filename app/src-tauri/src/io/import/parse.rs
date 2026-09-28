@@ -45,14 +45,14 @@ pub(super) fn read_sequential(path: &str) -> io::Result<Vec<u8>> {
 /// Intermediate representation produced by all parsers (JSON, CSV, ZIP entry).
 /// Locations have placeholder IDs (0) -- real IDs are assigned at insert time.
 #[derive(Default)]
-pub(super) struct ParsedMap {
-    pub(super) name: String,
+pub(crate) struct ParsedMap {
+    pub(crate) name: String,
     pub(super) folder: Option<String>,
-    pub(super) locations: Vec<Location>,
+    pub(crate) locations: Vec<Location>,
     /// `(provisional id, pile)` pairs; ids are chunk-merge locals the store remaps.
-    pub(super) tags: Vec<(u32, ValueRecord)>,
+    pub(crate) tags: Vec<(u32, ValueRecord)>,
     pub(super) fields: Option<Value>,
-    pub(super) warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     /// Map settings carried by the import (`extra.settings`)
     pub(super) settings: serde_json::Map<String, Value>,
 }
@@ -255,7 +255,7 @@ pub(super) fn settings_from_extra(extra: &Value) -> serde_json::Map<String, Valu
 }
 
 /// Auto-detect format (JSON vs CSV) by first non-whitespace byte and dispatch.
-pub(super) fn parse_file(buf: &mut [u8]) -> ParsedMap {
+pub(crate) fn parse_file(buf: &mut [u8]) -> ParsedMap {
     let buf = if buf.starts_with(&[0xEF, 0xBB, 0xBF]) {
         &mut buf[3..]
     } else {

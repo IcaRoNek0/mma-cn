@@ -10,7 +10,7 @@ use crate::types::AppResult;
 use crate::types::RawExtra;
 use std::sync::Mutex;
 
-mod parse;
+pub(crate) mod parse;
 mod stage;
 use parse::*;
 pub use stage::*;
