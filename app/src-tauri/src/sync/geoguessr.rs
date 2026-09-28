@@ -237,6 +237,7 @@ impl SyncProvider for GeoGuessrProvider {
             return Err(ErrCode::GeoguessrPolygonal.err());
         }
         Ok(RemoteSnapshot {
+            tags: vec![],
             locations: draft.coordinates.unwrap_or_default(),
             token: Some(draft.version),
         })

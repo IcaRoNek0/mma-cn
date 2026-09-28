@@ -454,7 +454,7 @@ Per-location bitfield, serialized as a plain `u32` over IPC and Arrow.
 
 ### MapShape
 
-`stable` · unreleased
+`stable` · since v0.11.3
 
 ```ts
 MapShape: {
@@ -1046,7 +1046,7 @@ cluster (<= 25m) or thins to enforce spacing (> 25m). Returns the number pruned.
 
 ### query
 
-`stable` · unreleased
+`stable` · since v0.11.3
 
 ```ts
 query(selector: Selector): {
@@ -1128,7 +1128,7 @@ When a location already holds `to`, `winner` decides which value survives.
 
 ### renameTagsIn
 
-`stable` · unreleased
+`stable` · since v0.11.3
 
 ```ts
 renameTagsIn(
@@ -1466,7 +1466,7 @@ Remove a plugin from the registry.
 
 ### reloadStorage
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 reloadStorage(id: string): void
@@ -2405,7 +2405,7 @@ Look up metadata for a field key. Returns `undefined` if no layer declares it.
 
 ### getFieldKeys
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 getFieldKeys(): string[]
@@ -2829,7 +2829,7 @@ Merge the selection at `drag` into the one at `drop` as a `mode` composite, abso
 
 ### displayColor
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 displayColor(s: Selection): RGB
@@ -2929,7 +2929,7 @@ Order-sensitive, like the list it identifies. Key length is constant.
 
 ### moveSelection
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 moveSelection(
@@ -2954,7 +2954,7 @@ Locations not matching `selector`.
 
 ### onActive
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 onActive(
@@ -3025,7 +3025,7 @@ Remove the listed selections whose keys are `keys`. A removed group leaves its c
 
 ### removeSelectionAt
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 removeSelectionAt(
@@ -3065,7 +3065,7 @@ Rename or remove a field across all Filter selections. When `to` is null, filter
 
 ### selectionAt
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 selectionAt(
@@ -3183,7 +3183,7 @@ Ghost every listed selection, or un-ghost them all when every one already is.
 
 ### toggleInvert
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 toggleInvert(
@@ -3207,7 +3207,7 @@ Add or remove a location from the Manual selection, creating it if needed.
 
 ### toggleSelection
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 toggleSelection(
@@ -4265,7 +4265,7 @@ Permanently delete a map and all its data. Not undoable.
 
 ### getMapBadges
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 getMapBadges(): Map<string, MapBadge[]>
@@ -4275,7 +4275,7 @@ Badges per map id, from every registered source.
 
 ### getMapBadgeSources
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 getMapBadgeSources(): readonly BadgeSource[]
@@ -4335,7 +4335,7 @@ Open the scratch map, creating it on first use.
 
 ### registerMapBadges
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 registerMapBadges(source: BadgeSource): void
@@ -4375,7 +4375,7 @@ Set the map list directly without a disk read.
 
 ### useMapBadges
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 useMapBadges(): Map<string, MapBadge[]>
@@ -4454,7 +4454,7 @@ The active review session, or null.
 
 ### isAtEnd
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 isAtEnd(s: ReviewSession): boolean
@@ -4596,7 +4596,7 @@ Step back to the previous location in the session.
 
 ### reviewSelected
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 reviewSelected(): Promise<void>
@@ -4607,7 +4607,7 @@ resumes with it.
 
 ### reviewSet
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 reviewSet(s: ReviewSession, mode: ReviewMode): number[]
@@ -4617,7 +4617,7 @@ The session's locations in `mode`: those reviewed, or those still to review.
 
 ### reviewSetSelector
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 reviewSetSelector(s: ReviewSession, mode: ReviewMode): Selector
@@ -5186,7 +5186,7 @@ pairs. Fewer come back when the polygon fills little of its bounding box.
 
 #### cmd.polygonUntangle
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 cmd.polygonUntangle(polygon: PolygonGeometry): Promise<PolygonGeometry | null>
@@ -5792,7 +5792,7 @@ Find all locations within `radiusM` metres of (`lat`, `lng`).
 
 #### cmd.storeFindNearest
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 cmd.storeFindNearest(lat: number, lng: number): Promise<Location | null>
@@ -5856,7 +5856,7 @@ Group by a derived key, returning `{ key, ids, bin }` per group.
 
 #### cmd.storeImportCancel
 
-`unstable` · unreleased
+`unstable` · since v0.11.3
 
 ```ts
 cmd.storeImportCancel(): Promise<void>

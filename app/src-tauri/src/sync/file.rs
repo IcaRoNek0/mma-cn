@@ -10,10 +10,10 @@ use serde::Serialize;
 
 use crate::io::import::parse::{parse_file, ParsedMap};
 use crate::net::proxy;
-use crate::store::engine::record_name;
+use crate::store::engine::{record_name, record_order};
 use crate::sync::{
     local_to_normalized, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch, PushedId,
-    RemoteSnapshot, SyncDirection, SyncLocalPin, SyncProvider,
+    RemoteSnapshot, RemoteTag, SyncDirection, SyncLocalPin, SyncProvider,
 };
 use crate::types::shape::MapShape;
 use crate::types::{AppError, AppResult};
@@ -73,6 +73,22 @@ fn read_source(address: &str) -> AppResult<ParsedMap> {
     Ok(map)
 }
 
+fn remote_tags(map: &ParsedMap) -> Vec<RemoteTag> {
+    map.tags
+        .iter()
+        .filter_map(|(_, rec)| {
+            record_name(rec).map(|name| RemoteTag {
+                name: name.to_string(),
+                color: rec
+                    .get("color")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                order: record_order(rec),
+            })
+        })
+        .collect()
+}
+
 fn normalized(map: ParsedMap) -> Vec<NormalizedSyncLocation> {
     let names: HashMap<u32, String> = map
         .tags
@@ -106,8 +122,10 @@ impl SyncProvider for FileProvider {
     }
 
     fn pull(&self, address: &str) -> AppResult<RemoteSnapshot<NormalizedSyncLocation>> {
+        let map = read_source(address)?;
         Ok(RemoteSnapshot {
-            locations: normalized(read_source(address)?),
+            tags: remote_tags(&map),
+            locations: normalized(map),
             token: None,
         })
     }

@@ -103,6 +103,7 @@ struct Fake {
     items: RefCell<Vec<Raw>>,
     next_rid: Cell<i64>,
     pushes: RefCell<Vec<Recorded>>,
+    catalog: Vec<RemoteTag>,
 }
 
 impl Fake {
@@ -112,6 +113,7 @@ impl Fake {
             items: RefCell::new(initial),
             next_rid: Cell::new(1000),
             pushes: RefCell::new(Vec::new()),
+            catalog: Vec::new(),
         }
     }
     fn stable(initial: Vec<Raw>) -> Self {
@@ -169,6 +171,7 @@ impl SyncProvider for Fake {
     }
     fn pull(&self, _remote_map_id: &str) -> AppResult<RemoteSnapshot<Raw>> {
         Ok(RemoteSnapshot {
+            tags: self.catalog.clone(),
             locations: self.items(),
             token: None,
         })
@@ -430,8 +433,41 @@ fn pull_create_reports_needed_tags() {
 
     let out = sync(&provider, &[], &[], &no_tags(), &mut sink);
 
-    assert_eq!(out.needed_tags, vec!["blue".to_string()]);
+    assert_eq!(out.needed_tags.len(), 1);
+    assert_eq!(out.needed_tags[0].name, "blue");
+    assert_eq!(out.needed_tags[0].color, None);
     assert_eq!(out.pull_creates.len(), 1);
+}
+
+#[test]
+fn needed_tags_adopt_the_source_catalog_in_its_order() {
+    let mut provider = Fake::stable(vec![raw(
+        |n| {
+            n.lat = 5.0;
+            n.tags = vec!["blue".into(), "red".into(), "loose".into()];
+        },
+        Some(7),
+    )]);
+    provider.catalog = vec![
+        RemoteTag {
+            name: "blue".into(),
+            color: Some("#0000ff".into()),
+            order: Some(2),
+        },
+        RemoteTag {
+            name: "red".into(),
+            color: Some("#ff0000".into()),
+            order: Some(1),
+        },
+    ];
+    let mut sink = MemSink::new();
+
+    let out = sync(&provider, &[], &[], &no_tags(), &mut sink);
+
+    let names: Vec<&str> = out.needed_tags.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["red", "blue", "loose"]);
+    assert_eq!(out.needed_tags[0].color.as_deref(), Some("#ff0000"));
+    assert_eq!(out.needed_tags[2].color, None);
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +914,7 @@ impl SyncProvider for ChunkedFake {
     }
     fn pull(&self, _remote_map_id: &str) -> AppResult<RemoteSnapshot<Raw>> {
         Ok(RemoteSnapshot {
+            tags: vec![],
             locations: vec![],
             token: None,
         })
@@ -993,6 +1030,7 @@ impl SyncProvider for PartialPushFake {
     }
     fn pull(&self, _remote_map_id: &str) -> AppResult<RemoteSnapshot<Raw>> {
         Ok(RemoteSnapshot {
+            tags: vec![],
             locations: self.items.borrow().clone(),
             token: None,
         })

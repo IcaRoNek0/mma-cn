@@ -173,6 +173,7 @@ impl SyncProvider for MapMakingProvider {
             return Err(api_error(status, &body));
         }
         Ok(RemoteSnapshot {
+            tags: vec![],
             locations: decode_response(&body).map_err(|e| AppError(format!("{e:#}")))?,
             token: None,
         })

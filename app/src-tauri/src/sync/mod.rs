@@ -338,6 +338,22 @@ wire_str_enum! {
 pub struct RemoteSnapshot<R> {
     pub locations: Vec<R>,
     pub token: Option<i64>,
+    /// The source's tag catalog, for the look a tag a pull creates should adopt.
+    /// Empty when the source carries none.
+    pub tags: Vec<RemoteTag>,
+}
+
+/// A tag as the source of a pull describes it. A tag the sync creates takes this
+/// look; a tag that already exists keeps its own.
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTag {
+    /// The tag's name.
+    pub name: String,
+    /// The tag's color; null when the source names none.
+    pub color: Option<String>,
+    /// The tag's position in the source's ordering; null when the source keeps none.
+    pub order: Option<u32>,
 }
 
 /// One entry of the full desired remote state. `local_id` is `None` for remote-only

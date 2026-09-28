@@ -1629,6 +1629,19 @@ export type RemoteMappingRow = {
 	hash: string,
 };
 
+/**
+ *  A tag as the source of a pull describes it. A tag the sync creates takes this
+ *  look; a tag that already exists keeps its own.
+ */
+export type RemoteTag = {
+	/**  The tag's name. */
+	name: string,
+	/**  The tag's color; null when the source names none. */
+	color: string | null,
+	/**  The tag's position in the source's ordering; null when the source keeps none. */
+	order: number | null,
+};
+
 /**  Marker changes after an edit: added, updated, and removed markers. */
 export type RenderDelta = {
 	added: RenderEntry[],
@@ -1972,7 +1985,7 @@ export type SyncReconcileResult = {
 	pulled: SideCounts,
 	adopted: number,
 	conflicts: Conflict[],
-	neededTags: string[],
+	neededTags: RemoteTag[],
 	pullCreates: PullCreate[],
 	pullUpdates: PullUpdate[],
 	pullDeleteIds: number[],

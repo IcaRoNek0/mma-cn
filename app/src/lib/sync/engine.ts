@@ -103,9 +103,17 @@ export async function reconcile(
 	for (const t of Object.values(M.getTags())) nameToId.set(t.name, t.id);
 
 	// Create any local tags the incoming pulls reference, then resolve names -> ids.
+	// A tag the sync creates adopts the source's color; an existing tag keeps its own.
 	if (result.neededTags.length) {
 		assertStillOpen();
-		for (const t of await M.createTags(result.neededTags)) nameToId.set(t.name, t.id);
+		const existing = new Set(nameToId.values());
+		const created = await M.createTags(result.neededTags.map((t) => t.name));
+		for (const t of created) nameToId.set(t.name, t.id);
+		const color = new Map(result.neededTags.map((t) => [t.name, t.color]));
+		const recolors = created
+			.filter((t) => !existing.has(t.id) && color.get(t.name) != null)
+			.map((t) => ({ id: t.id, patch: { color: color.get(t.name)! } }));
+		if (recolors.length) await M.updateTags(recolors);
 	}
 	const tagId: TagId = (name) => nameToId.get(name);
 

@@ -44,6 +44,24 @@ fn pull_reads_tags_by_name_and_custom_fields_without_nulls() {
 }
 
 #[test]
+fn pull_carries_the_source_tag_catalog() {
+    let path = source(&json!({
+        "customCoordinates": [coord(1.0, &json!({ "tags": ["A", "B"] }))],
+        "extra": { "tags": {
+            "A": { "color": [255, 0, 0], "order": 2 },
+            "B": { "color": [0, 255, 0], "order": 1 }
+        } }
+    }));
+    let snap = FileProvider.pull(path.to_str().unwrap()).unwrap();
+    let by_name: HashMap<&str, &RemoteTag> =
+        snap.tags.iter().map(|t| (t.name.as_str(), t)).collect();
+    assert_eq!(by_name["A"].color.as_deref(), Some("#ff0000"));
+    assert_eq!(by_name["A"].order, Some(2));
+    assert_eq!(by_name["B"].color.as_deref(), Some("#00ff00"));
+    assert_eq!(by_name["B"].order, Some(1));
+}
+
+#[test]
 fn a_github_page_address_means_the_raw_file() {
     assert_eq!(
         resolved("https://github.com/o/r/blob/main/maps/a%20b.json"),

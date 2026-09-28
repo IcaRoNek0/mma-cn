@@ -26,8 +26,8 @@ use crate::sync::map_making::MapMakingProvider;
 use crate::sync::remote_mapping::{self, RemoteMappingRow};
 use crate::sync::{
     parse_local_key, sync_hash, Conflict, DesiredEntry, FirstSyncMode, IdentityKey, IdentityModel,
-    NormalizedSyncLocation, ProviderSpec, PushBatch, PushedId, RemoteSnapshot, SideCounts,
-    SyncDirection, SyncLocalPin, SyncPlan, SyncProvider,
+    NormalizedSyncLocation, ProviderSpec, PushBatch, PushedId, RemoteSnapshot, RemoteTag,
+    SideCounts, SyncDirection, SyncLocalPin, SyncPlan, SyncProvider,
 };
 use crate::types::shape::MapPart;
 use crate::types::{AppError, AppResult};
@@ -99,7 +99,7 @@ pub struct SyncReconcileResult {
     pub pulled: SideCounts,
     pub adopted: u32,
     pub conflicts: Vec<Conflict>,
-    pub needed_tags: Vec<String>,
+    pub needed_tags: Vec<RemoteTag>,
     pub pull_creates: Vec<PullCreate>,
     pub pull_updates: Vec<PullUpdate>,
     pub pull_delete_ids: Vec<u32>,
@@ -125,7 +125,7 @@ pub(crate) struct PlannedReconcile<R> {
     pub counts_pull: SideCounts,
     pub conflicts: Vec<Conflict>,
     pub adopted: u32,
-    pub needed_tags: Vec<String>,
+    pub needed_tags: Vec<RemoteTag>,
     pub pull_creates: Vec<PullCreate>,
     pub pull_updates: Vec<PullUpdate>,
     pub pull_delete_ids: Vec<u32>,
@@ -358,19 +358,34 @@ pub(crate) fn plan<P: SyncProvider>(
     }
 
     // Local tags the incoming pulls reference that don't exist yet (created by the apply step).
+    // Each carries the source catalog's look, and the batch follows the source's ordering.
     let name_set: HashSet<&str> = input.tag_names.values().map(String::as_str).collect();
-    let mut needed_tags: Vec<String> = Vec::new();
+    let mut needed_tags: Vec<RemoteTag> = Vec::new();
     if provider.spec().shape.keeps(MapPart::Tags) {
+        let catalog: HashMap<&str, &RemoteTag> = input
+            .remote
+            .tags
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
         let mut seen: HashSet<String> = HashSet::new();
         for key in plan.pull.create.iter().chain(plan.pull.update.iter()) {
             if let Some(n) = keyed.remote.get(key) {
                 for t in &n.tags {
                     if !name_set.contains(t.as_str()) && seen.insert(t.clone()) {
-                        needed_tags.push(t.clone());
+                        needed_tags.push(catalog.get(t.as_str()).map_or_else(
+                            || RemoteTag {
+                                name: t.clone(),
+                                color: None,
+                                order: None,
+                            },
+                            |&r| r.clone(),
+                        ));
                     }
                 }
             }
         }
+        needed_tags.sort_by_key(|t| t.order.unwrap_or(u32::MAX));
     }
 
     // Post-sync content per key. Seeded from the whole local side, not just touched keys: a
