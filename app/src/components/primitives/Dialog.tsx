@@ -23,8 +23,9 @@ export const RESIZE_MS = 220;
 export const RESIZE_EASING = "cubic-bezier(0.2, 0, 0, 1)";
 
 /** Where a modal's top edge sits for its height: centred when it opens or the window resizes
- *  (`anchor` null). Growth holds the top so it runs downward; shrinking settles back toward
- *  centre, never above it. Either way it stays on screen. */
+ *  (`anchor` null), and `anchor` is that opening top afterwards. Growth holds the opening top
+ *  so it runs downward; shrinking settles back toward centre, never above it. Either way it
+ *  stays on screen. */
 export function modalTop(anchor: number | null, height: number, viewport: number): number {
 	const gap = Math.round(viewport * 0.05);
 	const centred = Math.round((viewport - height) / 2);
@@ -43,11 +44,13 @@ function followContentHeight(frame: HTMLDivElement | null) {
 	const style = getComputedStyle(frame);
 	const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
 	let height: number | null = null;
+	let openTop: number | null = null;
 	let top: number | null = null;
 	let resize: Animation | null = null;
 
 	const place = (next: number, animate: boolean) => {
-		const nextTop = modalTop(top, next, window.innerHeight);
+		const nextTop = modalTop(openTop, next, window.innerHeight);
+		openTop ??= nextTop;
 		if (nextTop === top) return;
 		if (animate && top !== null) {
 			popup.animate([{ marginTop: `${top}px` }, { marginTop: `${nextTop}px` }], {
@@ -86,6 +89,7 @@ function followContentHeight(frame: HTMLDivElement | null) {
 	});
 	const onViewportResize = () => {
 		if (height === null) return;
+		openTop = null;
 		top = null;
 		place(height, false);
 	};

@@ -18,6 +18,12 @@ describe("a modal's top edge", () => {
 		expect(modalTop(150, 400, 1000)).toBe(300);
 	});
 
+	it("returns to where it opened when it shrinks and grows back", () => {
+		const opened = modalTop(null, 400, 1000);
+		expect(modalTop(opened, 200, 1000)).toBe(400);
+		expect(modalTop(opened, 400, 1000)).toBe(opened);
+	});
+
 	it("moves up only as far as keeping the bottom on screen needs", () => {
 		expect(modalTop(300, 800, 1000)).toBe(150);
 	});
