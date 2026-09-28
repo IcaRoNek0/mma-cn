@@ -2692,6 +2692,9 @@ input[type="range"]:disabled {
 	gap: 0.5rem;
 }
 .export-modal__filename {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
 	border-radius: var(--radius-1);
 	padding: 0.5rem;
 }
