@@ -4,16 +4,12 @@ const glslUniformBlock = `\
 layout(std140) uniform sdfMarkerUniforms {
   float radiusPixels;
   highp int shapeType;
-  float flattenOpacity;
 } sdfMarker;
 `;
 
 export type SDFMarkerProps = {
 	radiusPixels: number;
 	shapeType: number;
-	// > 0 enables layer-level translucency: output premultiplied color scaled by
-	// this value, alpha left at full shape coverage (see markerLayer.ts blending).
-	flattenOpacity: number;
 };
 
 export const sdfMarkerUniforms = {
@@ -24,6 +20,5 @@ export const sdfMarkerUniforms = {
 	uniformTypes: {
 		radiusPixels: "f32",
 		shapeType: "i32",
-		flattenOpacity: "f32",
 	},
 } as const satisfies ShaderModule<SDFMarkerProps>;
