@@ -65,6 +65,7 @@
 	"Adjust zoom": "调整缩放",
 	"Adjusting Street View opacity": "调整街景透明度",
 	"Adjusting marker opacity": "调整标记透明度",
+	"Adjusting selected marker opacity": "调整所选标记透明度",
 	"Adopted {n}": "接管 {n}",
 	"Advanced": "高级",
 	"Advanced filters": "高级筛选",
@@ -1130,6 +1131,7 @@
 	"Select-only mode is on.": "仅选择模式已开启。",
 	"Select...": "选择…",
 	"Selected locations": "所选位置",
+	"Selected marker layer opacity": "所选标记图层透明度",
 	"Selected {n} failed locations": {
 		"other": "已选择 {n} 个失败位置"
 	},

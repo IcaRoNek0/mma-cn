@@ -13,7 +13,7 @@ import { getReviewSession } from "@/lib/review/review";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { useMapKeyboardNav } from "@/lib/hooks/useMapKeyboardNav";
-import { markerLayerOpacity, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { layerOpacity, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 
 export interface MapSurfaceOpts {
 	prefs: MapEmbedPrefs;
@@ -53,7 +53,8 @@ export function useMapSurface(
 	const panoDotScaled = useSetting("panoDotScaled");
 	const scoreMaxError = useScoreMaxError();
 
-	const markerOpacity = markerLayerOpacity(opts.prefs);
+	const markerOpacity = layerOpacity(opts.prefs, "marker");
+	const selectedOpacity = layerOpacity(opts.prefs, "selected");
 	const rebuild = useCallback(() => {
 		const overlay = overlayRef.current;
 		if (!overlay) return;
@@ -68,6 +69,7 @@ export function useMapSurface(
 		const layers = buildSceneLayers(getScene(), {
 			markerStyle: opts.prefs.markerStyle,
 			markerOpacity,
+			selectedOpacity,
 			markerSize: opts.prefs.markerSize,
 			showPerfectScoreCircle: opts.prefs.showPerfectScoreCircle,
 			scoreMaxError,
@@ -96,6 +98,7 @@ export function useMapSurface(
 		importPreviewColor,
 		opts.prefs.markerStyle,
 		markerOpacity,
+		selectedOpacity,
 		opts.prefs.markerSize,
 		opts.prefs.showPerfectScoreCircle,
 		opts.prefs.svPanoramas,

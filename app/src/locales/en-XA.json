@@ -71,6 +71,7 @@
 	"Adjust zoom": "[Åðĵüşţ žööɱ åéîöü]",
 	"Adjusting Street View opacity": "[Åðĵüşţîñǧ Şţŕééţ Ṽîéŵ öƥåçîţý åéîöüåéîöüåé]",
 	"Adjusting marker opacity": "[Åðĵüşţîñǧ ɱåŕķéŕ öƥåçîţý åéîöüåéîöü]",
+	"Adjusting selected marker opacity": "[Åðĵüşţîñǧ şéĺéçţéð ɱåŕķéŕ öƥåçîţý åéîöüåéîöüåéîö]",
 	"Adopted {n}": "[Åðöƥţéð {n} åéîö]",
 	"Advanced": "[Åðṽåñçéð åéîö]",
 	"Advanced filters": "[Åðṽåñçéð ƒîĺţéŕş åéîöüåé]",
@@ -1166,6 +1167,7 @@
 	"Select-only mode is on.": "[Şéĺéçţ-öñĺý ɱöðé îş öñ. åéîöüåéîöü]",
 	"Select...": "[Şéĺéçţ... åéîö]",
 	"Selected locations": "[Şéĺéçţéð ĺöçåţîöñş åéîöüåéî]",
+	"Selected marker layer opacity": "[Şéĺéçţéð ɱåŕķéŕ ĺåýéŕ öƥåçîţý åéîöüåéîöüåé]",
 	"Selected {n} failed locations": {
 		"one": "[Şéĺéçţéð {n} ƒåîĺéð ĺöçåţîöñ åéîöüåéîöü]",
 		"other": "[Şéĺéçţéð {n} ƒåîĺéð ĺöçåţîöñş åéîöüåéîöüå]"

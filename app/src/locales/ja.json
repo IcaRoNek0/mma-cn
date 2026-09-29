@@ -65,6 +65,7 @@
 	"Adjust zoom": "ズームを調整",
 	"Adjusting Street View opacity": "ストリートビューの不透明度を調整中",
 	"Adjusting marker opacity": "マーカーの不透明度を調整中",
+	"Adjusting selected marker opacity": "選択したマーカーの不透明度を調整中",
 	"Adopted {n}": "取り込み {n}",
 	"Advanced": "詳細",
 	"Advanced filters": "詳細フィルター",
@@ -1130,6 +1131,7 @@
 	"Select-only mode is on.": "選択専用モードが有効です。",
 	"Select...": "選択...",
 	"Selected locations": "選択した地点",
+	"Selected marker layer opacity": "選択したマーカーレイヤーの不透明度",
 	"Selected {n} failed locations": {
 		"other": "失敗した地点 {n} 件を選択しました"
 	},

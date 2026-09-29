@@ -83,6 +83,7 @@
 	"Adjust zoom": "Изменить зум",
 	"Adjusting Street View opacity": "Изменение прозрачности Street View",
 	"Adjusting marker opacity": "Изменение прозрачности маркеров",
+	"Adjusting selected marker opacity": "Изменение прозрачности выбранных маркеров",
 	"Adopted {n}": "Сопоставлено {n}",
 	"Advanced": "Расширенные",
 	"Advanced filters": "Расширенные фильтры",
@@ -1238,6 +1239,7 @@
 	"Select-only mode is on.": "Режим только выбора включён.",
 	"Select...": "Выберите...",
 	"Selected locations": "Выбранные локации",
+	"Selected marker layer opacity": "Прозрачность слоя выбранных маркеров",
 	"Selected {n} failed locations": {
 		"one": "Выбрана {n} неудачная локация",
 		"few": "Выбрано {n} неудачные локации",

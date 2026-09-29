@@ -17,7 +17,7 @@ import {
 import { builtinStyle } from "@/lib/geo/mapStyles";
 import { BLOBBY_ZOOM_THRESHOLD } from "@/lib/sv/constants";
 import { createCompositeMapType, type TileLayer } from "@/lib/geo/stackedMapType";
-import { svLayerOpacity, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { layerOpacity, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 
 export interface CustomStyle {
 	name: string;
@@ -55,7 +55,7 @@ export function createSvTileSource(prefs: MapEmbedPrefs): SvTileSource {
 	const blobbyAt = (z: number) => blobby !== null && z <= BLOBBY_ZOOM_THRESHOLD;
 	const url = (x: number, y: number, z: number) =>
 		buildTileUrl(blobbyAt(z) ? blobby! : line, x, y, z);
-	const opacity = svLayerOpacity(prefs);
+	const opacity = layerOpacity(prefs, "sv");
 	const dimmed = prefs.svCoverageType !== "default" ? opacity * 0.6 : opacity;
 	return {
 		url,
@@ -150,7 +150,7 @@ export function buildMapStack(prefs: MapEmbedPrefs, opts: BuildOpts): google.map
 
 	// A hidden coverage layer is left out entirely rather than stacked at zero alpha
 	const sv = createSvTileSource(prefs);
-	if (svLayerOpacity(prefs) > 0) layers.push({ url: sv.url, opacity: sv.opacity });
+	if (layerOpacity(prefs, "sv") > 0) layers.push({ url: sv.url, opacity: sv.opacity });
 
 	if (prefs.showLabels && prefs.mapType !== "osm") {
 		const labelCfg =

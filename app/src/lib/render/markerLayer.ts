@@ -53,10 +53,10 @@ export function buildMarkerLayer(
 	buf: MarkerBuf,
 	colorVer: number,
 	posVer: number,
-	opacity?: number,
+	opacity: number,
 	sizeScale = 1,
 ): Layer {
-	const flatten = opacity != null && opacity > 0 && opacity < 1;
+	const flatten = opacity > 0 && opacity < 1;
 	const s = MARKER_STYLE[markerStyle];
 	const attributes: Record<string, unknown> = {
 		getPosition: { value: buf.positions, size: 2 },
@@ -81,9 +81,7 @@ export function buildMarkerLayer(
 		...props,
 		...(flatten
 			? { flattenOpacity: flatOpacity, parameters: flattenParameters(flatOpacity) }
-			: opacity != null
-				? { opacity }
-				: {}),
+			: { opacity }),
 		updateTriggers: {
 			getFillColor: [colorVer],
 			getVisible: [colorVer],
@@ -123,4 +121,32 @@ export function baseMarkerLayers(
 		);
 	}
 	return out;
+}
+
+// Selected markers ride on top as their own pickable layer; otherwise clicks fall through to
+// the cell layer where selected markers have no z-priority, and an overlapping neighbor gets
+// picked instead of the marker on top.
+export function selectedMarkerLayers(
+	cm: CellManager,
+	markerStyle: MarkerStyle,
+	opacity: number,
+	markerSize = 1,
+): Layer[] {
+	if (opacity <= 0 || cm.overlay.count === 0) return [];
+	return [
+		buildMarkerLayer(
+			markerStyle,
+			"sel-overlay",
+			cm.overlay.count,
+			{
+				positions: cm.overlay.positions,
+				angles: cm.overlay.angles,
+				color: { kind: "perMarker", colors: cm.overlay.colors },
+			},
+			cm.overlay.version,
+			cm.overlay.version,
+			opacity,
+			markerSize,
+		),
+	];
 }

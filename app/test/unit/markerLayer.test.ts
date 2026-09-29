@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
+	baseMarkerLayers,
 	buildMarkerLayer,
 	MARKER_STYLE,
 	renderPos,
+	selectedMarkerLayers,
 	type MarkerBuf,
 } from "@/lib/render/markerLayer";
+import { CellManager } from "@/lib/render/CellManager";
+import { delta, entry, paint } from "./fixtures/renderFixtures";
 import SDFMarkerLayer from "@/lib/render/sdf-marker-layer/SDFMarkerLayer";
 import type { MarkerStyle } from "@/types";
 
@@ -14,7 +18,7 @@ const buf: MarkerBuf = {
 	color: { kind: "perMarker", colors: new Uint8Array([255, 0, 0, 255]) },
 };
 
-function build(style: MarkerStyle, opacity?: number) {
+function build(style: MarkerStyle, opacity: number) {
 	return buildMarkerLayer(style, "t", 1, buf, 0, 0, opacity) as unknown as {
 		constructor: unknown;
 		selector: Record<string, unknown>;
@@ -39,12 +43,6 @@ describe("marker layer flattening (layer-level opacity)", () => {
 		expect(layer.props.parameters).toEqual({});
 	});
 
-	it("layers without an opacity (selection overlay) never flatten", () => {
-		const layer = build("pin", undefined);
-		expect(layer.props.flattenOpacity).toBe(0);
-		expect(layer.props.parameters).toEqual({});
-	});
-
 	it("every marker style uses the SDF layer with its style shape", () => {
 		for (const style of Object.keys(MARKER_STYLE) as MarkerStyle[]) {
 			for (const opacity of [0.5, 1]) {
@@ -54,6 +52,33 @@ describe("marker layer flattening (layer-level opacity)", () => {
 				expect(layer.props.radiusPixels).toBeCloseTo(MARKER_STYLE[style].radiusPixels);
 			}
 		}
+	});
+});
+
+describe("selected marker layer", () => {
+	const seeded = () => {
+		const cm = new CellManager();
+		cm.applyDelta(
+			delta({
+				added: [entry("s", 1, 10, 20, 0, paint([255, 0, 0])), entry("s", 2, 30, 40)],
+			}),
+		);
+		return cm;
+	};
+
+	it("draws the selected markers at their own opacity, independent of the rest", () => {
+		const cm = seeded();
+		const [layer] = selectedMarkerLayers(cm, "pin", 0.5) as unknown as {
+			props: Record<string, unknown>;
+		}[];
+		expect(layer.props.flattenOpacity).toBeCloseTo(Math.pow(0.5, 1 / 2.2));
+		expect(baseMarkerLayers(cm, "pin", [0, 0, 0, 255], 0)).toEqual([]);
+	});
+
+	it("draws nothing when hidden, even with unselected markers showing", () => {
+		const cm = seeded();
+		expect(selectedMarkerLayers(cm, "pin", 0)).toEqual([]);
+		expect(baseMarkerLayers(cm, "pin", [0, 0, 0, 255], 1)).toHaveLength(1);
 	});
 });
 

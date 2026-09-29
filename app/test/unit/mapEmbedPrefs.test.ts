@@ -1,19 +1,23 @@
 import { describe, it, expect } from "vitest";
 import {
 	DEFAULT_PREFS,
-	markerLayerOpacity,
-	svLayerOpacity,
+	layerOpacity,
 	toggledLayer,
+	type OpacityLayer,
 } from "@/store/mapEmbedPrefs";
 import { migrationsFor } from "@/store/migrations";
 
 describe("layer opacity", () => {
-	it("gates each layer's opacity on its visibility", () => {
-		const prefs = { ...DEFAULT_PREFS, svOpacity: 0.5, markerOpacity: 0.5 };
-		expect(svLayerOpacity(prefs)).toBe(0.5);
-		expect(markerLayerOpacity(prefs)).toBe(0.5);
-		expect(svLayerOpacity({ ...prefs, svVisible: false })).toBe(0);
-		expect(markerLayerOpacity({ ...prefs, markerVisible: false })).toBe(0);
+	it("gates each layer's opacity on its own visibility", () => {
+		const prefs = { ...DEFAULT_PREFS, svOpacity: 0.5, markerOpacity: 0.4, selectedOpacity: 0.3 };
+		const layers: OpacityLayer[] = ["sv", "marker", "selected"];
+		for (const layer of layers) {
+			expect(layerOpacity(prefs, layer)).toBe(prefs[`${layer}Opacity`]);
+			const hidden = { ...prefs, [`${layer}Visible`]: false };
+			for (const other of layers) {
+				expect(layerOpacity(hidden, other)).toBe(other === layer ? 0 : prefs[`${other}Opacity`]);
+			}
+		}
 	});
 });
 

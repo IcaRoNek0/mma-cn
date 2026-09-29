@@ -77,6 +77,7 @@
 	"Adjust zoom": "Ajustar el zoom",
 	"Adjusting Street View opacity": "Ajustando la opacidad de Street View",
 	"Adjusting marker opacity": "Ajustando la opacidad de los marcadores",
+	"Adjusting selected marker opacity": "Ajustando la opacidad de los marcadores seleccionados",
 	"Adopted {n}": "Adoptados {n}",
 	"Advanced": "Avanzado",
 	"Advanced filters": "Filtros avanzados",
@@ -1202,6 +1203,7 @@
 	"Select-only mode is on.": "El modo solo selección está activado.",
 	"Select...": "Seleccionar...",
 	"Selected locations": "Ubicaciones seleccionadas",
+	"Selected marker layer opacity": "Opacidad de la capa de marcadores seleccionados",
 	"Selected {n} failed locations": {
 		"one": "Seleccionada {n} ubicación fallida",
 		"many": "Seleccionadas {n} ubicaciones fallidas",

@@ -7051,6 +7051,8 @@ export interface MapEmbedPrefs {
     markerStyle: MarkerStyle;
     markerOpacity: number;
     markerVisible: boolean;
+    selectedOpacity: number;
+    selectedVisible: boolean;
     markerSize: number;
     showPerfectScoreCircle: boolean;
     showSearchRadiusCursor: boolean;

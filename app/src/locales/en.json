@@ -71,6 +71,7 @@
 	"Adjust zoom": "Adjust zoom",
 	"Adjusting Street View opacity": "Adjusting Street View opacity",
 	"Adjusting marker opacity": "Adjusting marker opacity",
+	"Adjusting selected marker opacity": "Adjusting selected marker opacity",
 	"Adopted {n}": "Adopted {n}",
 	"Advanced": "Advanced",
 	"Advanced filters": "Advanced filters",
@@ -1166,6 +1167,7 @@
 	"Select-only mode is on.": "Select-only mode is on.",
 	"Select...": "Select...",
 	"Selected locations": "Selected locations",
+	"Selected marker layer opacity": "Selected marker layer opacity",
 	"Selected {n} failed locations": {
 		"one": "Selected {n} failed location",
 		"other": "Selected {n} failed locations"

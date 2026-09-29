@@ -3,7 +3,7 @@ import { ScatterplotLayer, PolygonLayer, PathLayer, LineLayer, TextLayer } from 
 import SDFMarkerLayer from "@/lib/render/sdf-marker-layer/SDFMarkerLayer";
 import {
 	baseMarkerLayers,
-	buildMarkerLayer,
+	selectedMarkerLayers,
 	MARKER_STYLE,
 	renderPos,
 } from "@/lib/render/markerLayer";
@@ -116,6 +116,7 @@ export type PolyGeom = { poly: object; fill: Position[][][]; stroke: Position[][
 interface SceneContext {
 	markerStyle: MarkerStyle;
 	markerOpacity: number;
+	selectedOpacity: number;
 	markerSize: number;
 	showPerfectScoreCircle: boolean;
 	scoreMaxError: number;
@@ -250,27 +251,7 @@ export function buildSceneLayers(cm: CellManager, ctx: SceneContext): Layer[] {
 		}
 	}
 
-	// Selection overlay rides on top as its own pickable layer — otherwise clicks fall through to
-	// the cell layer where selected markers have no z-priority, and an overlapping neighbor gets
-	// picked instead of the marker on top.
-	if (cm.overlay.count > 0) {
-		layers.push(
-			buildMarkerLayer(
-				ctx.markerStyle,
-				"sel-overlay",
-				cm.overlay.count,
-				{
-					positions: cm.overlay.positions,
-					angles: cm.overlay.angles,
-					color: { kind: "perMarker", colors: cm.overlay.colors },
-				},
-				cm.overlay.version,
-				cm.overlay.version,
-				undefined,
-				ctx.markerSize,
-			),
-		);
-	}
+	layers.push(...selectedMarkerLayers(cm, ctx.markerStyle, ctx.selectedOpacity, ctx.markerSize));
 
 	// Staged import preview markers; clicking one opens a read-only preview. Drawn *under* the
 	// active marker, which highlights whichever staged location is open — no per-index coloring.

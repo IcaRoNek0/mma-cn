@@ -83,6 +83,7 @@
 	"Adjust zoom": "Dostosuj przybliżenie",
 	"Adjusting Street View opacity": "Dostosowywanie krycia Street View",
 	"Adjusting marker opacity": "Dostosowywanie krycia znaczników",
+	"Adjusting selected marker opacity": "Dostosowywanie krycia zaznaczonych znaczników",
 	"Adopted {n}": "Przejęto {n}",
 	"Advanced": "Zaawansowane",
 	"Advanced filters": "Filtry zaawansowane",
@@ -1238,6 +1239,7 @@
 	"Select-only mode is on.": "Tryb tylko zaznaczania jest włączony.",
 	"Select...": "Wybierz...",
 	"Selected locations": "Zaznaczone lokalizacje",
+	"Selected marker layer opacity": "Krycie warstwy zaznaczonych znaczników",
 	"Selected {n} failed locations": {
 		"one": "Zaznaczono {n} nieudaną lokalizację",
 		"few": "Zaznaczono {n} nieudane lokalizacje",
