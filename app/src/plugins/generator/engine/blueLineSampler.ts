@@ -13,7 +13,7 @@ const CLIP_BATCH = 50_000;
 const MAX_TILES_PER_AXIS = 150;
 /** The axis cap whose zoom sets the point-density baseline that `keepRate` thins to. */
 const BASE_TILES_PER_AXIS = 50;
-const FETCH_CONCURRENCY = 24;
+const FETCH_CONCURRENCY = 96;
 const SCAN_YIELD_EVERY = 6;
 const EARTH_CIRCUMFERENCE_M = 40_075_016.686;
 const EARTH_RADIUS_M = 6_371_008.8;
@@ -207,6 +207,35 @@ async function fetchTileBlob(
 	}
 }
 
+/** Yields each wave of tiles with the next wave already fetching, so the network stays
+ *  busy while the shared canvas scans. Ends on abort; whatever is still in flight is
+ *  closed when it lands. */
+async function* prefetchedWaves(
+	cfg: TileConfig,
+	jobs: { tx: number; ty: number }[],
+	zoom: number,
+	signal: AbortSignal,
+): AsyncGenerator<{ batch: { tx: number; ty: number }[]; bitmaps: (ImageBitmap | null)[] }> {
+	const waves = chunk(jobs, FETCH_CONCURRENCY);
+	const fetchWave = (wave: { tx: number; ty: number }[]) =>
+		Promise.all(wave.map((job) => fetchTileBlob(cfg, job.tx, job.ty, zoom, signal)));
+	let inFlight = waves.length > 0 ? fetchWave(waves[0]!) : null;
+	try {
+		for (let i = 0; i < waves.length; i++) {
+			const bitmaps = await inFlight!;
+			inFlight = i + 1 < waves.length ? fetchWave(waves[i + 1]!) : null;
+			if (signal.aborted) {
+				for (const bitmap of bitmaps) bitmap?.close();
+				return;
+			}
+			yield { batch: waves[i]!, bitmaps };
+		}
+	} finally {
+		const pending = inFlight;
+		if (pending) void pending.then((bitmaps) => bitmaps.forEach((bitmap) => bitmap?.close()));
+	}
+}
+
 function scanTile(
 	bmp: ImageBitmap,
 	tileX: number,
@@ -307,15 +336,13 @@ export function blueLineSource(
 			shuffle(tileJobs);
 
 			// Fetch tiles concurrently, scan pixels sequentially (canvas is shared)
-			for (const batch of chunk(tileJobs, FETCH_CONCURRENCY)) {
+			for await (const { batch, bitmaps: bmps } of prefetchedWaves(
+				cfg,
+				tileJobs,
+				plan.zoom,
+				signal,
+			)) {
 				if (signal.aborted) return;
-				const bmps = await Promise.all(
-					batch.map((j) => fetchTileBlob(cfg, j.tx, j.ty, plan.zoom, signal)),
-				);
-				if (signal.aborted) {
-					for (const bitmap of bmps) bitmap?.close();
-					return;
-				}
 				const pixelXs: number[] = [];
 				const pixelYs: number[] = [];
 				const scanned: { tx: number; ty: number }[] = [];
@@ -399,15 +426,8 @@ async function spacedRun(
 	shuffle(tileJobs);
 	let total = 0;
 	let completed = 0;
-	for (const batch of chunk(tileJobs, FETCH_CONCURRENCY)) {
+	for await (const { batch, bitmaps } of prefetchedWaves(cfg, tileJobs, zoom, signal)) {
 		if (signal.aborted) return;
-		const bitmaps = await Promise.all(
-			batch.map((job) => fetchTileBlob(cfg, job.tx, job.ty, zoom, signal)),
-		);
-		if (signal.aborted) {
-			for (const bitmap of bitmaps) bitmap?.close();
-			return;
-		}
 		if (bitmaps.some((bitmap) => !bitmap)) {
 			for (const bitmap of bitmaps) bitmap?.close();
 			throw new Error("Coverage tiles could not be loaded for the complete spacing plan");
