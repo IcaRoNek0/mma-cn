@@ -4,6 +4,7 @@ import { NSelect } from "@/components/primitives/NSelect";
 import { Radio } from "@/components/primitives/Radio";
 import { Checkbox } from "@/components/primitives/Checkbox";
 import { SwitchRow } from "@/components/primitives/SwitchRow";
+import { Hint } from "@/components/primitives/Hint";
 import { Section, SegmentedControl } from "@/components/primitives/Sidebar";
 import { t } from "@/lib/i18n";
 import { fieldValueLabel, getFieldDef } from "@/lib/data/fieldDefRegistry";
@@ -19,6 +20,7 @@ function NumberInput({
 	max,
 	step,
 	indent,
+	disabled,
 }: {
 	label: string;
 	value: number;
@@ -27,6 +29,7 @@ function NumberInput({
 	max?: number;
 	step?: number;
 	indent?: boolean;
+	disabled?: boolean;
 }) {
 	return (
 		<label className={`generator-settings__number ${indent ? "generator-settings__indent" : ""}`}>
@@ -38,6 +41,7 @@ function NumberInput({
 				min={min}
 				max={max}
 				step={step}
+				disabled={disabled}
 			/>
 		</label>
 	);
@@ -53,6 +57,7 @@ function DistanceInput({
 	min,
 	max,
 	indent,
+	disabled,
 }: {
 	label?: string;
 	base: "m" | "km";
@@ -61,6 +66,7 @@ function DistanceInput({
 	min?: number;
 	max?: number;
 	indent?: boolean;
+	disabled?: boolean;
 }) {
 	useSetting("units");
 	const unit = distanceUnit(base);
@@ -72,6 +78,7 @@ function DistanceInput({
 			min={min != null ? unit.toDisplay(min) : undefined}
 			max={max != null ? unit.toDisplay(max) : undefined}
 			indent={indent}
+			disabled={disabled}
 		/>
 	);
 }
@@ -108,9 +115,11 @@ function RadioGroup({
 export function SettingsPanel({
 	settings,
 	onChange,
+	running,
 }: {
 	settings: GeneratorSettings;
 	onChange: (patch: Partial<GeneratorSettings>) => void;
+	running: boolean;
 }) {
 	const set = <K extends keyof GeneratorSettings>(key: K, val: GeneratorSettings[K]) =>
 		onChange({ [key]: val });
@@ -315,6 +324,35 @@ export function SettingsPanel({
 			</Section>
 
 			<Section title={t("General settings")}>
+				<div className="generator-settings__number">
+					{t("Goal")}
+					<SegmentedControl
+						value={settings.objective}
+						onChange={(v) => set("objective", v as GeneratorSettings["objective"])}
+						options={[
+							{ value: "count", label: t("Count"), disabled: running },
+							{ value: "spacing", label: t("Spacing"), disabled: running },
+						]}
+					/>
+				</div>
+				{settings.objective === "spacing" && (
+					<>
+						<DistanceInput
+							label={t("Spacing")}
+							base="m"
+							value={settings.spacing}
+							onChange={(v) => set("spacing", v)}
+							min={10}
+							max={1000000}
+							disabled={running}
+						/>
+						<Hint>
+							{t(
+								"Spacing defines the probe plan. Road coverage and panorama snapping can change the final distances.",
+							)}
+						</Hint>
+					</>
+				)}
 				<DistanceInput
 					label={t("Radius")}
 					base="m"
@@ -323,30 +361,32 @@ export function SettingsPanel({
 					min={10}
 					max={1000000}
 				/>
-				<div className="generator-settings__number">
-					{t("Sampling")}
-					<SegmentedControl
-						value={settings.samplingMode}
-						onChange={(v) => set("samplingMode", v as GeneratorSettings["samplingMode"])}
-						options={[
-							{ value: "random", label: t("Random") },
-							{ value: "poisson", label: t("Uniform") },
-							{ value: "grid", label: t("Grid") },
-							{ value: "blueline", label: t("Coverage") },
-							{ value: "kernels", label: t("Grow") },
-						]}
-					/>
-				</div>
-				{settings.samplingMode === "blueline" && (
+				{settings.objective === "count" && (
 					<div className="generator-settings__number">
-						{t("Distribution")}
+						{t("Sampling")}
+						<SegmentedControl
+							value={settings.samplingMode}
+							onChange={(v) => set("samplingMode", v as GeneratorSettings["samplingMode"])}
+							options={[
+								{ value: "random", label: t("Random"), disabled: running },
+								{ value: "poisson", label: t("Uniform"), disabled: running },
+								{ value: "grid", label: t("Grid"), disabled: running },
+								{ value: "blueline", label: t("Coverage"), disabled: running },
+								{ value: "kernels", label: t("Grow"), disabled: running },
+							]}
+						/>
+					</div>
+				)}
+				{settings.objective === "count" && settings.samplingMode === "blueline" && (
+					<div className="generator-settings__number">
+						{t("Allocation")}
 						<SegmentedControl
 							value={settings.distribution}
 							onChange={(v) => set("distribution", v as GeneratorSettings["distribution"])}
 							options={[
-								{ value: "density", label: t("Density") },
-								{ value: "balanced", label: t("Balanced") },
-								{ value: "even", label: t("Even") },
+								{ value: "density", label: t("Road density"), disabled: running },
+								{ value: "balanced", label: t("Balanced"), disabled: running },
+								{ value: "even", label: t("Area balanced"), disabled: running },
 							]}
 						/>
 					</div>

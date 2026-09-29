@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { GeneratorSettings, GeneratorRegion, GeneratorRegionMeta } from "../engine/types";
-import { DEFAULT_SETTINGS, GENERATION_CAMERA_TYPE } from "../engine/types";
+import { GENERATION_CAMERA_TYPE, normalizeGeneratorSettings } from "../engine/types";
 import { RegionSelector } from "./RegionSelector";
 import { SettingsPanel } from "./SettingsPanel";
 import { google } from "@/lib/sv/opensv";
@@ -45,8 +45,7 @@ import { Button } from "@/components/primitives/Button";
 const genStore = storage("map-generator");
 
 function loadSettings(): GeneratorSettings {
-	const saved = genStore.get<Partial<GeneratorSettings>>("settings");
-	return { ...DEFAULT_SETTINGS, ...saved };
+	return normalizeGeneratorSettings(genStore.get<unknown>("settings"));
 }
 
 function saveSettings(s: GeneratorSettings) {
@@ -195,7 +194,11 @@ function summarizeSettings(s: GeneratorSettings): string {
 
 	// Radius
 	parts.push(t("{radius} radius", { radius: formatDistance(s.radius) }));
-	if (s.samplingMode !== "random") parts.push(t("{mode} sampling", { mode: s.samplingMode }));
+	if (s.objective === "spacing") {
+		parts.push(t("{distance} spacing", { distance: formatDistance(s.spacing) }));
+	} else if (s.samplingMode !== "random") {
+		parts.push(t("{mode} sampling", { mode: s.samplingMode }));
+	}
 
 	// Date behavior
 	if (s.checkAllDates) parts.push(t("checking all dates"));
@@ -353,6 +356,7 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 		>
 			<Section title={t("Regions ({n})", { n: polygonSelections.length })}>
 				<RegionSelector
+					objective={settings.objective}
 					defaultTarget={settings.defaultTarget}
 					onDefaultTargetChange={(v) => updateSettings({ defaultTarget: v })}
 					meta={meta}
@@ -361,7 +365,7 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 				/>
 			</Section>
 
-			<SettingsPanel settings={settings} onChange={updateSettings} />
+			<SettingsPanel settings={settings} onChange={updateSettings} running={running} />
 
 			<Section title={t("Output")}>
 				<label className="settings-popup__item settings-popup__select">

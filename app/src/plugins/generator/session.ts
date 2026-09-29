@@ -50,11 +50,18 @@ function progressFrame(): void {
 	requestAnimationFrame(() => {
 		frameQueued = false;
 		if (run) {
-			const { found, target } = run.engine.progress();
-			run.job.update(
-				target > 0 ? Math.min(found / target, 1) : 0,
-				`${fmt.format(found)} / ${fmt.format(target)}`,
-			);
+			const progress = run.engine.progress();
+			if (progress.objective === "count") {
+				run.job.update(
+					progress.target > 0 ? Math.min(progress.found / progress.target, 1) : 0,
+					`${fmt.format(progress.found)} / ${fmt.format(progress.target)}`,
+				);
+			} else {
+				run.job.update(
+					progress.fraction,
+					t({ one: "{n} location", other: "{n} locations" }, { n: progress.found }),
+				);
+			}
 		}
 		emitPluginEvent(GENERATOR_CHANGED);
 	});
@@ -83,8 +90,8 @@ export function startGeneration(
 	let tagId: number | null = null;
 	const engine = new GenerationEngine(settings, regions, {
 		onLocationsFound: (locs) => {
-			void MMA.addLocations(locs.map((l) => generatedToLocation(l, tagId)));
 			progressFrame();
+			return MMA.addLocations(locs.map((l) => generatedToLocation(l, tagId))).then(() => {});
 		},
 		onProgress: progressFrame,
 		onRegionComplete: progressFrame,

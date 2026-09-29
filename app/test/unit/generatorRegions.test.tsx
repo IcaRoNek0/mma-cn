@@ -34,10 +34,15 @@ function region(target: number, found: number, isProcessing = false): GeneratorR
 	};
 }
 
-function render(selections: Selection[], meta: Map<string, GeneratorRegionMeta>) {
+function render(
+	selections: Selection[],
+	meta: Map<string, GeneratorRegionMeta>,
+	objective: "count" | "spacing" = "count",
+) {
 	h.selections = selections;
 	return mount(
 		<RegionSelector
+			objective={objective}
 			defaultTarget={10}
 			onDefaultTargetChange={() => {}}
 			meta={meta}
@@ -89,5 +94,25 @@ describe("the generator region list", () => {
 		const rows = [...m.container.querySelectorAll(".generator-regions__item-name")];
 		expect(rows[0].querySelector(".spinner")).not.toBeNull();
 		expect(rows[1].querySelector(".spinner")).toBeNull();
+	});
+
+	it("shows found counts without target controls for a spacing run", () => {
+		const m = render(
+			[polygon("a", "France", "FR"), polygon("b", "Spain", "ES")],
+			new Map([
+				["a", region(10, 3)],
+				["b", region(25, 7)],
+			]),
+			"spacing",
+		);
+
+		expect(m.container.querySelector(".generator-regions__controls")).toBeNull();
+		expect(m.container.querySelectorAll('input[type="number"]')).toHaveLength(0);
+		expect(m.container.querySelector(".generator-regions__total")?.textContent).toBe("Total: 10");
+		expect(
+			[...m.container.querySelectorAll(".generator-regions__item-count")].map(
+				(row) => row.textContent,
+			),
+		).toEqual(["3", "7"]);
 	});
 });

@@ -38,6 +38,7 @@ function RegionRow({
 	target,
 	processing,
 	running,
+	objective,
 	onTargetChange,
 }: {
 	sel: Selection;
@@ -45,11 +46,15 @@ function RegionRow({
 	target: number;
 	processing: boolean;
 	running: boolean;
+	objective: "count" | "spacing";
 	onTargetChange: (v: number) => void;
 }) {
 	const name = getPolygonName(sel);
 	const code = getPolygonCode(sel);
-	const rate = useFoundRate(found, running && found < target);
+	const rate = useFoundRate(
+		found,
+		running && (objective === "spacing" ? processing : found < target),
+	);
 	return (
 		<div className="generator-regions__item">
 			<div className="generator-regions__item-name">
@@ -59,26 +64,33 @@ function RegionRow({
 			</div>
 			<div className="generator-regions__item-count">
 				{rate != null && <span className="generator-regions__rate mono">{rateLabel(rate)}</span>}
-				{found} /
-				<TextInput
-					type="number"
-					min={found || 1}
-					value={target}
-					onChange={(e) => onTargetChange(Number(e.target.value) || 1)}
-					style={{ width: "5rem", fontSize: "inherit" }}
-				/>
+				{found}
+				{objective === "count" && (
+					<>
+						{" /"}
+						<TextInput
+							type="number"
+							min={found || 1}
+							value={target}
+							onChange={(e) => onTargetChange(Number(e.target.value) || 1)}
+							style={{ width: "5rem", fontSize: "inherit" }}
+						/>
+					</>
+				)}
 			</div>
 		</div>
 	);
 }
 
 export function RegionSelector({
+	objective,
 	defaultTarget,
 	onDefaultTargetChange,
 	meta,
 	onMetaChange,
 	running,
 }: {
+	objective: "count" | "spacing";
 	defaultTarget: number;
 	onDefaultTargetChange: (v: number) => void;
 	meta: Map<string, GeneratorRegionMeta>;
@@ -159,28 +171,30 @@ export function RegionSelector({
 					{t("+ click to select a country outline.")}
 				</Hint>
 			)}
-			<div className="generator-regions__controls">
-				<label className="generator-regions__target-label">
-					{t("Locations per region:")}
-					<TextInput
-						type="number"
-						min={1}
-						value={defaultTarget}
-						onChange={(e) => onDefaultTargetChange(Number(e.target.value) || 10)}
-						style={{ width: "5.5rem" }}
-					/>
-				</label>
-				<Button
-					style={{ fontSize: "inherit" }}
-					disabled={polygonSelections.length === 0}
-					onClick={() => {
-						setCapInput("");
-						setCapDialogOpen(true);
-					}}
-				>
-					{t("Change all caps")}
-				</Button>
-			</div>
+			{objective === "count" && (
+				<div className="generator-regions__controls">
+					<label className="generator-regions__target-label">
+						{t("Locations per region:")}
+						<TextInput
+							type="number"
+							min={1}
+							value={defaultTarget}
+							onChange={(e) => onDefaultTargetChange(Number(e.target.value) || 10)}
+							style={{ width: "5.5rem" }}
+						/>
+					</label>
+					<Button
+						style={{ fontSize: "inherit" }}
+						disabled={polygonSelections.length === 0}
+						onClick={() => {
+							setCapInput("");
+							setCapDialogOpen(true);
+						}}
+					>
+						{t("Change all caps")}
+					</Button>
+				</div>
+			)}
 			<Dialog open={capDialogOpen} onOpenChange={setCapDialogOpen}>
 				<DialogContent title={t("Change all caps")} size="sm">
 					<DialogForm onSubmit={confirmCap}>
@@ -212,23 +226,40 @@ export function RegionSelector({
 									target={m?.target ?? defaultTarget}
 									processing={m?.isProcessing ?? false}
 									running={running}
+									objective={objective}
 									onTargetChange={(v) => setTarget(sel.key, v)}
 								/>
 							);
 						})}
 					</div>
-					<TotalRow found={totalFound} target={totalTarget} running={running} />
+					<TotalRow
+						found={totalFound}
+						target={totalTarget}
+						running={running}
+						objective={objective}
+					/>
 				</>
 			)}
 		</div>
 	);
 }
 
-function TotalRow({ found, target, running }: { found: number; target: number; running: boolean }) {
-	const rate = useFoundRate(found, running && found < target);
+function TotalRow({
+	found,
+	target,
+	running,
+	objective,
+}: {
+	found: number;
+	target: number;
+	running: boolean;
+	objective: "count" | "spacing";
+}) {
+	const rate = useFoundRate(found, running && (objective === "spacing" || found < target));
 	return (
 		<div className="generator-regions__total">
-			{t("Total:")} {found} / {target}
+			{t("Total:")} {found}
+			{objective === "count" && ` / ${target}`}
 			{rate != null && <span className="generator-regions__rate mono">{rateLabel(rate)}</span>}
 		</div>
 	);

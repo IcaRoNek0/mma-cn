@@ -11,6 +11,8 @@ export const GENERATION_CAMERA_TYPE = {
 } as const satisfies Record<GeneratorSettings["generation"], CameraType>;
 
 export interface GeneratorSettings {
+	objective: GenerationObjective;
+	spacing: number;
 	defaultTarget: number;
 	radius: number;
 	rejectUnofficial: boolean;
@@ -60,15 +62,36 @@ export interface GeneratorSettings {
 	zoomLevel: number;
 	/** How coverage-mode probes allocate over the road network: proportional to road
 	 *  density, evenly per area, or halfway between. */
-	distribution: "density" | "balanced" | "even";
+	distribution: CoverageDistribution;
 	samplingMode: SamplingMode;
 }
 
 export type SamplingMode = "random" | "poisson" | "grid" | "blueline" | "kernels";
+export type GenerationObjective = "count" | "spacing";
+export type CoverageDistribution = "density" | "balanced" | "even";
+export type CountSamplingPlan =
+	| { mode: "random" }
+	| { mode: "poisson" }
+	| { mode: "grid" }
+	| { mode: "blueline"; distribution: CoverageDistribution }
+	| { mode: "kernels" };
 
-/** A region's supply of probe points, drawn `n` at a time; a draw waits while more are on
- *  the way, and an empty draw means it is used up. */
-export type PointSource = (n: number) => Promise<LatLng[]>;
+export type GenerationPlan =
+	| {
+			objective: "count";
+			sampling: CountSamplingPlan;
+	  }
+	| {
+			objective: "spacing";
+			sampling: { mode: "blueline"; spacing: number };
+	  };
+
+/** A finite supply of probe points. An empty draw means the supply is exhausted. */
+export interface PointSource {
+	take(n: number): Promise<LatLng[]>;
+	cancel(): void;
+	progress(): number;
+}
 
 export type SearchMode = "contains" | "fullword" | "startswith" | "endswith" | "sectionmatch";
 
@@ -76,6 +99,8 @@ const now = new Date();
 const pad = (n: number) => (n < 10 ? "0" : "") + n;
 
 export const DEFAULT_SETTINGS: GeneratorSettings = {
+	objective: "count",
+	spacing: 1000,
 	defaultTarget: 10,
 	radius: 500,
 	rejectUnofficial: true,
@@ -127,6 +152,45 @@ export const DEFAULT_SETTINGS: GeneratorSettings = {
 	distribution: "density",
 };
 
+const SAMPLING_MODES = new Set<SamplingMode>(["random", "poisson", "grid", "blueline", "kernels"]);
+const COVERAGE_DISTRIBUTIONS = new Set<CoverageDistribution>(["density", "balanced", "even"]);
+const validSpacing = (value: unknown): value is number =>
+	typeof value === "number" && Number.isFinite(value) && value >= 10 && value <= 1_000_000;
+
+export function normalizeGeneratorSettings(saved: unknown): GeneratorSettings {
+	const value = saved && typeof saved === "object" ? (saved as Partial<GeneratorSettings>) : {};
+	const settings = { ...DEFAULT_SETTINGS, ...value };
+	return {
+		...settings,
+		objective: value.objective === "spacing" ? "spacing" : "count",
+		spacing: validSpacing(value.spacing) ? value.spacing : DEFAULT_SETTINGS.spacing,
+		samplingMode: SAMPLING_MODES.has(settings.samplingMode)
+			? settings.samplingMode
+			: DEFAULT_SETTINGS.samplingMode,
+		distribution: COVERAGE_DISTRIBUTIONS.has(settings.distribution)
+			? settings.distribution
+			: DEFAULT_SETTINGS.distribution,
+	};
+}
+
+export function buildGenerationPlan(settings: GeneratorSettings): GenerationPlan {
+	if (settings.objective === "spacing") {
+		return {
+			objective: "spacing",
+			sampling: {
+				mode: "blueline",
+				spacing: validSpacing(settings.spacing) ? settings.spacing : DEFAULT_SETTINGS.spacing,
+			},
+		};
+	}
+	return settings.samplingMode === "blueline"
+		? {
+				objective: "count",
+				sampling: { mode: "blueline", distribution: settings.distribution },
+			}
+		: { objective: "count", sampling: { mode: settings.samplingMode } };
+}
+
 export interface GeneratorStats {
 	probesPerSec: number;
 	locsPerSec: number;
@@ -137,6 +201,10 @@ export interface GeneratorStats {
 	rejected: number;
 	spread: number | null;
 }
+
+export type GeneratorProgress =
+	| { objective: "count"; found: number; target: number }
+	| { objective: "spacing"; found: number; fraction: number };
 
 export interface GeneratorRegionMeta {
 	target: number;
@@ -159,7 +227,7 @@ export type GeneratedLocation = PanoView &
 	Pick<Location, "lat" | "lng"> & { imageDate: string | null };
 
 export interface GenerationCallbacks {
-	onLocationsFound: (locs: GeneratedLocation[]) => void;
+	onLocationsFound: (locs: GeneratedLocation[]) => void | Promise<void>;
 	onProgress: (regionId: string, found: number, target: number) => void;
 	onRegionComplete: (regionId: string) => void;
 	onError?: (error: Error) => void;

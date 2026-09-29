@@ -15,6 +15,9 @@ const MAX_TILES_PER_AXIS = 150;
 const BASE_TILES_PER_AXIS = 50;
 const FETCH_CONCURRENCY = 24;
 const SCAN_YIELD_EVERY = 6;
+const EARTH_CIRCUMFERENCE_M = 40_075_016.686;
+const EARTH_RADIUS_M = 6_371_008.8;
+const PIXEL_KEY_SCALE = 2 ** 24;
 
 /** Finer tiles put the jittered probe on the road instead of somewhere in a coarse
  *  pixel's cell; thinning each pixel back to the base zoom's line density keeps the
@@ -66,6 +69,47 @@ export function thinCells(
 	ys.length = w;
 }
 
+export function spacedFilter(spacingMeters: number): (points: LatLng[]) => LatLng[] {
+	const cells = new Map<string, { x: number; y: number; z: number }[]>();
+	return (points) => {
+		const kept: LatLng[] = [];
+		for (const point of points) {
+			const lat = (point.lat * Math.PI) / 180;
+			const lng = (point.lng * Math.PI) / 180;
+			const scale = EARTH_RADIUS_M / spacingMeters;
+			const cosLat = Math.cos(lat);
+			const x = scale * cosLat * Math.cos(lng);
+			const y = scale * cosLat * Math.sin(lng);
+			const z = scale * Math.sin(lat);
+			const cx = Math.floor(x);
+			const cy = Math.floor(y);
+			const cz = Math.floor(z);
+			let clear = true;
+			for (let dx = -1; dx <= 1 && clear; dx++) {
+				for (let dy = -1; dy <= 1 && clear; dy++) {
+					for (let dz = -1; dz <= 1 && clear; dz++) {
+						const bucket = cells.get(`${cx + dx}:${cy + dy}:${cz + dz}`);
+						if (!bucket) continue;
+						clear = bucket.every((other) => {
+							const ox = x - other.x;
+							const oy = y - other.y;
+							const oz = z - other.z;
+							return ox * ox + oy * oy + oz * oz >= 1;
+						});
+					}
+				}
+			}
+			if (!clear) continue;
+			const key = `${cx}:${cy}:${cz}`;
+			let bucket = cells.get(key);
+			if (!bucket) cells.set(key, (bucket = []));
+			bucket.push({ x, y, z });
+			kept.push(point);
+		}
+		return kept;
+	};
+}
+
 /** Columns run east from the northwest tile, wrapping the world, so a region crossing
  *  the antimeridian counts forward instead of coming out negative and scanning nothing. */
 function tileCols(nwX: number, seX: number, zoom: number): number {
@@ -73,21 +117,53 @@ function tileCols(nwX: number, seX: number, zoom: number): number {
 	return ((seX - nwX + perAxis) % perAxis) + 1;
 }
 
-export function calculateZoom(b: Bounds, maxPerAxis: number) {
+function tilePlanAt(b: Bounds, zoom: number) {
 	const nwWorld = latLngToWorld({ lat: b.north, lng: b.west });
 	const seWorld = latLngToWorld({ lat: b.south, lng: b.east });
+	const nw = worldToTile(nwWorld.x, nwWorld.y, zoom);
+	const se = worldToTile(seWorld.x, seWorld.y, zoom);
+	return { zoom, nwTile: nw, seTile: se, cols: tileCols(nw.x, se.x, zoom), rows: se.y - nw.y + 1 };
+}
+
+export function calculateZoom(b: Bounds, maxPerAxis: number) {
 	for (let zoom = 16; zoom >= 0; zoom--) {
-		const nw = worldToTile(nwWorld.x, nwWorld.y, zoom);
-		const se = worldToTile(seWorld.x, seWorld.y, zoom);
-		const cols = tileCols(nw.x, se.x, zoom);
-		const rows = se.y - nw.y + 1;
-		if (cols <= maxPerAxis && rows <= maxPerAxis) {
-			return { zoom, nwTile: nw, seTile: se, cols, rows };
-		}
+		const plan = tilePlanAt(b, zoom);
+		if (plan.cols <= maxPerAxis && plan.rows <= maxPerAxis) return plan;
 	}
-	const nw = worldToTile(nwWorld.x, nwWorld.y, 0);
-	const se = worldToTile(seWorld.x, seWorld.y, 0);
-	return { zoom: 0, nwTile: nw, seTile: se, cols: tileCols(nw.x, se.x, 0), rows: se.y - nw.y + 1 };
+	return tilePlanAt(b, 0);
+}
+
+export function spacedZoom(b: Bounds, spacingMeters: number, maxZoom: number): number {
+	if (!Number.isFinite(spacingMeters) || spacingMeters <= 0)
+		throw new RangeError("Invalid spacing");
+	const midLat = (((b.north + b.south) / 2) * Math.PI) / 180;
+	const zoom = Math.ceil(
+		Math.log2((EARTH_CIRCUMFERENCE_M * Math.cos(midLat)) / (TILE_SIZE * (spacingMeters / 16))),
+	);
+	return Math.min(Math.max(zoom, 0), maxZoom);
+}
+
+export function sampleGridlines(
+	pixels: Set<number>,
+	zoom: number,
+	spacing: number,
+	suppress: (points: LatLng[]) => LatLng[] = spacedFilter(spacing * 0.8),
+): LatLng[] {
+	const points: LatLng[] = [];
+	for (const key of pixels) {
+		const x = Math.floor(key / PIXEL_KEY_SCALE);
+		const y = key % PIXEL_KEY_SCALE;
+		const point = pixelToLatLng(x + 0.5, y + 0.5, zoom);
+		const lat = (point.lat * Math.PI) / 180;
+		const metersPerPixel = (EARTH_CIRCUMFERENCE_M * Math.cos(lat)) / (2 ** zoom * TILE_SIZE);
+		const northing = EARTH_RADIUS_M * lat;
+		const easting = EARTH_RADIUS_M * ((point.lng * Math.PI) / 180) * Math.cos(lat);
+		const rowOffset = Math.abs(northing - Math.round(northing / spacing) * spacing);
+		const columnOffset = Math.abs(easting - Math.round(easting / spacing) * spacing);
+		if (rowOffset > metersPerPixel / 2 && columnOffset > metersPerPixel / 2) continue;
+		if (suppress([point]).length > 0) points.push(point);
+	}
+	return points;
 }
 
 function buildSamplerTileConfig(): TileConfig {
@@ -119,10 +195,11 @@ async function fetchTileBlob(
 	tileX: number,
 	tileY: number,
 	zoom: number,
+	signal: AbortSignal,
 ): Promise<ImageBitmap | null> {
 	const url = buildTileUrl(cfg, tileX, tileY, zoom);
 	try {
-		const resp = await fetch(url);
+		const resp = await fetch(url, { signal });
 		if (!resp.ok) return null;
 		return await createImageBitmap(await resp.blob());
 	} catch {
@@ -154,9 +231,14 @@ function scanTile(
 	}
 }
 
-async function clipToPolygon(polygon: PolygonGeometry, candidates: LatLng[]): Promise<LatLng[]> {
+async function clipToPolygon(
+	polygon: PolygonGeometry,
+	candidates: LatLng[],
+	signal: AbortSignal,
+): Promise<LatLng[]> {
 	const result: LatLng[] = [];
 	for (const batch of chunk(candidates, CLIP_BATCH)) {
+		if (signal.aborted) return result;
 		// eslint-disable-next-line local/no-ipc-in-loop -- already bulk: 50k points per round trip
 		const inside = await cmd.polygonContainsPoints(
 			polygon,
@@ -174,16 +256,24 @@ async function clipToPolygon(polygon: PolygonGeometry, candidates: LatLng[]): Pr
  *  everywhere, then the fine pass replaces each tile's coarse points as it lands. */
 export function blueLineSource(
 	polygon: PolygonGeometry,
-	evenness = 0,
+	plan: { type: "allocation"; evenness: number } | { type: "spacing"; spacing: number } = {
+		type: "allocation",
+		evenness: 0,
+	},
 	maxTilesPerAxis = MAX_TILES_PER_AXIS,
 ): PointSource {
-	return streamedPoints(async (emit, retire) => {
+	return streamedPoints(async (emit, retire, signal, reportProgress) => {
 		const box = await cmd.polygonBounds(polygon);
-		if (!box) return;
+		if (!box || signal.aborted) return;
 		const bounds: Bounds = { west: box[0], south: box[1], east: box[2], north: box[3] };
+		if (plan.type === "spacing") {
+			await spacedRun(polygon, bounds, plan.spacing, maxTilesPerAxis, emit, signal, reportProgress);
+			return;
+		}
 		const fine = calculateZoom(bounds, maxTilesPerAxis);
 		const coarse = calculateZoom(bounds, BASE_TILES_PER_AXIS);
 		const keep = keepRate(fine.zoom, coarse.zoom);
+		const evenness = plan.evenness;
 		const finePerAxis = 2 ** fine.zoom;
 		const fineKey = (p: LatLng) => {
 			const w = latLngToWorld(p);
@@ -199,6 +289,9 @@ export function blueLineSource(
 		const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
 
 		let total = 0;
+		let completedTiles = 0;
+		const totalTiles =
+			fine.cols * fine.rows + (fine.zoom > coarse.zoom ? coarse.cols * coarse.rows : 0);
 		const pass = async (
 			plan: ReturnType<typeof calculateZoom>,
 			globalKeep: number,
@@ -215,7 +308,14 @@ export function blueLineSource(
 
 			// Fetch tiles concurrently, scan pixels sequentially (canvas is shared)
 			for (const batch of chunk(tileJobs, FETCH_CONCURRENCY)) {
-				const bmps = await Promise.all(batch.map((j) => fetchTileBlob(cfg, j.tx, j.ty, plan.zoom)));
+				if (signal.aborted) return;
+				const bmps = await Promise.all(
+					batch.map((j) => fetchTileBlob(cfg, j.tx, j.ty, plan.zoom, signal)),
+				);
+				if (signal.aborted) {
+					for (const bitmap of bmps) bitmap?.close();
+					return;
+				}
 				const pixelXs: number[] = [];
 				const pixelYs: number[] = [];
 				const scanned: { tx: number; ty: number }[] = [];
@@ -238,9 +338,12 @@ export function blueLineSource(
 						plan.zoom,
 					);
 				}
-				const points = candidates.length > 0 ? await clipToPolygon(polygon, candidates) : [];
+				const points =
+					candidates.length > 0 ? await clipToPolygon(polygon, candidates, signal) : [];
 				total += points.length;
 				deliver(points, scanned);
+				completedTiles += batch.length;
+				reportProgress(completedTiles / totalTiles);
 			}
 		};
 
@@ -266,4 +369,67 @@ export function blueLineSource(
 
 		log.info(`[generator] Blue line: ${total} sample points after polygon clip`);
 	});
+}
+
+async function spacedRun(
+	polygon: PolygonGeometry,
+	bounds: Bounds,
+	spacing: number,
+	maxTilesPerAxis: number,
+	emit: (points: LatLng[]) => void,
+	signal: AbortSignal,
+	reportProgress: (fraction: number) => void,
+): Promise<void> {
+	const zoom = spacedZoom(bounds, spacing, calculateZoom(bounds, maxTilesPerAxis).zoom);
+	const plan = tilePlanAt(bounds, zoom);
+	log.info(
+		`[generator] Blue line spacing: ${plan.cols * plan.rows} tiles (${plan.cols}x${plan.rows}) at zoom ${zoom}, pitch ${spacing}m`,
+	);
+	const cfg = buildSamplerTileConfig();
+	const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE);
+	const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+	const suppress = spacedFilter(spacing * 0.8);
+	const perAxis = 2 ** zoom;
+	const tileJobs: { tx: number; ty: number }[] = [];
+	for (let ty = plan.nwTile.y; ty <= plan.seTile.y; ty++) {
+		for (let col = 0; col < plan.cols; col++) {
+			tileJobs.push({ tx: (plan.nwTile.x + col) % perAxis, ty });
+		}
+	}
+	shuffle(tileJobs);
+	let total = 0;
+	let completed = 0;
+	for (const batch of chunk(tileJobs, FETCH_CONCURRENCY)) {
+		if (signal.aborted) return;
+		const bitmaps = await Promise.all(
+			batch.map((job) => fetchTileBlob(cfg, job.tx, job.ty, zoom, signal)),
+		);
+		if (signal.aborted) {
+			for (const bitmap of bitmaps) bitmap?.close();
+			return;
+		}
+		if (bitmaps.some((bitmap) => !bitmap)) {
+			for (const bitmap of bitmaps) bitmap?.close();
+			throw new Error("Coverage tiles could not be loaded for the complete spacing plan");
+		}
+		const xs: number[] = [];
+		const ys: number[] = [];
+		for (let index = 0; index < batch.length; index++) {
+			scanTile(bitmaps[index]!, batch[index].tx, batch[index].ty, ctx, xs, ys);
+			if (index % SCAN_YIELD_EVERY === SCAN_YIELD_EVERY - 1) {
+				await new Promise((resolve) => setTimeout(resolve));
+			}
+		}
+		const pixels = new Set<number>();
+		for (let index = 0; index < xs.length; index++) {
+			pixels.add(xs[index] * PIXEL_KEY_SCALE + ys[index]);
+		}
+		const sampled = sampleGridlines(pixels, zoom, spacing, suppress);
+		const points = sampled.length > 0 ? await clipToPolygon(polygon, sampled, signal) : [];
+		total += points.length;
+		if (points.length > 0) emit(points);
+		completed += batch.length;
+		reportProgress(completed / tileJobs.length);
+	}
+	log.info(`[generator] Blue line spacing: ${total} probes after polygon clip`);
 }

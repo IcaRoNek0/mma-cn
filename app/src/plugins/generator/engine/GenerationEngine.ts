@@ -2,11 +2,14 @@ import type {
 	GeneratorSettings,
 	GeneratorRegion,
 	GeneratorStats,
+	GeneratorProgress,
 	GeneratedLocation,
 	GenerationCallbacks,
+	GenerationPlan,
 	PointSource,
-	SamplingMode,
+	CoverageDistribution,
 } from "./types";
+import { buildGenerationPlan } from "./types";
 import { gridPointSource, pointsInOrder } from "./pointSources";
 import { blueLineSource, DISTRIBUTION_EVENNESS } from "./blueLineSampler";
 import { passesInitialFilters, passesDateFilters, isPanoGood, computeHeading } from "./filters";
@@ -45,6 +48,11 @@ const ROUND_SIZE = 1000;
 const SEED_BATCH = 100;
 const SEED_DELAY = 50;
 
+type FiniteSampling =
+	| { mode: "poisson" | "grid" }
+	| { mode: "blueline"; distribution: CoverageDistribution }
+	| { mode: "blueline"; spacing: number };
+
 const SILENT: GenerationCallbacks = {
 	onLocationsFound: () => {},
 	onProgress: () => {},
@@ -54,6 +62,7 @@ const SILENT: GenerationCallbacks = {
 
 export class GenerationEngine {
 	private settings: GeneratorSettings;
+	private readonly plan: GenerationPlan;
 	private regions: GeneratorRegion[];
 	private callbacks: GenerationCallbacks;
 	private readonly abort = new AbortController();
@@ -67,6 +76,10 @@ export class GenerationEngine {
 	private pendingBatch: GeneratedLocation[] = [];
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private pointSources = new Map<string, Promise<PointSource>>();
+	private resolvedPointSources = new Map<string, PointSource>();
+	private downstream = new Map<string, Set<Promise<void>>>();
+	private deliveries = new Set<Promise<void>>();
+	private completedRegionIds = new Set<string>();
 	private answered = new RateWindow();
 	private accepted = new RateWindow();
 	private probesTotal = 0;
@@ -82,6 +95,7 @@ export class GenerationEngine {
 		callbacks: GenerationCallbacks,
 	) {
 		this.settings = settings;
+		this.plan = buildGenerationPlan(settings);
 		this.regions = regions;
 		this.callbacks = callbacks;
 	}
@@ -97,6 +111,7 @@ export class GenerationEngine {
 		if (this.started || this.stopped) return;
 		this.started = true;
 		await this.beginSearchOverlay();
+		let completed = false;
 		try {
 			if (this.settings.oneCountryAtATime) {
 				this.regionTasks.push(this.runSequential());
@@ -109,15 +124,17 @@ export class GenerationEngine {
 			while (this.regionTasks.length) {
 				await Promise.all(this.regionTasks.splice(0));
 			}
+			completed = true;
 		} catch (e) {
 			// Stopping rejects the lookups in flight; only a live run's failure is news.
 			if (!this.stopped) throw e;
 		} finally {
 			this.flushBatch();
+			await this.drainDeliveries();
 			const { onDone } = this.callbacks;
-			// Walks still in flight are dropped, so their lookups are declined.
+			const notifyDone = completed || this.stopped;
 			this.abort.abort();
-			onDone();
+			if (notifyDone) onDone();
 		}
 	}
 
@@ -148,7 +165,10 @@ export class GenerationEngine {
 		const desiredIds = new Set(desired.map((r) => r.id));
 
 		for (const region of this.regions) {
-			if (!desiredIds.has(region.id)) this.cancelledRegions.add(region.id);
+			if (!desiredIds.has(region.id)) {
+				this.cancelledRegions.add(region.id);
+				this.resolvedPointSources.get(region.id)?.cancel();
+			}
 		}
 
 		for (const region of desired) {
@@ -202,15 +222,29 @@ export class GenerationEngine {
 		};
 	}
 
-	/** Aggregate found/target over the engine's current regions. */
-	progress(): { found: number; target: number } {
+	progress(): GeneratorProgress {
 		let found = 0;
+		const regions = this.regions.filter((region) => !this.cancelledRegions.has(region.id));
+		if (this.plan.objective === "spacing") {
+			let progress = 0;
+			for (const region of regions) {
+				found += region.found.length;
+				progress += this.completedRegionIds.has(region.id)
+					? 1
+					: (this.resolvedPointSources.get(region.id)?.progress() ?? 0);
+			}
+			return {
+				objective: "spacing",
+				found,
+				fraction: regions.length === 0 ? 1 : progress / regions.length,
+			};
+		}
 		let target = 0;
-		for (const region of this.regions) {
+		for (const region of regions) {
 			found += Math.min(region.found.length, region.target);
 			target += region.target;
 		}
-		return { found, target };
+		return { objective: "count", found, target };
 	}
 
 	/** A stopped engine never restarts. Finds already confirmed are delivered; afterwards no
@@ -220,6 +254,9 @@ export class GenerationEngine {
 		this.flushBatch();
 		this.callbacks = SILENT;
 		this.abort.abort();
+		for (const source of this.resolvedPointSources.values()) source.cancel();
+		for (const source of this.pointSources.values())
+			void source.then((resolved) => resolved.cancel());
 		if (this.flushTimer) {
 			clearTimeout(this.flushTimer);
 			this.flushTimer = null;
@@ -286,18 +323,21 @@ export class GenerationEngine {
 				this.pauseResolvers.push(resolve);
 			});
 		}
-		return (
-			!this.stopped && !this.cancelledRegions.has(region.id) && region.found.length < region.target
-		);
+		return !this.stopped && !this.cancelledRegions.has(region.id) && this.hasCapacity(region);
+	}
+
+	private hasCapacity(region: GeneratorRegion): boolean {
+		return this.plan.objective === "spacing" || region.found.length < region.target;
 	}
 
 	private async generateRegion(region: GeneratorRegion): Promise<void> {
-		const mode = this.settings.samplingMode;
-		if (mode === "kernels") await this.generateRegionKernels(region);
-		else if (mode === "random") await this.generateRegionRandom(region);
-		else await this.generateRegionFrom(region, mode);
+		const sampling = this.plan.sampling;
+		if (sampling.mode === "kernels") await this.generateRegionKernels(region);
+		else if (sampling.mode === "random") await this.generateRegionRandom(region);
+		else await this.generateRegionFrom(region, sampling);
 
 		region.isProcessing = false;
+		this.completedRegionIds.add(region.id);
 		this.callbacks.onRegionComplete(region.id);
 	}
 
@@ -305,36 +345,49 @@ export class GenerationEngine {
 	 *  draws from the one supply, so no point is probed twice. */
 	private async generateRegionFrom(
 		region: GeneratorRegion,
-		mode: Exclude<SamplingMode, "random" | "kernels">,
+		sampling: FiniteSampling,
 	): Promise<void> {
 		let source = this.pointSources.get(region.id);
 		if (!source) {
-			source = this.pointSource(region, mode);
+			source = this.pointSource(region, sampling);
 			this.pointSources.set(region.id, source);
 		}
-		const take = await source;
+		const resolved = await source;
+		this.resolvedPointSources.set(region.id, resolved);
 		const rounds = this.roundLauncher(region);
 
 		while (await this.proceed(region)) {
 			region.isProcessing = true;
-			const batch = await take(ROUND_SIZE);
+			const batch = await resolved.take(ROUND_SIZE);
+			this.callbacks.onProgress(region.id, region.found.length, region.target);
 			if (batch.length === 0) break;
 			const coords = await this.withoutExisting(batch);
 			if (coords.length === 0) continue;
 			await rounds.launch(coords);
 		}
 		await rounds.drain();
+		await this.drainRegion(region);
+		if (this.stopped || this.cancelledRegions.has(region.id) || !this.hasCapacity(region)) {
+			resolved.cancel();
+		}
 
 		this.pointSources.delete(region.id);
+		this.resolvedPointSources.delete(region.id);
 	}
 
 	private async pointSource(
 		region: GeneratorRegion,
-		mode: Exclude<SamplingMode, "random" | "kernels">,
+		sampling: FiniteSampling,
 	): Promise<PointSource> {
-		if (mode === "blueline")
-			return blueLineSource(region.polygon, DISTRIBUTION_EVENNESS[this.settings.distribution]);
-		if (mode === "poisson") {
+		if (sampling.mode === "blueline") {
+			return "spacing" in sampling
+				? blueLineSource(region.polygon, { type: "spacing", spacing: sampling.spacing })
+				: blueLineSource(region.polygon, {
+						type: "allocation",
+						evenness: DISTRIBUTION_EVENNESS[sampling.distribution],
+					});
+		}
+		if (sampling.mode === "poisson") {
 			const pairs = await cmd.polygonPoissonPoints(region.polygon, 2 * this.settings.radius);
 			const points = pairs.map(([lng, lat]) => ({ lat, lng }));
 			log.info(`[generator] Poisson disk: ${points.length} probes for ${region.name}`);
@@ -416,7 +469,7 @@ export class GenerationEngine {
 			);
 
 			for (let i = 0; i < results.length; i++) {
-				if (region.found.length >= region.target) break;
+				if (!this.hasCapacity(region)) break;
 
 				const pano = results[i];
 				if (!pano) continue;
@@ -641,9 +694,7 @@ export class GenerationEngine {
 	/** The walk runs alongside the probing rather than holding it up, so a region keeps
 	 *  sampling while earlier finds are still opening up. */
 	private walk(ids: string[], region: GeneratorRegion, depth: number): void {
-		void this.walkPanos(ids, region, depth).catch((e) => {
-			if (!this.stopped) log.warn("[generator] link walk failed:", e);
-		});
+		if (ids.length > 0) this.trackRegion(region, this.walkPanos(ids, region, depth), "link walk");
 	}
 
 	/** Panos already in hand enter the walk at its post-lookup stage. */
@@ -652,9 +703,24 @@ export class GenerationEngine {
 		this.duplicates += panos.length - fresh.length;
 		if (fresh.length === 0) return;
 		for (const p of fresh) region.checkedPanos.add(p.id);
-		void this.processPanos(fresh, region, 0).catch((e) => {
-			if (!this.stopped) log.warn("[generator] accept failed:", e);
-		});
+		this.trackRegion(region, this.processPanos(fresh, region, 0), "accept");
+	}
+
+	private trackRegion(region: GeneratorRegion, task: Promise<void>, label: string): void {
+		let tasks = this.downstream.get(region.id);
+		if (!tasks) this.downstream.set(region.id, (tasks = new Set()));
+		const tracked = task
+			.catch((e: unknown) => {
+				if (!this.stopped) log.warn(`[generator] ${label} failed:`, e);
+			})
+			.finally(() => tasks.delete(tracked));
+		tasks.add(tracked);
+	}
+
+	private async drainRegion(region: GeneratorRegion): Promise<void> {
+		const tasks = this.downstream.get(region.id);
+		while (tasks?.size) await Promise.all([...tasks]);
+		this.downstream.delete(region.id);
 	}
 
 	/** Walks a level of the link/timeline graph: every id at `depth` is fetched in one
@@ -664,7 +730,7 @@ export class GenerationEngine {
 	private async walkPanos(ids: string[], region: GeneratorRegion, depth: number): Promise<void> {
 		if (this.stopped || this.paused || this.cancelledRegions.has(region.id)) return;
 		if (depth > this.settings.linksDepth) return;
-		if (region.found.length >= region.target) return;
+		if (!this.hasCapacity(region)) return;
 
 		const fresh = ids.filter((id) => id && !region.checkedPanos.has(id));
 		if (fresh.length === 0) return;
@@ -680,7 +746,7 @@ export class GenerationEngine {
 		depth: number,
 	): Promise<void> {
 		if (this.stopped || this.paused || this.cancelledRegions.has(region.id)) return;
-		if (region.found.length >= region.target) return;
+		if (!this.hasCapacity(region)) return;
 		const s = this.settings;
 		const inside = await regionContains(
 			region,
@@ -713,7 +779,7 @@ export class GenerationEngine {
 				for (const entry of pano.time) next.push(entry.panoId);
 			}
 
-			if (good) void this.finalizeLoc(pano, region);
+			if (good) this.trackRegion(region, this.finalizeLoc(pano, region), "accept");
 		}
 
 		this.walk(fromGood, region, 1);
@@ -729,7 +795,7 @@ export class GenerationEngine {
 			this.duplicates++;
 			return;
 		}
-		if (region.found.length >= region.target) return;
+		if (!this.hasCapacity(region)) return;
 
 		this.globalFoundPanoIds.add(panoId);
 
@@ -743,7 +809,7 @@ export class GenerationEngine {
 				log.warn("[generator] storeNearAny failed, accepting unchecked:", e);
 			}
 			if (this.stopped || this.paused || this.cancelledRegions.has(region.id)) return;
-			if (region.found.length >= region.target) return;
+			if (!this.hasCapacity(region)) return;
 		}
 
 		const loc: GeneratedLocation = {
@@ -777,6 +843,15 @@ export class GenerationEngine {
 		}
 		if (this.pendingBatch.length === 0 || this.stopped || this.paused) return;
 		const batch = this.pendingBatch.splice(0);
-		this.callbacks.onLocationsFound(batch);
+		const result = this.callbacks.onLocationsFound(batch);
+		if (result) {
+			const delivery = Promise.resolve(result).finally(() => this.deliveries.delete(delivery));
+			this.deliveries.add(delivery);
+			void delivery.catch(() => {});
+		}
+	}
+
+	private async drainDeliveries(): Promise<void> {
+		while (this.deliveries.size) await Promise.all([...this.deliveries]);
 	}
 }

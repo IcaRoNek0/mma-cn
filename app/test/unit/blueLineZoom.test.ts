@@ -4,6 +4,9 @@ import {
 	keepRate,
 	cellKeepRate,
 	thinCells,
+	spacedFilter,
+	spacedZoom,
+	sampleGridlines,
 } from "@/plugins/generator/engine/blueLineSampler";
 import type { Bounds } from "@/types";
 
@@ -68,5 +71,33 @@ describe("blueline tile plan", () => {
 		const fine = calculateZoom(SMALL, 150);
 		expect(fine.zoom).toBe(base.zoom);
 		expect(keepRate(fine.zoom, base.zoom)).toBe(1);
+	});
+
+	it("uses finer coverage tiles for a shorter spacing distance", () => {
+		expect(spacedZoom(ARGENTINA, 100, 16)).toBeGreaterThan(spacedZoom(ARGENTINA, 1_000, 16));
+		expect(spacedZoom(ARGENTINA, 1_000, 5)).toBe(5);
+	});
+
+	it("keeps scanline crossings at the requested cadence", () => {
+		const keyScale = 2 ** 24;
+		const zoom = 10;
+		const x = 1_000;
+		const equatorY = 512 * 256;
+		const pixels = new Set<number>();
+		for (let y = equatorY; y < equatorY + 300; y++) pixels.add(x * keyScale + y);
+
+		const points = sampleGridlines(pixels, zoom, 1_000);
+
+		expect(points.length).toBeGreaterThanOrEqual(40);
+		expect(points.length).toBeLessThanOrEqual(50);
+	});
+
+	it("suppresses nearby points across the antimeridian and at high latitude", () => {
+		const take = spacedFilter(1_000);
+
+		expect(take([{ lat: 0, lng: 179.999 }])).toHaveLength(1);
+		expect(take([{ lat: 0, lng: -179.999 }])).toHaveLength(0);
+		expect(take([{ lat: 85, lng: 0 }])).toHaveLength(1);
+		expect(take([{ lat: 85, lng: 0.05 }])).toHaveLength(0);
 	});
 });

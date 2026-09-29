@@ -529,7 +529,9 @@ describe("GenerationEngine live tuning", () => {
 		h.panos.set(FOUND_PANO, foundPano(-50, 0));
 		probeWith((points) => points.map(() => FOUND_PANO));
 		const engine = new GenerationEngine(permissive(), [A()], {
-			onLocationsFound: (locs) => flushed.push(...locs),
+			onLocationsFound: (locs) => {
+				flushed.push(...locs);
+			},
 			onProgress: () => {
 				if (acted) return;
 				acted = true;
@@ -776,10 +778,15 @@ const keyOf = (p: { lat: number; lng: number }) => `${p.lat},${p.lng}`;
 
 describe("gridPointSource", () => {
 	it("draws every grid point once across batches, then runs dry", async () => {
-		const take = gridPointSource(GRID_RUNS);
-		const drawn = [...(await take(3)), ...(await take(3)), ...(await take(3))].map(keyOf);
+		const source = gridPointSource(GRID_RUNS);
+		const drawn = [
+			...(await source.take(3)),
+			...(await source.take(3)),
+			...(await source.take(3)),
+		].map(keyOf);
 		expect(drawn.sort()).toEqual([...GRID_POINTS].sort());
-		expect(await take(3)).toEqual([]);
+		expect(await source.take(3)).toEqual([]);
+		expect(source.progress()).toBe(1);
 	});
 });
 
@@ -788,20 +795,20 @@ describe("streamedPoints", () => {
 
 	it("serves points emitted so far without waiting for the producer to finish", async () => {
 		let finish!: () => void;
-		const take = streamedPoints(async (emit) => {
+		const source = streamedPoints(async (emit) => {
 			emit([P(1), P(2)]);
 			await new Promise<void>((r) => (finish = r));
 			emit([P(3)]);
 		});
-		expect((await take(5)).map((p) => p.lat).sort()).toEqual([1, 2]);
+		expect((await source.take(5)).map((p) => p.lat).sort()).toEqual([1, 2]);
 		finish();
-		expect(await take(5)).toEqual([P(3)]);
-		expect(await take(5)).toEqual([]);
+		expect(await source.take(5)).toEqual([P(3)]);
+		expect(await source.take(5)).toEqual([]);
 	});
 
 	it("a draw during starvation waits for the next emit instead of ending the supply", async () => {
 		let emitLate!: (pts: { lat: number; lng: number }[]) => void;
-		const take = streamedPoints(
+		const source = streamedPoints(
 			(emit) =>
 				new Promise<void>((resolve) => {
 					emitLate = (pts) => {
@@ -810,54 +817,69 @@ describe("streamedPoints", () => {
 					};
 				}),
 		);
-		const pending = take(1);
+		const pending = source.take(1);
 		emitLate([P(7)]);
 		expect(await pending).toEqual([P(7)]);
-		expect(await take(1)).toEqual([]);
+		expect(await source.take(1)).toEqual([]);
 	});
 
 	it("draws split the buffer without duplicating or dropping points", async () => {
-		const take = streamedPoints(async (emit) => emit([P(1), P(2), P(3)]));
-		const first = await take(2);
-		const second = await take(2);
+		const source = streamedPoints(async (emit) => emit([P(1), P(2), P(3)]));
+		const first = await source.take(2);
+		const second = await source.take(2);
 		expect(first).toHaveLength(2);
 		expect(second).toHaveLength(1);
 		expect([...first, ...second].map((p) => p.lat).sort()).toEqual([1, 2, 3]);
-		expect(await take(2)).toEqual([]);
+		expect(await source.take(2)).toEqual([]);
 	});
 
 	it("retire withdraws a key's undrawn points while other batches keep serving", async () => {
-		const take = streamedPoints(async (emit, retire) => {
+		const source = streamedPoints(async (emit, retire) => {
 			emit([P(1), P(2)], 7);
 			emit([P(3)], 8);
 			retire(7);
 			emit([P(4)]);
 		});
-		expect((await take(10)).map((p) => p.lat).sort()).toEqual([3, 4]);
-		expect(await take(1)).toEqual([]);
+		expect((await source.take(10)).map((p) => p.lat).sort()).toEqual([3, 4]);
+		expect(await source.take(1)).toEqual([]);
 	});
 
 	it("a retire does not claw back points already drawn", async () => {
 		let step!: () => void;
-		const take = streamedPoints(async (emit, retire) => {
+		const source = streamedPoints(async (emit, retire) => {
 			emit([P(1)], 7);
 			await new Promise<void>((r) => (step = r));
 			retire(7);
 			emit([P(2)]);
 		});
-		expect((await take(5)).map((p) => p.lat)).toEqual([1]);
+		expect((await source.take(5)).map((p) => p.lat)).toEqual([1]);
 		step();
-		expect((await take(5)).map((p) => p.lat)).toEqual([2]);
-		expect(await take(5)).toEqual([]);
+		expect((await source.take(5)).map((p) => p.lat)).toEqual([2]);
+		expect(await source.take(5)).toEqual([]);
 	});
 
 	it("a producer failure surfaces on the draw once the buffer is drained", async () => {
-		const take = streamedPoints(async (emit) => {
+		const source = streamedPoints(async (emit) => {
 			emit([P(1)]);
 			throw new Error("tiles down");
 		});
-		expect(await take(1)).toEqual([P(1)]);
-		await expect(take(1)).rejects.toThrow("tiles down");
+		expect(await source.take(1)).toEqual([P(1)]);
+		await expect(source.take(1)).rejects.toThrow("tiles down");
+	});
+
+	it("cancels its producer and releases a draw waiting for points", async () => {
+		let producerSignal!: AbortSignal;
+		const source = streamedPoints(async (_emit, _retire, signal) => {
+			producerSignal = signal;
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+		});
+		const pending = source.take(1);
+		await Promise.resolve();
+
+		source.cancel();
+
+		expect(producerSignal.aborted).toBe(true);
+		expect(await pending).toEqual([]);
 	});
 });
 
