@@ -106,13 +106,13 @@ export function ReportDialog({ open, onOpenChange }: DialogProps) {
 	);
 
 	const addImages = async (files: FileList | null) => {
-		if (!files?.length) return;
+		const picked = [...(files ?? [])].slice(0, MAX_ATTACHMENTS - images.length);
+		if (!picked.length) return;
 		setError(null);
 		try {
 			session.current ??= await cmd.storeUploadBegin();
-			const room = MAX_ATTACHMENTS - images.length;
 			const staged: StagedImage[] = [];
-			for (const [i, file] of [...files].slice(0, room).entries()) {
+			for (const [i, file] of picked.entries()) {
 				staged.push(await stageImage(session.current, file, images.length + i));
 			}
 			setImages((prev) => [...prev, ...staged]);
