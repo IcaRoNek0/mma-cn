@@ -4036,22 +4036,36 @@ body:not(.mm-tag-dragging) .tag-tree__row:hover {
 input[type="range"].slider.sv-opacity-control__slider::-webkit-slider-runnable-track {
 	background: linear-gradient(90deg, var(--accent) var(--fill, 0%), #8888884d var(--fill, 0%));
 }
-.opacity-target-toggle {
+.opacity-targets {
+	display: flex;
+	align-self: stretch;
+}
+.opacity-target {
+	position: relative;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	align-self: stretch;
-	width: 40px;
-	border: none;
-	background: transparent;
-	padding: 0;
-	cursor: pointer;
+	width: 32px;
+	min-width: 0;
 	color: #666;
 	border-radius: 2px;
 }
-.opacity-target-toggle:hover {
+.opacity-target:hover,
+.opacity-target[aria-pressed="true"] {
 	background: #ebebeb;
 	color: #000;
+}
+.opacity-target svg {
+	opacity: calc(0.35 + 0.65 * var(--layer-opacity, 1));
+}
+.opacity-target[data-hidden]::after {
+	content: "";
+	position: absolute;
+	left: 25%;
+	right: 25%;
+	top: 50%;
+	border-top: 2px solid currentColor;
+	transform: rotate(-45deg);
 }
 .sv-preview-control {
 	height: auto;

@@ -81,6 +81,7 @@ const SET_INLINE: Record<string, string> = {
 	"--fs-mini-loc-h": "FullscreenMiniLocationPreview sets its expanded size",
 	"--fs-minimap-w": "FullscreenMiniMap sets its expanded size",
 	"--fs-minimap-h": "FullscreenMiniMap sets its expanded size",
+	"--layer-opacity": "each map opacity target button shows its layer's opacity",
 	"--lg-map-w": "the LocalGuessr guess map sets its expanded size",
 	"--lg-map-h": "the LocalGuessr guess map sets its expanded size",
 	"--spinner-size": "Spinner sets its size",
@@ -108,7 +109,7 @@ const LITERAL_COLORS: { selector: RegExp; why: string }[] = [
 	{ selector: block("map-type-control"), why: "Google-style map type buttons" },
 	{ selector: block("measurement-control"), why: "text inside a white map control" },
 	{ selector: block("search-control"), why: "the geocoder keeps Google's light dropdown" },
-	{ selector: block("opacity-target-toggle"), why: "button inside a white map control" },
+	{ selector: block("opacity-target"), why: "buttons inside a white map control" },
 	{
 		selector: /^input\[type="range"\]\.slider\.sv-opacity-control__slider(?![\w-])/,
 		why: "slider track inside a white map control",
