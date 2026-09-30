@@ -149,7 +149,7 @@ export const commands = {
 	 *  Open a map and return its initial state (per-value counts, metadata, undo/redo availability).
 	 *  Must be called before any other store commands.
 	 */
-	storeOpenMap: (mapId: string) => __TAURI_INVOKE<StoreStatus>("store_open_map", { mapId }).then((v) => (({...v,values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeOpenMap: (mapId: string) => __TAURI_INVOKE<StoreStatus>("store_open_map", { mapId }),
 	/**  Close the open map, saving unsaved changes first. */
 	storeCloseMap: () => __TAURI_INVOKE<null>("store_close_map"),
 	/**  Save uncommitted changes to disk. No-op when nothing has changed. */
@@ -164,17 +164,17 @@ export const commands = {
 	/**  Return the map's current location count, store version, and unsaved-change count. */
 	storeGetSummary: () => __TAURI_INVOKE<SummaryResult>("store_get_summary"),
 	/**  Add new locations, allocating sequential IDs. Undoable. */
-	storeAddLocations: (locations: Location[]) => __TAURI_INVOKE<MutationResult>("store_add_locations", { locations: locations.map(i=>i) }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeAddLocations: (locations: Location[]) => __TAURI_INVOKE<MutationResult>("store_add_locations", { locations: locations.map(i=>i) }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Add locations from an upload session (see `storeUploadBegin`) as one undoable change. */
-	storeAddLocationsUploaded: (sessionDir: string) => __TAURI_INVOKE<MutationResult>("store_add_locations_uploaded", { sessionDir }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeAddLocationsUploaded: (sessionDir: string) => __TAURI_INVOKE<MutationResult>("store_add_locations_uploaded", { sessionDir }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Remove locations by ID. Undoable. */
-	storeRemoveLocations: (ids: number[]) => __TAURI_INVOKE<MutationResult>("store_remove_locations", { ids }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeRemoveLocations: (ids: number[]) => __TAURI_INVOKE<MutationResult>("store_remove_locations", { ids }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**
 	 *  Apply partial patches to existing locations. `recordUndo` defaults to true;
 	 *  set to false for ephemeral updates (e.g., plugin-driven batch modifications
 	 *  that manage their own undo).
 	 */
-	storeUpdateLocations: (updates: Update<LocationPatch_Deserialize>[], recordUndo: boolean | null) => __TAURI_INVOKE<MutationResult>("store_update_locations", { updates, recordUndo }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeUpdateLocations: (updates: Update<LocationPatch_Deserialize>[], recordUndo: boolean | null) => __TAURI_INVOKE<MutationResult>("store_update_locations", { updates, recordUndo }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Set (or clear) the active location. */
 	storeSetActive: (id: number | null) => __TAURI_INVOKE<null>("store_set_active", { id }),
 	/**  Set the default marker color for new render updates. */
@@ -189,13 +189,13 @@ export const commands = {
 	 *  An evenly spaced subset: exactly one of `targetCount` (thin to N, maximizing
 	 *  spacing) or `minDistanceM` (keep as many as fit at that spacing).
 	 */
-	storeSpaced: (selector: Selector, targetCount: number | null, minDistanceM: number | null) => __TAURI_INVOKE<SpacedPickResult>("store_spaced", { selector, targetCount, minDistanceM: minDistanceM==null?minDistanceM:minDistanceM }),
+	storeSpaced: (selector: Selector, targetCount: number | null, minDistanceM: number | null) => __TAURI_INVOKE<SpacedPickResult>("store_spaced", { selector, targetCount, minDistanceM }),
 	/**
 	 *  An evenly spaced subset laid out on a honeycomb: exactly one of `targetCount` (at most
 	 *  N, spaced as widely as that allows) or `spacingM` (about that far apart, and never
 	 *  closer than half of it).
 	 */
-	storeEvenlySpaced: (selector: Selector, targetCount: number | null, spacingM: number | null) => __TAURI_INVOKE<SpacedPickResult>("store_evenly_spaced", { selector, targetCount, spacingM: spacingM==null?spacingM:spacingM }),
+	storeEvenlySpaced: (selector: Selector, targetCount: number | null, spacingM: number | null) => __TAURI_INVOKE<SpacedPickResult>("store_evenly_spaced", { selector, targetCount, spacingM }),
 	/**
 	 *  The points of a honeycomb about `spacingM` metres apart that fall inside the polygon,
 	 *  one entry per row of points.
@@ -244,7 +244,7 @@ export const commands = {
 	 */
 	storeCollect: (selector: Selector) => __TAURI_INVOKE<Rows>("store_collect", { selector }),
 	/**  Apply a field operation to every location matched by `selector`. */
-	storeApplyFieldOp: (selector: Selector, op: FieldOp, recordUndo: boolean | null) => __TAURI_INVOKE<FieldOpResult>("store_apply_field_op", { selector, op, recordUndo }).then((v) => (({...v,mutation:({...v.mutation,delta:({...v.mutation.delta,added:v.mutation.delta.added.map(i=>i),updated:v.mutation.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.mutation.values,fieldDefs:v.mutation.values.fieldDefs==null?v.mutation.values.fieldDefs:Object.fromEntries(Object.entries(v.mutation.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})})}) as typeof v)),
+	storeApplyFieldOp: (selector: Selector, op: FieldOp, recordUndo: boolean | null) => __TAURI_INVOKE<FieldOpResult>("store_apply_field_op", { selector, op, recordUndo }).then((v) => (({...v,mutation:({...v.mutation,delta:({...v.mutation.delta,added:v.mutation.delta.added.map(i=>i),updated:v.mutation.delta.updated.map(i=>i)})})}) as typeof v)),
 	/**  The parse error for `src`, or `null` when it parses. */
 	fieldExprError: (src: string) => __TAURI_INVOKE<ExprError | null>("field_expr_error", { src }),
 	/**
@@ -255,7 +255,7 @@ export const commands = {
 	/**  Find all locations within `radiusM` metres of (`lat`, `lng`). */
 	storeFindNearby: (lat: number, lng: number, radiusM: number) => __TAURI_INVOKE<Location[]>("store_find_nearby", { lat, lng, radiusM }).then((v) => (v.map(i=>i) as typeof v)),
 	/**  The location closest to a coordinate, or null when the map has none. */
-	storeFindNearest: (lat: number, lng: number) => __TAURI_INVOKE<Location | null>("store_find_nearest", { lat, lng }).then((v) => (v==null?v:v as typeof v)),
+	storeFindNearest: (lat: number, lng: number) => __TAURI_INVOKE<Location | null>("store_find_nearest", { lat, lng }),
 	/**
 	 *  For each input point, whether any existing location lies within `radiusM` metres.
 	 *  Batch form for probing many coordinates at once.
@@ -266,11 +266,11 @@ export const commands = {
 	 *  metadata, reorder. Metadata only - membership writes go through the ordinary
 	 *  `listSet` field op. `tags` is the first (and so far only) interned field.
 	 */
-	storePatchFieldValues: (field: string, patch: FieldValuesPatch) => __TAURI_INVOKE<FieldValuesResult>("store_patch_field_values", { field, patch }).then((v) => (({...v,mutation:({...v.mutation,delta:({...v.mutation.delta,added:v.mutation.delta.added.map(i=>i),updated:v.mutation.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.mutation.values,fieldDefs:v.mutation.values.fieldDefs==null?v.mutation.values.fieldDefs:Object.fromEntries(Object.entries(v.mutation.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})})}) as typeof v)),
+	storePatchFieldValues: (field: string, patch: FieldValuesPatch) => __TAURI_INVOKE<FieldValuesResult>("store_patch_field_values", { field, patch }).then((v) => (({...v,mutation:({...v.mutation,delta:({...v.mutation.delta,added:v.mutation.delta.added.map(i=>i),updated:v.mutation.delta.updated.map(i=>i)})})}) as typeof v)),
 	/**  Undo the last edit. */
-	storeUndo: () => __TAURI_INVOKE<MutationResult>("store_undo").then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeUndo: () => __TAURI_INVOKE<MutationResult>("store_undo").then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Redo the last undone edit. */
-	storeRedo: () => __TAURI_INVOKE<MutationResult>("store_redo").then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeRedo: () => __TAURI_INVOKE<MutationResult>("store_redo").then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Return the uncommitted change counts (added, removed, modified) since the last commit. */
 	storeCommitDiff: () => __TAURI_INVOKE<[number, number, number]>("store_commit_diff"),
 	/**
@@ -288,34 +288,34 @@ export const commands = {
 	 *  and extra fields. `score` ranks which location survives; blank uses the default ranking.
 	 *  Undoable.
 	 */
-	storeMergeDuplicates: (distance: number, score: string | null) => __TAURI_INVOKE<MutationResult>("store_merge_duplicates", { distance, score }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeMergeDuplicates: (distance: number, score: string | null) => __TAURI_INVOKE<MutationResult>("store_merge_duplicates", { distance, score }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**
 	 *  Remove duplicate locations within `distance` metres of each other, keeping the
 	 *  best-scored survivor per cluster. Undoable.
 	 */
-	storePruneDuplicates: (selector: Selector, distance: number, score: string | null) => __TAURI_INVOKE<MutationResult>("store_prune_duplicates", { selector, distance, score }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storePruneDuplicates: (selector: Selector, distance: number, score: string | null) => __TAURI_INVOKE<MutationResult>("store_prune_duplicates", { selector, distance, score }).then((v) => (({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Rebuild all marker render data from scratch and return the file path to fetch it from. */
 	storeFillRenderFile: (req: RenderRequest) => __TAURI_INVOKE<string>("store_fill_render_file", { req }),
 	/**  Resolve a marker pick (cell key + index within cell) to a location ID. */
 	storeResolvePick: (cell: string, cellIndex: number) => __TAURI_INVOKE<number | null>("store_resolve_pick", { cell, cellIndex }),
 	/**  Return metadata for every map in the database. */
-	storeListMaps: () => __TAURI_INVOKE<MapMeta[]>("store_list_maps").then((v) => (v.map(i=>({...i,extra:({...i.extra,fields:i.extra.fields==null?i.extra.fields:Object.fromEntries(Object.entries(i.extra.fields).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})})) as typeof v)),
+	storeListMaps: () => __TAURI_INVOKE<MapMeta[]>("store_list_maps"),
 	/**  Fetch a single map's metadata by ID. Returns `null` if not found. */
-	storeGetMap: (id: string) => __TAURI_INVOKE<MapMeta | null>("store_get_map", { id }).then((v) => (v==null?v:({...v,extra:({...v.extra,fields:v.extra.fields==null?v.extra.fields:Object.fromEntries(Object.entries(v.extra.fields).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeGetMap: (id: string) => __TAURI_INVOKE<MapMeta | null>("store_get_map", { id }),
 	/**  Create a new empty map with default settings. Returns the full metadata. */
-	storeCreateMap: (name: string, folder: string | null) => __TAURI_INVOKE<MapMeta>("store_create_map", { name, folder }).then((v) => (({...v,extra:({...v.extra,fields:v.extra.fields==null?v.extra.fields:Object.fromEntries(Object.entries(v.extra.fields).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeCreateMap: (name: string, folder: string | null) => __TAURI_INVOKE<MapMeta>("store_create_map", { name, folder }),
 	/**
 	 *  Open the scratch map, creating it if this is its first use. Ordinary in every way
 	 *  except that `storeListMaps` leaves it out and it is emptied on every launch.
 	 */
-	storeScratchMap: () => __TAURI_INVOKE<MapMeta>("store_scratch_map").then((v) => (({...v,extra:({...v.extra,fields:v.extra.fields==null?v.extra.fields:Object.fromEntries(Object.entries(v.extra.fields).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeScratchMap: () => __TAURI_INVOKE<MapMeta>("store_scratch_map"),
 	/**  Delete a map and all its data permanently. */
 	storeDeleteMap: (id: string) => __TAURI_INVOKE<null>("store_delete_map", { id }),
 	/**
 	 *  Apply a partial update to a map's metadata. Omitted fields are left unchanged.
 	 *  Returns a mutation result when the open map's field definitions changed.
 	 */
-	storeUpdateMapMeta: (id: string, patch: MapMetaPatch_Deserialize) => __TAURI_INVOKE<MutationResult | null>("store_update_map_meta", { id, patch: ({...patch,scoreBounds:patch.scoreBounds==null?patch.scoreBounds:patch.scoreBounds,extra:patch.extra==null?patch.extra:({...patch.extra,fields:patch.extra.fields==null?patch.extra.fields:Object.fromEntries(Object.entries(patch.extra.fields).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) }).then((v) => (v==null?v:({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}) as typeof v)),
+	storeUpdateMapMeta: (id: string, patch: MapMetaPatch_Deserialize) => __TAURI_INVOKE<MutationResult | null>("store_update_map_meta", { id, patch }).then((v) => (v==null?v:({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}) as typeof v)),
 	/**  Mark a map as opened now, for sorting the map list by recency. */
 	storeTouchMapOpened: (mapId: string) => __TAURI_INVOKE<null>("store_touch_map_opened", { mapId }),
 	/**  Rename a folder across all maps that reference it. */
@@ -359,11 +359,11 @@ export const commands = {
 	 *  dropping fields in `droppedFields` (e.g. `"heading"`, `"extra.countryCode"`)
 	 *  and/or applying each of `tagNames` to every imported location.
 	 */
-	storeImportFile: (droppedFields: string[], tagNames: string[]) => __TAURI_INVOKE<EditorImportResult>("store_import_file", { droppedFields, tagNames }).then((v) => (({...v,mutation:({...v.mutation,delta:({...v.mutation.delta,added:v.mutation.delta.added.map(i=>i),updated:v.mutation.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.mutation.values,fieldDefs:v.mutation.values.fieldDefs==null?v.mutation.values.fieldDefs:Object.fromEntries(Object.entries(v.mutation.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})})}) as typeof v)),
+	storeImportFile: (droppedFields: string[], tagNames: string[]) => __TAURI_INVOKE<EditorImportResult>("store_import_file", { droppedFields, tagNames }).then((v) => (({...v,mutation:({...v.mutation,delta:({...v.mutation.delta,added:v.mutation.delta.added.map(i=>i),updated:v.mutation.delta.updated.map(i=>i)})})}) as typeof v)),
 	/**  Discard the staged import without importing it. */
 	storeImportCancel: () => __TAURI_INVOKE<void>("store_import_cancel"),
 	/**  The location a pasted Maps URL names, short links resolved. */
-	parseMapsUrl: (input: string) => __TAURI_INVOKE<ParsedLocation | null>("parse_maps_url", { input }).then((v) => (v==null?v:v as typeof v)),
+	parseMapsUrl: (input: string) => __TAURI_INVOKE<ParsedLocation | null>("parse_maps_url", { input }),
 	/**  Export locations as a `{name, customCoordinates}` JSON file, including tags and field defs. */
 	storeExportJson: (opts: ExportOpts) => __TAURI_INVOKE<string>("store_export_json", { opts }),
 	/**  Export locations as a minimal lat/lng CSV file. */
@@ -393,7 +393,7 @@ export const commands = {
 	/**  Remove an abandoned upload session dir (e.g. cancelled operation). */
 	storeUploadAbort: (sessionDir: string) => __TAURI_INVOKE<null>("store_upload_abort", { sessionDir }),
 	/**  Commit the map's uncommitted changes. Returns the new commit ID. Clears undo/redo. */
-	storeCommit: (mapId: string, message: string | null) => __TAURI_INVOKE<CommitResult>("store_commit", { mapId, message }).then((v) => (({...v,status:({...v.status,delta:({...v.status.delta,added:v.status.delta.added.map(i=>i),updated:v.status.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.status.values,fieldDefs:v.status.values.fieldDefs==null?v.status.values.fieldDefs:Object.fromEntries(Object.entries(v.status.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})})}) as typeof v)),
+	storeCommit: (mapId: string, message: string | null) => __TAURI_INVOKE<CommitResult>("store_commit", { mapId, message }).then((v) => (({...v,status:({...v.status,delta:({...v.status.delta,added:v.status.delta.added.map(i=>i),updated:v.status.delta.updated.map(i=>i)})})}) as typeof v)),
 	/**  List all commits for a map, newest first. */
 	storeListCommits: (mapId: string) => __TAURI_INVOKE<CommitInfo[]>("store_list_commits", { mapId }),
 	/**
@@ -450,7 +450,7 @@ export const commands = {
 	 *  Reconcile a linked map against its remote, pushing local changes and pulling
 	 *  remote ones. Returns the creates, updates, and deletes for each side to apply.
 	 */
-	syncReconcile: (provider: string, mapId: string, remoteMapId: string, firstSync: FirstSyncMode | null, resolutions: ([string, ResolutionSide])[] | null) => __TAURI_INVOKE<SyncReconcileResult>("sync_reconcile", { provider, mapId, remoteMapId, firstSync, resolutions }).then((v) => (({...v,conflicts:v.conflicts.map(i=>({...i,local:i.local==null?i.local:i.local,remote:i.remote==null?i.remote:i.remote})),pullUpdates:v.pullUpdates.map(i=>({...i,patch:({...i.patch,lat:i.patch.lat==null?i.patch.lat:i.patch.lat,lng:i.patch.lng==null?i.patch.lng:i.patch.lng,heading:i.patch.heading==null?i.patch.heading:i.patch.heading,pitch:i.patch.pitch==null?i.patch.pitch:i.patch.pitch,zoom:i.patch.zoom==null?i.patch.zoom:i.patch.zoom})}))}) as typeof v)),
+	syncReconcile: (provider: string, mapId: string, remoteMapId: string, firstSync: FirstSyncMode | null, resolutions: ([string, ResolutionSide])[] | null) => __TAURI_INVOKE<SyncReconcileResult>("sync_reconcile", { provider, mapId, remoteMapId, firstSync, resolutions }),
 	/**  Record a settled sync pass for a map. Only the most recent passes per provider are kept. */
 	syncLogAppend: (provider: string, mapId: string, entry: SyncLogEntry) => __TAURI_INVOKE<null>("sync_log_append", { provider, mapId, entry }),
 	/**  A map's recorded sync passes with a provider, newest first. */
@@ -484,7 +484,7 @@ export const commands = {
 	 *  Generate locations from a Vali map definition (JSON text). Missing country
 	 *  data is auto-downloaded like the Vali CLI. Returns the generated locations.
 	 */
-	valiGenerate: (definition: string) => __TAURI_INVOKE<ValiLocation[]>("vali_generate", { definition }).then((v) => (v.map(i=>({...i,zoom:i.zoom==null?i.zoom:i.zoom,pitch:i.pitch==null?i.pitch:i.pitch})) as typeof v)),
+	valiGenerate: (definition: string) => __TAURI_INVOKE<ValiLocation[]>("vali_generate", { definition }).then((v) => (v.map(i=>i) as typeof v)),
 	/**  Download Vali coverage data. `country` = code/continent alias/None for all. */
 	valiDownload: (country: string | null, full: boolean, updates: boolean) => __TAURI_INVOKE<null>("vali_download", { country, full, updates }),
 	/**  Cancel an in-flight vali generate or download. */
@@ -541,7 +541,7 @@ export const events = {
 	sidecarInstallProgress: makeEvent<SidecarProgress>("sidecar-install-progress"),
 	sidecarLine: makeEvent<SidecarLine>("sidecar-line"),
 	sidecarLog: makeEvent<SidecarLog>("sidecar-log"),
-	storeExternalMutation: makeEvent<ExternalMutation>("store-external-mutation", (v) => ({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})}), (v) => ({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>({...i,lng:i.lng==null?i.lng:i.lng,lat:i.lat==null?i.lat:i.lat,heading:i.heading==null?i.heading:i.heading}))}),values:({...v.values,fieldDefs:v.values.fieldDefs==null?v.values.fieldDefs:Object.fromEntries(Object.entries(v.values.fieldDefs).map(([k,v])=>[k,({...v,comparison:v.comparison==null?v.comparison:v.comparison})]))})})),
+	storeExternalMutation: makeEvent<ExternalMutation>("store-external-mutation", (v) => ({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})}), (v) => ({...v,delta:({...v.delta,added:v.delta.added.map(i=>i),updated:v.delta.updated.map(i=>i)})})),
 	storeWarning: makeEvent<StoreWarning>("store-warning"),
 	updateProgress: makeEvent<UpdateProgress>("update-progress"),
 	valiProgress: makeEvent<ValiProgress>("vali-progress"),
