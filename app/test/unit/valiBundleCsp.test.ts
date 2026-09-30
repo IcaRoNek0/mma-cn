@@ -18,4 +18,9 @@ describe("vendored Vali GUI bundle", () => {
 		);
 		expect(evaluating).toEqual([]);
 	});
+
+	it("names the Vali-gui commit it was built from", () => {
+		const html = readFileSync(join(ASSETS, "../index.html"), "utf8");
+		expect(html).toMatch(/<!-- ccmdi\/Vali-gui@[0-9a-f]{7,40} -->/);
+	});
 });
