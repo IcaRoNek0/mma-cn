@@ -25,7 +25,8 @@ vi.mock("@/store/settings", async (orig) => ({
 	getSettings: () => ({ panToImported: false }),
 }));
 
-import { resolvePickedId, openHref } from "@/lib/map/mapClick";
+import { resolvePickedId, openHref, handleMapClick } from "@/lib/map/mapClick";
+import { addClickInterceptor } from "@/lib/map/mapState";
 
 const pick = (id: string | undefined, index: number): PickingInfo =>
 	({ index, layer: id == null ? null : { id } }) as unknown as PickingInfo;
@@ -129,5 +130,30 @@ describe("openHref (map-aware link opening)", () => {
 		expect(addLocs).toHaveBeenCalledWith([
 			expect.objectContaining({ lat: 10, lng: 20, panoId: "PANO_A" }),
 		]);
+	});
+});
+
+describe("handleMapClick", () => {
+	const at = { coordinate: [2, 1] } as unknown as PickingInfo;
+	const ctx = {
+		cm: fakeCm({}),
+		host: null,
+		clickMode: "add",
+		measuring: false,
+	} as unknown as Parameters<typeof handleMapClick>[2];
+	const intercepted = async (domEvent: Event) => {
+		const seen: [number, number][] = [];
+		const off = addClickInterceptor((lat, lng) => seen.push([lat, lng]) > 0);
+		await handleMapClick(at, domEvent, ctx);
+		off();
+		return seen;
+	};
+
+	it("hands a click to the armed tool", async () => {
+		expect(await intercepted(new MouseEvent("click", { button: 0 }))).toEqual([[1, 2]]);
+	});
+
+	it("does not count the overlay's replay of a double-click as another click", async () => {
+		expect(await intercepted(new MouseEvent("dblclick", { button: 0 }))).toEqual([]);
 	});
 });

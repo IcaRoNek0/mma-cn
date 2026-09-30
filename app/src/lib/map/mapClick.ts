@@ -185,6 +185,9 @@ export async function handleMapClick(
 	}
 
 	if (domEvent instanceof MouseEvent && domEvent.button !== 0) return;
+	// The overlay replays the engine's double-click as one more click. The engine has already
+	// clicked for that gesture, and the browser also pairs presses it took as pans into one.
+	if (domEvent?.type === "dblclick") return;
 
 	// Interceptors first: the measure tool consumes the click to place a node.
 	if (

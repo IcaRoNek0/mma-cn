@@ -51,7 +51,7 @@ function finishRing(ring: number[][]): number[][] {
 }
 
 /** Map clicks belong to the armed tool: `handle` sees them and none reaches the map.
- *  The engine raises its own click after a stroke or a double-click, from its map object
+ *  The engine raises its own click after a stroke, from its map object
  *  rather than the DOM, so stopping DOM propagation cannot reach it and the claim instead
  *  outlives the tool by one click. That click carries no mousedown of its own, so a real
  *  gesture releases the claim before its click lands. */
@@ -210,6 +210,11 @@ export function PolygonTools({
 			return [prev ? unwrapLng(lng, prev[0]) : lng, lat];
 		};
 
+		// Presses since the last vertex. The browser pairs any two presses into a double-click,
+		// including a press the engine took as a pan and never clicked for, so a double-click only
+		// closes when its second press came after the vertex its first one placed.
+		let presses = 0;
+
 		const releaseClicks = claimClicks((lat, lng) => {
 			const v = nextVertex(lng, lat);
 			if (points.length >= 3) {
@@ -223,7 +228,10 @@ export function PolygonTools({
 				}
 			}
 			const prev = points.at(-1);
-			if (!prev || prev[0] !== v[0] || prev[1] !== v[1]) points.push(v);
+			if (!prev || prev[0] !== v[0] || prev[1] !== v[1]) {
+				points.push(v);
+				presses = 0;
+			}
 			cursor = v;
 			preview();
 		});
@@ -231,20 +239,25 @@ export function PolygonTools({
 			cursor = nextVertex(ll.lng, ll.lat);
 			if (points.length > 0) preview();
 		});
+		const onDown = (e: MouseEvent) => {
+			if (e.button === 0) presses++;
+		};
 		const onDblClick = (e: MouseEvent) => {
 			e.preventDefault();
-			finish(true);
+			if (presses > 0 && points.length >= 3) finish(true);
 		};
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") finish(false);
 		};
 		host.setDoubleClickZoom(false);
+		host.container.addEventListener("mousedown", onDown, true);
 		host.container.addEventListener("dblclick", onDblClick, true);
 		document.addEventListener("keydown", onKey, true);
 
 		return () => {
 			releaseClicks();
 			offMove();
+			host.container.removeEventListener("mousedown", onDown, true);
 			host.container.removeEventListener("dblclick", onDblClick, true);
 			document.removeEventListener("keydown", onKey, true);
 			host.setDoubleClickZoom(true);

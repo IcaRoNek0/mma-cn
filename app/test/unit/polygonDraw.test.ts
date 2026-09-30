@@ -182,6 +182,67 @@ describe("polygon preview", () => {
 	});
 });
 
+describe("closing a polygon", () => {
+	const armed = () => toolsEl.querySelector("button.is-active") !== null;
+	// A press the engine clicked for: the browser's mousedown, then the engine's click.
+	const press = (lat: number, lng: number) => {
+		down(lng * 1000, lat * 1000);
+		act(() => {
+			tryInterceptClick(lat, lng);
+		});
+	};
+	const doubleClick = () =>
+		act(() => {
+			engineSurface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+		});
+
+	it("closes on a double-click whose second press follows the vertex its first placed", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		press(0, 0);
+		press(0, 1);
+		press(1, 1);
+		press(1, 0);
+		down(0, 1000);
+		doubleClick();
+		expect(drawn).toHaveLength(1);
+		expect(drawn[0][0]).toHaveLength(5);
+		expect(armed()).toBe(false);
+	});
+
+	it("stays open when the double-click pairs a press the engine took as a pan", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		press(0, 0);
+		press(0, 1);
+		press(1, 1);
+		down(500, 1000);
+		press(1, 0.5);
+		doubleClick();
+		expect(drawn).toHaveLength(0);
+		expect(armed()).toBe(true);
+		expect(freehandPathRef.current?.slice(0, -1)).toEqual([
+			[0, 0],
+			[1, 0],
+			[1, 1],
+			[0.5, 1],
+		]);
+		press(0, 0);
+		expect(drawn).toHaveLength(1);
+	});
+
+	it("keeps drawing through a double-click before there are three vertices", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		press(0, 0);
+		press(0, 1);
+		down(1000, 0);
+		doubleClick();
+		expect(drawn).toHaveLength(0);
+		expect(armed()).toBe(true);
+	});
+});
+
 describe("draw tool cleanup", () => {
 	it.each(["Freehand polygon selection", "Draw a rectangle selection"])(
 		"repaints after disarming %s",
@@ -200,9 +261,8 @@ describe("draw tool cleanup", () => {
 });
 
 describe("a finished draw keeps the click that ends it", () => {
-	// The engine raises its own click at the end of a claimed stroke and a third one for a
-	// double-click, both after the tool has disarmed itself. Either would otherwise pick a
-	// marker or drop a location on coverage.
+	// The engine raises its own click at the end of a claimed stroke, after the tool has disarmed
+	// itself. It would otherwise pick a marker or drop a location on coverage.
 	it("consumes the click that follows a freehand stroke", () => {
 		mount();
 		arm("Freehand polygon selection");
