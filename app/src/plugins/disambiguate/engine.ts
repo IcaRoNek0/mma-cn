@@ -1,9 +1,8 @@
 // Selection disambiguation engine: given N groups of locations, rank metadata
 // fields by how strongly they *separate* the groups (not by modal frequency).
-// Works on per-group columns (one value per row per field) fetched from the store;
-// no location ever reaches JS. Pure; tested in disambiguate.test.ts.
+// Works on per-group value counts from the store; no location ever reaches JS.
 
-import type { FieldDef, ComparisonType } from "@/bindings.gen";
+import type { CountBy, FieldDef, ComparisonType, Selector } from "@/bindings.gen";
 import { createFieldDef } from "@/types";
 import {
 	getFieldDef,
@@ -13,6 +12,7 @@ import {
 	isBuiltinField,
 	getBuiltinKeys,
 } from "@/lib/data/fieldDefRegistry";
+import { all, any, not } from "@/store/selections";
 import { ymOrdinal } from "@/lib/util/date";
 import { t } from "@/lib/i18n";
 import {
@@ -22,6 +22,8 @@ import {
 	cramersV,
 	coverageV,
 	quartiles,
+	total,
+	type Tally,
 } from "./stats";
 
 /** A group must have at least this many present values for a field before its
@@ -32,7 +34,7 @@ const TOP_N = 3;
 /** Fields excluded from analysis: they encode the location/answer itself rather
  *  than an in-round visual tell, so flagging them as "divergent" is pointless. */
 const EXCLUDED_FIELDS = new Set(["countryCode", "timezone", "panoId"]);
-/** The column carrying each row's tag ids. */
+/** The field carrying each location's tag ids. */
 export const TAGS_COLUMN = "tags";
 
 export type ValueFormat = "number" | "month" | "dateTime";
@@ -73,28 +75,19 @@ export interface DisambiguateResult {
 	groupSizes: number[];
 }
 
-/** One group's rows as columns: `columns[key][i]` is row i's value (null when absent),
- *  and `columns[TAGS_COLUMN][i]` its tag ids. */
-export interface GroupColumns {
+/** One group's size and, per analyzed field, its value counts (a list field counts each member). */
+export interface GroupCounts {
 	size: number;
-	columns: Record<string, unknown[]>;
+	counts: Record<string, CountBy>;
 }
 
-/** Which single group a row belongs to across per-group membership sets:
- *  the group index for exactly one, `null` for none, `"overlap"` for more than one. */
-export function soleGroup(masks: Set<number>[], id: number): number | null | "overlap" {
-	let found: number | null = null;
-	for (let gi = 0; gi < masks.length; gi++) {
-		if (masks[gi].has(id)) {
-			if (found !== null) return "overlap";
-			found = gi;
-		}
-	}
-	return found;
+/** Each group narrowed to the locations no other group holds. */
+export function exclusiveGroups(selectors: Selector[]): Selector[] {
+	return selectors.map((s, i) => all(s, not(any(...selectors.filter((_, j) => j !== i)))));
 }
 
-/** The columns an analysis needs: the writable built-ins, every declared field, every
- *  key present on the rows, and the tags. */
+/** The fields an analysis needs: the writable built-ins, every declared field, every
+ *  key present on the locations, and the tags. */
 export function analysisColumns(
 	fieldDefs: Record<string, FieldDef>,
 	presentKeys: Iterable<string>,
@@ -134,51 +127,36 @@ export function resolvedComparison(def: FieldDef | undefined): ComparisonType {
 	}
 }
 
+const MONTH = /^\d{4}-\d{2}$/;
+
 /** Infer a field type from a sample value: numbers -> number, `YYYY-MM` -> month, else string. */
-function inferFieldType(value: unknown): FieldDef["type"] {
-	if (typeof value === "number") return "number";
-	if (typeof value === "string" && /^\d{4}-\d{2}$/.test(value)) return "month";
+function inferFieldType(value: string): FieldDef["type"] {
+	if (MONTH.test(value)) return "month";
+	if (Number.isFinite(Number(value))) return "number";
 	return "string";
 }
 
-function column(group: GroupColumns, key: string): unknown[] {
-	return group.columns[key] ?? [];
+function valueCounts(group: GroupCounts, key: string): [string, number][] {
+	return group.counts[key]?.counts ?? [];
 }
 
 /** Synthetic def for an undeclared key, from the first present value (so an
  *  undeclared numeric field isn't mistaken for categorical). */
-function sampleDef(key: string, groups: GroupColumns[]): FieldDef | undefined {
+function sampleDef(key: string, groups: GroupCounts[]): FieldDef | undefined {
 	for (const g of groups) {
-		const v = column(g, key).find((x) => x != null);
-		if (v != null) return createFieldDef(inferFieldType(v));
+		const [first] = valueCounts(g, key);
+		if (first) return createFieldDef(inferFieldType(first[0]));
 	}
 	return undefined;
 }
 
-/** ISO datetime string -> unix seconds, or null. */
-function isoToUnix(s: string): number | null {
-	const ms = Date.parse(s);
+/** Numeric reading of a counted value: months as ordinals, dates as unix seconds. */
+function numericValue(value: string, def: FieldDef | undefined): number | null {
+	if (def?.type === "month") return ymOrdinal(value);
+	const n = Number(value);
+	if (value !== "" && Number.isFinite(n)) return n;
+	const ms = Date.parse(value);
 	return Number.isNaN(ms) ? null : ms / 1000;
-}
-
-/** Numeric reading of a field value (dates and months as ordinals). */
-function numericValue(v: unknown): number | null {
-	if (v == null) return null;
-	if (typeof v === "number") return v;
-	if (typeof v === "string") {
-		const ts = isoToUnix(v);
-		if (ts !== null) return ts;
-		return ymOrdinal(v);
-	}
-	return null;
-}
-
-/** Canonical category string for a field value (null/missing -> null). */
-function categoryValue(v: unknown): string | null {
-	if (v == null) return null;
-	if (typeof v === "string") return v;
-	if (typeof v === "boolean" || typeof v === "number") return String(v);
-	return JSON.stringify(v);
 }
 
 function isLowConfidence(present: number[]): boolean {
@@ -187,18 +165,19 @@ function isLowConfidence(present: number[]): boolean {
 
 function numericField(
 	key: string,
-	groups: GroupColumns[],
+	groups: GroupCounts[],
 	groupSizes: number[],
 	comparison: ComparisonType,
 	def: FieldDef | undefined,
 ): FieldDivergence {
-	const perGroup: number[][] = groups.map((g) =>
-		column(g, key)
-			.map(numericValue)
-			.filter((v): v is number => v !== null),
+	const perGroup: Tally[] = groups.map((g) =>
+		valueCounts(g, key).flatMap(([value, count]): Tally => {
+			const n = numericValue(value, def);
+			return n === null ? [] : [[n, count]];
+		}),
 	);
 
-	const present = perGroup.map((v) => v.length);
+	const present = perGroup.map(total);
 	const valueScore =
 		comparison.type === "circular"
 			? circularEta2(perGroup, comparison.period)
@@ -206,15 +185,15 @@ function numericField(
 	const coverageScore = coverageV(groupSizes, present);
 	const lowConfidence = isLowConfidence(present);
 
-	const summaries: GroupSummary[] = perGroup.map((vals, g) => {
-		const s = emptyGroup(groupSizes[g], vals.length);
-		if (vals.length > 0) {
+	const summaries: GroupSummary[] = perGroup.map((tally, g) => {
+		const s = emptyGroup(groupSizes[g], present[g]);
+		if (present[g] > 0) {
 			if (comparison.type === "circular") {
-				const { mean, concentration } = circularSummary(vals, comparison.period);
+				const { mean, concentration } = circularSummary(tally, comparison.period);
 				s.meanDeg = mean;
 				s.concentration = concentration;
 			} else {
-				const [p25, median, p75] = quartiles(vals);
+				const [p25, median, p75] = quartiles(tally);
 				s.p25 = p25;
 				s.median = median;
 				s.p75 = p75;
@@ -241,22 +220,21 @@ function finishCategorical(
 	key: string,
 	label: string,
 	perGroup: Map<string, number>[],
+	present: number[],
 	groupSizes: number[],
 	def: FieldDef | undefined,
 ): FieldDivergence {
-	const present = perGroup.map((m) => m.values().reduce((a, b) => a + b, 0));
 	const valueScore = cramersV(perGroup);
 	const coverageScore = coverageV(groupSizes, present);
 	const lowConfidence = isLowConfidence(present);
 
 	const groups: GroupSummary[] = perGroup.map((counts, g) => {
-		const total = present[g];
-		const s = emptyGroup(groupSizes[g], total);
-		if (total > 0) {
+		const s = emptyGroup(groupSizes[g], present[g]);
+		if (present[g] > 0) {
 			const pairs = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 			s.top = pairs.slice(0, TOP_N).map(([val, c]) => ({
 				label: fieldValueLabel(def, val),
-				freq: c / total,
+				freq: c / present[g],
 			}));
 		}
 		return s;
@@ -274,37 +252,32 @@ function finishCategorical(
 	};
 }
 
-function countValues(values: (string | null)[]): Map<string, number> {
-	const counts = new Map<string, number>();
-	for (const v of values) if (v !== null) counts.set(v, (counts.get(v) ?? 0) + 1);
-	return counts;
-}
-
 function categoricalField(
 	key: string,
-	groups: GroupColumns[],
+	groups: GroupCounts[],
 	groupSizes: number[],
 	def: FieldDef | undefined,
 ): FieldDivergence {
-	const perGroup = groups.map((g) => countValues(column(g, key).map(categoryValue)));
-	return finishCategorical(key, fieldLabel(key), perGroup, groupSizes, def);
-}
-
-function tagIdsOf(group: GroupColumns): number[][] {
-	return column(group, TAGS_COLUMN).map((v) => (Array.isArray(v) ? (v as number[]) : []));
+	const perGroup = groups.map((g) => new Map(valueCounts(g, key)));
+	const present = groups.map((g) => g.counts[key]?.covered ?? 0);
+	return finishCategorical(key, fieldLabel(key), perGroup, present, groupSizes, def);
 }
 
 function tagField(
-	tid: number,
-	groups: GroupColumns[],
+	tid: string,
+	groups: GroupCounts[],
 	groupSizes: number[],
 	tagNames: Record<number, string>,
 ): FieldDivergence {
-	const perGroup = groups.map((g) =>
-		countValues(tagIdsOf(g).map((tags) => (tags.includes(tid) ? "yes" : "no"))),
-	);
-	const label = tagNames[tid] ?? t("Tag {id}", { id: tid });
-	return finishCategorical(`tag:${tid}`, label, perGroup, groupSizes, undefined);
+	const perGroup = groups.map((g, i) => {
+		const tagged = new Map(valueCounts(g, TAGS_COLUMN)).get(tid) ?? 0;
+		return new Map([
+			["yes", tagged],
+			["no", groupSizes[i] - tagged],
+		]);
+	});
+	const label = tagNames[Number(tid)] ?? t("Tag {id}", { id: tid });
+	return finishCategorical(`tag:${tid}`, label, perGroup, groupSizes, groupSizes, undefined);
 }
 
 function sortKey(f: FieldDivergence): number {
@@ -312,9 +285,9 @@ function sortKey(f: FieldDivergence): number {
 	return f.coverageScore;
 }
 
-/** Rank the fields present in `groups` by how strongly they separate the groups. */
+/** Rank the fields counted in `groups` by how strongly they separate the groups. */
 export function computeDivergence(
-	groups: GroupColumns[],
+	groups: GroupCounts[],
 	fieldDefs: Record<string, FieldDef>,
 	tagNames: Record<number, string>,
 ): DisambiguateResult {
@@ -322,19 +295,14 @@ export function computeDivergence(
 	const fields: FieldDivergence[] = [];
 
 	const keys = new Set<string>();
-	for (const g of groups) for (const k of Object.keys(g.columns)) keys.add(k);
-	for (const k of Object.keys(fieldDefs)) keys.add(k);
+	for (const g of groups) for (const k of Object.keys(g.counts)) keys.add(k);
+	keys.delete(TAGS_COLUMN);
+	for (const k of EXCLUDED_FIELDS) keys.delete(k);
+	const builtins = getBuiltinKeys().filter((k) => keys.has(k));
+	const extras = [...keys].filter((k) => !isBuiltinField(k)).sort();
 
-	for (const key of getBuiltinKeys().filter(isWritableField)) {
-		const def = getFieldDef(key);
-		fields.push(numericField(key, groups, groupSizes, resolvedComparison(def), def));
-	}
-
-	const extraKeys = [...keys]
-		.filter((k) => k !== TAGS_COLUMN && !isBuiltinField(k) && !EXCLUDED_FIELDS.has(k))
-		.sort();
-	for (const key of extraKeys) {
-		const def = fieldDefs[key] ?? sampleDef(key, groups);
+	for (const key of [...builtins, ...extras]) {
+		const def = fieldDefs[key] ?? getFieldDef(key) ?? sampleDef(key, groups);
 		const comparison = resolvedComparison(def);
 		if (comparison.type === "categorical") {
 			fields.push(categoricalField(key, groups, groupSizes, def));
@@ -344,9 +312,9 @@ export function computeDivergence(
 	}
 
 	// Tags as boolean categorical fields (always 100% coverage).
-	const tagIds = new Set<number>();
-	for (const g of groups) for (const tags of tagIdsOf(g)) for (const tid of tags) tagIds.add(tid);
-	for (const tid of [...tagIds].sort((a, b) => a - b)) {
+	const tagIds = new Set<string>();
+	for (const g of groups) for (const [tid] of valueCounts(g, TAGS_COLUMN)) tagIds.add(tid);
+	for (const tid of [...tagIds].sort((a, b) => Number(a) - Number(b))) {
 		fields.push(tagField(tid, groups, groupSizes, tagNames));
 	}
 

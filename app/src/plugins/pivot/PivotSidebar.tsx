@@ -150,7 +150,7 @@ async function fieldAxis(
 		};
 	} else {
 		tally = async (selector) => {
-			const grouped = await query(selector).countBy(fieldKey, { kind: "value" });
+			const [grouped] = await query(selector).countBy([fieldKey], { kind: "value" });
 			return { counts: new Map(grouped.counts), withValue: grouped.covered };
 		};
 		whole = await tally(scope);

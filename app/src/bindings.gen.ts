@@ -226,10 +226,10 @@ export const commands = {
 	/**  Group by a derived key, returning `{ key, ids, bin }` per group. */
 	storeGroupBy: (selector: Selector, field: string, key: KeySpec) => __TAURI_INVOKE<PartitionBucket[]>("store_group_by", { selector, field, key }).then((v) => (v.map(i=>({...i,bin:i.bin==null?i.bin:i.bin.map(i=>i)})) as typeof v)),
 	/**
-	 *  Group locations by a derived key, returning counts only (no member ids) and how many
-	 *  distinct locations those groups cover.
+	 *  Group locations by a derived key of each field, returning counts only (no member ids)
+	 *  and how many distinct locations those groups cover, one result per field.
 	 */
-	storeCountBy: (selector: Selector, field: string, key: KeySpec) => __TAURI_INVOKE<CountBy>("store_count_by", { selector, field, key }),
+	storeCountBy: (selector: Selector, fields: string[], key: KeySpec) => __TAURI_INVOKE<CountBy[]>("store_count_by", { selector, fields, key }),
 	/**  Distinct values of `field` across the selected set, sorted. */
 	storeValues: (selector: Selector, field: string) => __TAURI_INVOKE<string[]>("store_values", { selector, field }),
 	/**

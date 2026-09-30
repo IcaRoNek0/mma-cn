@@ -1060,8 +1060,8 @@ query(selector: Selector): {
   sample: (n: number) => Promise<number[]>;
   /** Distinct values of `field`, sorted. */
   values: (field: string) => Promise<string[]>;
-  /** Group by a derived key and count. */
-  countBy: (field: string, key: KeySpec) => Promise<CountBy>;
+  /** Group each field by a derived key and count, one result per field. */
+  countBy: (fields: string[], key: KeySpec) => Promise<CountBy[]>;
   /** How many locations hold a value for each field, key-sorted. */
   coverage: () => Promise<[string, number][]>;
   /** One column per field. `null` where a location lacks the field; `"tags"`
@@ -5614,13 +5614,13 @@ Count how many locations the selector matches.
 ```ts
 cmd.storeCountBy(
   selector: Selector,
-  field: string,
+  fields: string[],
   key: KeySpec,
-): Promise<CountBy>
+): Promise<CountBy[]>
 ```
 
-Group locations by a derived key, returning counts only (no member ids) and how many
-distinct locations those groups cover.
+Group locations by a derived key of each field, returning counts only (no member ids)
+and how many distinct locations those groups cover, one result per field.
 
 #### cmd.storeCountryDistribution
 
@@ -8416,6 +8416,21 @@ Compute a locations/second rate for the current progress phase. Re-anchors when 
 new phase is detected (done went backward or total grew). Null until a quarter second
 of work has elapsed.
 
+### pickFiles
+
+`unstable` · unreleased
+
+```ts
+pickFiles(
+  accept: string,
+  opts?: {
+    multiple?: boolean;
+  },
+): Promise<File[]>
+```
+
+Prompt for files; resolves empty when the picker is dismissed.
+
 ### schemeBase
 
 `unstable` · since v0.10.3
@@ -8519,7 +8534,7 @@ countBy(
 ): Promise<CountBy>
 ```
 
-**Deprecated in v0.11.3.** Use `MMA.query(selector).countBy(field, key)`.
+**Deprecated in v0.11.3.** Use `MMA.query(selector).countBy([field], key)`.
 
 ### countIn
 

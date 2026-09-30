@@ -1086,18 +1086,19 @@ pub fn store_group_by(
         .partition(&field, &key))
 }
 
-/// Group locations by a derived key, returning counts only (no member ids) and how many
-/// distinct locations those groups cover.
+/// Group locations by a derived key of each field, returning counts only (no member ids)
+/// and how many distinct locations those groups cover, one result per field.
 #[tauri::command]
 #[specta::specta]
 pub fn store_count_by(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
     selector: Selector,
-    field: String,
+    fields: Vec<String>,
     key: selections::KeySpec,
-) -> AppResult<selections::CountBy> {
-    selector_read!(label, state, selector, |scope| scope.count_by(&field, &key))
+) -> AppResult<Vec<selections::CountBy>> {
+    selector_read!(label, state, selector, |scope| scope
+        .count_by(&fields, &key))
 }
 
 /// Distinct values of `field` across the selected set, sorted.

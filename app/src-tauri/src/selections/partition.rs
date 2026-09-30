@@ -5,7 +5,6 @@ use crate::store::maps::FieldType;
 use crate::types::wire_str_enum;
 use crate::util::tz_offset_seconds;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -118,21 +117,52 @@ impl Scope<'_, '_> {
         }
     }
 
-    /// Group counts without the member ids. Goes through `partition` so key derivation
-    /// keeps one definition.
-    pub fn count_by(&self, field: &str, spec: &KeySpec) -> CountBy {
-        let groups = self.partition(field, spec);
-        let mut covered = RoaringBitmap::new();
-        for g in &groups {
-            covered.extend(g.ids.iter().copied());
+    /// Group counts without the member ids, one per field, in the order `partition`
+    /// reports its groups. Keyed specs count every field in one pass over the rows.
+    pub fn count_by(&self, fields: &[String], spec: &KeySpec) -> Vec<CountBy> {
+        if let KeySpec::NumericBin { binning } = spec {
+            return fields
+                .iter()
+                .map(|field| {
+                    let counts: Vec<(String, u32)> = partition_numeric(self, field, binning)
+                        .into_iter()
+                        .map(|g| (g.key, g.ids.len() as u32))
+                        .collect();
+                    CountBy {
+                        covered: counts.iter().map(|(_, n)| n).sum(),
+                        counts,
+                    }
+                })
+                .collect();
         }
-        CountBy {
-            counts: groups
-                .into_iter()
-                .map(|g| (g.key, g.ids.len() as u32))
-                .collect(),
-            covered: covered.len() as u32,
+        let mut tallies: Vec<(HashMap<String, usize>, CountBy)> = fields
+            .iter()
+            .map(|_| {
+                let tally = CountBy {
+                    counts: Vec::new(),
+                    covered: 0,
+                };
+                (HashMap::new(), tally)
+            })
+            .collect();
+        for row in self.rows() {
+            for (field, (index, tally)) in fields.iter().zip(&mut tallies) {
+                let keys = row_keys(&row, field, spec);
+                if !keys.is_empty() {
+                    tally.covered += 1;
+                }
+                for k in keys {
+                    match index.get(&k) {
+                        Some(&i) => tally.counts[i].1 += 1,
+                        None => {
+                            index.insert(k.clone(), tally.counts.len());
+                            tally.counts.push((k, 1));
+                        }
+                    }
+                }
+            }
         }
+        tallies.into_iter().map(|(_, tally)| tally).collect()
     }
 }
 

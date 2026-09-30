@@ -752,11 +752,11 @@ declare const commands$1: {
     /**  Group by a derived key, returning `{ key, ids, bin }` per group. @unstable */
     storeGroupBy: (selector: Selector, field: string, key: KeySpec) => Promise<PartitionBucket[]>;
     /**
-     *  Group locations by a derived key, returning counts only (no member ids) and how many
-     *  distinct locations those groups cover.
+     *  Group locations by a derived key of each field, returning counts only (no member ids)
+     *  and how many distinct locations those groups cover, one result per field.
      *  @unstable
      */
-    storeCountBy: (selector: Selector, field: string, key: KeySpec) => Promise<CountBy>;
+    storeCountBy: (selector: Selector, fields: string[], key: KeySpec) => Promise<CountBy[]>;
     /**  Distinct values of `field` across the selected set, sorted. @unstable */
     storeValues: (selector: Selector, field: string) => Promise<string[]>;
     /**
@@ -3470,8 +3470,8 @@ declare function query$1(selector: Selector): {
     sample: (n: number) => Promise<number[]>;
     /** Distinct values of `field`, sorted. */
     values: (field: string) => Promise<string[]>;
-    /** Group by a derived key and count. */
-    countBy: (field: string, key: KeySpec) => Promise<CountBy>;
+    /** Group each field by a derived key and count, one result per field. */
+    countBy: (fields: string[], key: KeySpec) => Promise<CountBy[]>;
     /** How many locations hold a value for each field, key-sorted. */
     coverage: () => Promise<[string, number][]>;
     /** One column per field. `null` where a location lacks the field; `"tags"`
@@ -7441,7 +7441,7 @@ declare function fetchBounds(selector: Selector): Promise<[number, number, numbe
 declare function sampleFrom(selector: Selector, n: number): Promise<number[]>;
 /** @deprecated v0.11.3. Use `MMA.query(selector).values(field)`. @unstable */
 declare function fieldValues(selector: Selector, field: string): Promise<string[]>;
-/** @deprecated v0.11.3. Use `MMA.query(selector).countBy(field, key)`. @unstable */
+/** @deprecated v0.11.3. Use `MMA.query(selector).countBy([field], key)`. @unstable */
 declare function countBy(selector: Selector, field: string, key: KeySpec): Promise<CountBy>;
 /** @deprecated v0.11.3. Use `MMA.query(selector).coverage()`. @unstable */
 declare function coverage(selector: Selector): Promise<[string, number][]>;
@@ -7682,6 +7682,10 @@ declare function splitVersion(v: string): [core: string, pre: string];
 declare function isPrereleaseVersion(v: string): boolean;
 /** True when the app runs in a browser instead of the desktop app. @unstable */
 declare function isWeb(): boolean;
+/** Prompt for files; resolves empty when the picker is dismissed. @unstable */
+declare function pickFiles(accept: string, opts?: {
+    multiple?: boolean;
+}): Promise<File[]>;
 /** Trigger a browser download from an in-memory Blob. @unstable */
 declare function downloadBlob(blob: Blob, fileName: string): void;
 /** Copy an image Blob to the clipboard. False when the platform refuses it. @unstable */
@@ -7739,6 +7743,8 @@ declare const util_nowUnix: typeof nowUnix;
 /** @unstable */
 declare const util_phaseRate: typeof phaseRate;
 /** @unstable */
+declare const util_pickFiles: typeof pickFiles;
+/** @unstable */
 declare const util_schemeBase: typeof schemeBase;
 /** @unstable */
 declare const util_shuffle: typeof shuffle;
@@ -7751,7 +7757,7 @@ declare const util_tagColorFor: typeof tagColorFor;
 /** @unstable */
 declare const util_toggleInSet: typeof toggleInSet;
 declare namespace util {
-  export { util_appendTagName as appendTagName, util_bestBy as bestBy, util_chunk as chunk, util_cmpVersion as cmpVersion, util_compareNatural as compareNatural, util_copyImageToClipboard as copyImageToClipboard, util_downloadBlob as downloadBlob, util_isPrereleaseVersion as isPrereleaseVersion, util_isWeb as isWeb, util_mmaBufUrl as mmaBufUrl, util_nowUnix as nowUnix, util_phaseRate as phaseRate, util_schemeBase as schemeBase, util_shuffle as shuffle, util_sortTagsByMode as sortTagsByMode, util_splitVersion as splitVersion, util_tagColorFor as tagColorFor, util_toggleInSet as toggleInSet };
+  export { util_appendTagName as appendTagName, util_bestBy as bestBy, util_chunk as chunk, util_cmpVersion as cmpVersion, util_compareNatural as compareNatural, util_copyImageToClipboard as copyImageToClipboard, util_downloadBlob as downloadBlob, util_isPrereleaseVersion as isPrereleaseVersion, util_isWeb as isWeb, util_mmaBufUrl as mmaBufUrl, util_nowUnix as nowUnix, util_phaseRate as phaseRate, util_pickFiles as pickFiles, util_schemeBase as schemeBase, util_shuffle as shuffle, util_sortTagsByMode as sortTagsByMode, util_splitVersion as splitVersion, util_tagColorFor as tagColorFor, util_toggleInSet as toggleInSet };
   export type { util_PhaseRate as PhaseRate };
 }
 

@@ -3050,7 +3050,10 @@ fn count_by_matches_the_group_sizes_partition_reports() {
     let fx = Fx::base(&locs);
     let view = fx.view();
 
-    let mut counted = view.all().count_by("c", &KeySpec::Value);
+    let mut counted = view
+        .all()
+        .count_by(&["c".into()], &KeySpec::Value)
+        .remove(0);
     counted.counts.sort();
     assert_eq!(
         counted.counts,
@@ -3066,6 +3069,69 @@ fn count_by_matches_the_group_sizes_partition_reports() {
         .collect();
     sizes.sort();
     assert_eq!(counted.counts, sizes);
+}
+
+#[test]
+fn count_by_counts_each_field_as_it_would_alone() {
+    let locs = vec![
+        loc_extra(1, serde_json::json!({"c": "US", "n": 2, "l": ["a", "b"]})),
+        loc_extra(2, serde_json::json!({"c": "US", "n": 2.5})),
+        loc_extra(3, serde_json::json!({"c": "FR", "l": ["a"]})),
+        loc_extra(4, serde_json::json!({"other": 1})),
+    ];
+    let fx = Fx::base(&locs);
+    let view = fx.view();
+    let fields: Vec<String> = ["c", "n", "l", "missing"].map(String::from).into();
+
+    for spec in [
+        KeySpec::Value,
+        KeySpec::NumericBin {
+            binning: NumericBinning::Count { n: 2 },
+        },
+    ] {
+        let together = view.all().count_by(&fields, &spec);
+        assert_eq!(together.len(), fields.len());
+        for (field, counted) in fields.iter().zip(&together) {
+            let alone = view.all().count_by(slice::from_ref(field), &spec).remove(0);
+            assert_eq!(counted.counts, alone.counts, "{field}");
+            assert_eq!(counted.covered, alone.covered, "{field}");
+            let sizes: Vec<(String, u32)> = view
+                .all()
+                .partition(field, &spec)
+                .into_iter()
+                .map(|g| (g.key, g.ids.len() as u32))
+                .collect();
+            assert_eq!(counted.counts, sizes, "{field}");
+        }
+    }
+    let counted = view.all().count_by(&fields, &KeySpec::Value);
+    assert_eq!(
+        counted[1].counts,
+        vec![("2".to_string(), 1u32), ("2.5".to_string(), 1)]
+    );
+    assert_eq!(counted[2].covered, 2);
+    assert_eq!(counted[3].covered, 0);
+}
+
+#[test]
+fn count_by_counts_each_tag_id() {
+    let mut a = loc(1, 0.0, 0.0);
+    a.tags = vec![7, 9];
+    let mut b = loc(2, 0.0, 0.0);
+    b.tags = vec![7];
+    let fx = Fx::base(&[a, b, loc(3, 0.0, 0.0)]);
+    let view = fx.view();
+
+    let mut tags = view
+        .all()
+        .count_by(&["tags".into()], &KeySpec::Value)
+        .remove(0);
+    tags.counts.sort();
+    assert_eq!(
+        tags.counts,
+        vec![("7".to_string(), 2u32), ("9".to_string(), 1)]
+    );
+    assert_eq!(tags.covered, 2);
 }
 
 #[test]
@@ -3111,7 +3177,10 @@ fn count_by_covers_a_row_once_though_its_list_spans_groups() {
     let fx = Fx::adds(locs);
     let view = fx.view();
 
-    let counted = view.all().count_by("c", &KeySpec::Value);
+    let counted = view
+        .all()
+        .count_by(&["c".into()], &KeySpec::Value)
+        .remove(0);
     let summed: u32 = counted.counts.iter().map(|(_, n)| n).sum();
     assert_eq!(summed, 4);
     assert_eq!(counted.covered, 2);
@@ -3420,7 +3489,7 @@ fn every_projection_honours_a_named_id_list() {
     );
     assert_eq!(scope.distinct_values("c"), vec!["FR"]);
     assert_eq!(
-        scope.count_by("c", &KeySpec::Value).counts,
+        scope.count_by(&["c".into()], &KeySpec::Value)[0].counts,
         vec![("FR".to_string(), 2u32)]
     );
 }

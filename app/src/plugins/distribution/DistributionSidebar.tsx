@@ -47,10 +47,10 @@ export function DistributionSidebar({ onClose }: { onClose: () => void }) {
 		const count = MMA.getMapState().locationCount;
 		setTotal(count);
 
-		const meta = toDistribution(
-			(await query({ type: "Everything" }).countBy("countryCode", { kind: "value" })).counts,
-			count,
-		);
+		const [countries] = await query({ type: "Everything" }).countBy(["countryCode"], {
+			kind: "value",
+		});
+		const meta = toDistribution(countries.counts, count);
 		const hasMeta = count > 0 && meta.unknown < count;
 		setMetaAvailable(hasMeta);
 

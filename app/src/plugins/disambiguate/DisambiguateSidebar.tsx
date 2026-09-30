@@ -9,7 +9,7 @@ import { Pill } from "@/components/primitives/Pill";
 import { Spinner } from "@/components/primitives/Spinner";
 import type { Selection, FieldDef } from "@/bindings.gen";
 import type { RGB } from "@/lib/util/color";
-import { analysisColumns, computeDivergence, soleGroup, type GroupColumns } from "./engine";
+import { analysisColumns, computeDivergence, exclusiveGroups } from "./engine";
 import type { DisambiguateResult, FieldDivergence, GroupSummary, ValueFormat } from "./engine";
 import "./disambiguate.css";
 import { t } from "@/lib/i18n";
@@ -132,47 +132,32 @@ async function analyze(): Promise<Analysis> {
 	if (sels.length < 2) throw new Error(t("Select at least 2 groups to disambiguate."));
 
 	const colors = sels.map((s) => s.color);
-	const idSets = await Promise.all(
-		sels.map((s) =>
-			MMA.query(s.selector)
-				.ids()
-				.then((ids) => new Set(ids)),
-		),
-	);
-
-	const groupIds: number[][] = sels.map(() => []);
-	let excludedOverlap = 0;
-	const unionIds = [...new Set(idSets.flatMap((s) => [...s]))];
-	for (const id of unionIds) {
-		const g = soleGroup(idSets, id);
-		if (g === "overlap") excludedOverlap++;
-		else if (g !== null) groupIds[g].push(id);
-	}
+	const selectors = sels.map((s) => s.selector);
+	const union = MMA.query(MMA.any(...selectors));
 
 	const fieldDefs: Record<string, FieldDef> = MMA.getAllFieldDefs();
 	const tagNames: Record<number, string> = {};
 	for (const [id, t] of Object.entries(MMA.getTags()))
 		tagNames[Number(id)] = (t as { name: string }).name;
 
-	const present = await MMA.query({
-		type: "Locations",
-		locations: unionIds,
-		name: null,
-	}).coverage();
+	const [unionSize, present] = await Promise.all([union.count(), union.coverage()]);
 	const fields = analysisColumns(
 		fieldDefs,
 		present.map(([k]) => k),
 	);
-	const groups: GroupColumns[] = await Promise.all(
-		groupIds.map(async (ids) => {
-			const cols = await MMA.query({ type: "Locations", locations: ids, name: null }).columns(
-				fields,
-			);
-			return { size: ids.length, columns: Object.fromEntries(fields.map((f, i) => [f, cols[i]])) };
+	const groups = await Promise.all(
+		exclusiveGroups(selectors).map(async (selector) => {
+			const group = MMA.query(selector);
+			const [size, counts] = await Promise.all([
+				group.count(),
+				group.countBy(fields, { kind: "value" }),
+			]);
+			return { size, counts: Object.fromEntries(fields.map((f, i) => [f, counts[i]])) };
 		}),
 	);
 
 	const result = computeDivergence(groups, fieldDefs, tagNames);
+	const excludedOverlap = unionSize - result.groupSizes.reduce((a, b) => a + b, 0);
 	return { result, colors, excludedOverlap };
 }
 

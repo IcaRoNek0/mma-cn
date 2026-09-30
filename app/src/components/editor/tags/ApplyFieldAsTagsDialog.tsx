@@ -83,7 +83,9 @@ export function ApplyFieldAsTagsDialog({ open, onOpenChange }: DialogProps) {
 			query(selector).count(),
 			query(selector).coverage(),
 			key
-				? query(selector).countBy(field, key)
+				? query(selector)
+						.countBy([field], key)
+						.then(([grouped]) => grouped)
 				: Promise.resolve<CountBy>({ counts: [], covered: 0 }),
 		]).then(([total, counts, grouped]) => {
 			if (!live) return;

@@ -123,9 +123,10 @@ export function fieldValues(selector: Selector, field: string): Promise<string[]
 	return query(selector).values(field);
 }
 
-/** @deprecated v0.11.3. Use `MMA.query(selector).countBy(field, key)`. */
-export function countBy(selector: Selector, field: string, key: KeySpec): Promise<CountBy> {
-	return query(selector).countBy(field, key);
+/** @deprecated v0.11.3. Use `MMA.query(selector).countBy([field], key)`. */
+export async function countBy(selector: Selector, field: string, key: KeySpec): Promise<CountBy> {
+	const [counted] = await query(selector).countBy([field], key);
+	return counted;
 }
 
 /** @deprecated v0.11.3. Use `MMA.query(selector).coverage()`. */

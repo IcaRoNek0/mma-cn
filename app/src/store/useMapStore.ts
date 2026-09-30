@@ -386,9 +386,9 @@ export function query(selector: Selector) {
 		sample: (n: number): Promise<number[]> => cmd.storeSample(selector, n),
 		/** Distinct values of `field`, sorted. */
 		values: (field: string): Promise<string[]> => cmd.storeValues(selector, field),
-		/** Group by a derived key and count. */
-		countBy: (field: string, key: KeySpec): Promise<CountBy> =>
-			cmd.storeCountBy(selector, field, key),
+		/** Group each field by a derived key and count, one result per field. */
+		countBy: (fields: string[], key: KeySpec): Promise<CountBy[]> =>
+			cmd.storeCountBy(selector, fields, key),
 		/** How many locations hold a value for each field, key-sorted. */
 		coverage: (): Promise<[string, number][]> => cmd.storeCoverage(selector),
 		/** One column per field. `null` where a location lacks the field; `"tags"`
