@@ -48,6 +48,12 @@ export async function startGgStub(
 	log: (line: string) => void = (line) => process.stdout.write(line + "\n"),
 ): Promise<GgStub> {
 	let hits: GgHit[] = [];
+	// Drafts the app created, so a created map can be listed, read and written like a real one.
+	const drafts = new Map<
+		string,
+		{ name: string; mode: string; version: number; coordinates: unknown[] | null }
+	>();
+	const DRAFT = /^\/api\/v4\/user-maps\/drafts\/([0-9a-f]{24})$/;
 
 	const json = (res: http.ServerResponse, status: number, value: unknown) => {
 		const payload = Buffer.from(JSON.stringify(value), "utf-8");
@@ -82,6 +88,47 @@ export async function startGgStub(
 			const query = url.includes("?") ? url.slice(url.indexOf("?") + 1) : "";
 			if (path === "/api/v3/profiles") {
 				json(res, 200, { user: { id: "e2e-1", nick: GG_STUB_NICK } });
+				return;
+			}
+			if (path === "/api/v4/user-maps/drafts" && method === "POST") {
+				const { name, mode } = JSON.parse(hit.body) as { name: string; mode: string };
+				const id = (drafts.size + 1).toString(16).padStart(24, "0");
+				drafts.set(id, { name, mode, version: 0, coordinates: null });
+				json(res, 200, { id });
+				return;
+			}
+			if (path === "/api/v4/user-maps/drafts" && method === "GET") {
+				json(
+					res,
+					200,
+					[...drafts].map(([slug, d]) => ({ slug, name: d.name, mode: d.mode })),
+				);
+				return;
+			}
+			if (path === "/api/v4/user-maps/maps") {
+				json(res, 200, []);
+				return;
+			}
+			const draftId = DRAFT.exec(path)?.[1];
+			const draft = draftId ? drafts.get(draftId) : undefined;
+			if (draft && method === "GET") {
+				json(res, 200, {
+					name: draft.name,
+					mode: draft.mode,
+					version: draft.version,
+					coordinates: draft.coordinates,
+				});
+				return;
+			}
+			if (draft && method === "PUT") {
+				const write = JSON.parse(hit.body) as { version: number; customCoordinates: unknown[] };
+				if (write.version !== draft.version + 1) {
+					json(res, 409, { message: "version mismatch" });
+					return;
+				}
+				draft.version = write.version;
+				draft.coordinates = write.customCoordinates;
+				json(res, 200, { message: "OK" });
 				return;
 			}
 			if (path === "/api/v4/teapot") {

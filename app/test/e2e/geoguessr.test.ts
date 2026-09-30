@@ -62,10 +62,10 @@ describe("ggapi proxy", function () {
 
 	it("maps path and query upstream and relays the body", async () => {
 		await hits(true);
-		const res = await ggFetch("/api/v4/user-maps/drafts?page=2");
+		const res = await ggFetch("/api/v4/echo/drafts?page=2");
 		expect(res.status).toBe(200);
 		const echo = JSON.parse(res.body) as { path: string; query: string; cookie: string };
-		expect(echo.path).toBe("/api/v4/user-maps/drafts");
+		expect(echo.path).toBe("/api/v4/echo/drafts");
 		expect(echo.query).toBe("page=2");
 		expect(echo.cookie).toContain(`_ncfa=${GG_STUB_NCFA}`);
 	});

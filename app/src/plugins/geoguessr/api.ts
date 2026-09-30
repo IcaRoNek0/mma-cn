@@ -51,6 +51,16 @@ export function listDrafts(signal?: AbortSignal): Promise<GgDraftSummary[]> {
 	return request<GgDraftSummary[]>("/api/v4/user-maps/drafts", { signal });
 }
 
+/** Create an empty coordinate draft named `name` and return its slug. */
+export async function createDraft(name: string): Promise<string> {
+	const { id } = await request<{ id: string }>("/api/v4/user-maps/drafts", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ name, mode: "coordinates" }),
+	});
+	return id;
+}
+
 /**
  * The user's maps as published entities. Only used to spot maps that have no draft yet -- older
  * maps predate the draft system, and sync has nothing to write to until one exists.

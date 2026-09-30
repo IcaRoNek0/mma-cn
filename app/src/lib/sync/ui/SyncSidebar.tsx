@@ -45,6 +45,8 @@ export type LinkSource =
 			kind: "list";
 			/** Fetch linkable remote maps. Called when authenticated and unlinked. */
 			listMaps: () => Promise<RemoteMapSummary[]>;
+			/** Create an empty remote map named `name`, to link to. */
+			createMap?: (name: string) => Promise<RemoteMapSummary>;
 	  }
 	| {
 			kind: "address";
@@ -318,6 +320,21 @@ export function SyncSidebar({ onClose, controller, auth, identity, source }: Syn
 		[controller, performLink],
 	);
 
+	const createMap = source.kind === "list" ? source.createMap : undefined;
+	const doCreate = useCallback(async () => {
+		if (!createMap) return;
+		setBusy(true);
+		setError(null);
+		const created = await createMap(window.MMA.getMapState().map?.name ?? "").catch(
+			(e: unknown) => {
+				setError(errText(e));
+				return null;
+			},
+		);
+		setBusy(false);
+		if (created) doLink(created);
+	}, [createMap, doLink]);
+
 	const doSync = useCallback(async () => {
 		setBusy(true);
 		setError(null);
@@ -547,39 +564,46 @@ export function SyncSidebar({ onClose, controller, auth, identity, source }: Syn
 							<Spinner label={t("Loading maps")} />
 						</div>
 					) : (
-						<Field label={t("Find a remote map")}>
-							<SuggestInput
-								// Portalled: the sidebar clips overflow, so an inline dropdown is both cut
-								// off and forced to grow the section instead of floating over it.
-								portal
-								listStyle={{ maxHeight: "40vh", overflowY: "auto" }}
-								value={filter}
-								onChange={setFilter}
-								suggestions={shown}
-								getKey={(m) => m.id}
-								onPick={(m) => !m.unsupported && doLink(m)}
-								disabled={busy}
-								placeholder={t(
-									{ one: "Search {n} map", other: "Search {n} maps" },
-									{ n: maps.length },
-								)}
-								renderItem={(m) => (
-									<span
-										style={{
-											display: "flex",
-											justifyContent: "space-between",
-											gap: 8,
-											opacity: m.unsupported ? 0.5 : 1,
-										}}
-									>
-										<span>{m.name || t("(unnamed)")}</span>
-										<span className="text-muted" style={{ whiteSpace: "nowrap" }}>
-											{m.unsupported ?? (m.locationCount !== null ? m.locationCount : "")}
+						<>
+							<Field label={t("Find a remote map")}>
+								<SuggestInput
+									// Portalled: the sidebar clips overflow, so an inline dropdown is both cut
+									// off and forced to grow the section instead of floating over it.
+									portal
+									listStyle={{ maxHeight: "40vh", overflowY: "auto" }}
+									value={filter}
+									onChange={setFilter}
+									suggestions={shown}
+									getKey={(m) => m.id}
+									onPick={(m) => !m.unsupported && doLink(m)}
+									disabled={busy}
+									placeholder={t(
+										{ one: "Search {n} map", other: "Search {n} maps" },
+										{ n: maps.length },
+									)}
+									renderItem={(m) => (
+										<span
+											style={{
+												display: "flex",
+												justifyContent: "space-between",
+												gap: 8,
+												opacity: m.unsupported ? 0.5 : 1,
+											}}
+										>
+											<span>{m.name || t("(unnamed)")}</span>
+											<span className="text-muted" style={{ whiteSpace: "nowrap" }}>
+												{m.unsupported ?? (m.locationCount !== null ? m.locationCount : "")}
+											</span>
 										</span>
-									</span>
-								)}
-							/>
-						</Field>
+									)}
+								/>
+							</Field>
+							{createMap && (
+								<Button onClick={() => void doCreate()} disabled={busy}>
+									{t("Create a new remote map from this one")}
+								</Button>
+							)}
+						</>
 					)}
 				</Section>
 			)}

@@ -1,7 +1,7 @@
 import { mdiMapMarker } from "@mdi/js";
 import { createSyncController } from "@/lib/sync/controller";
 import { isAuthPrefixed, type RemoteMapSummary, type SyncProvider } from "@/lib/sync/provider";
-import { listDrafts, listPublished } from "./api";
+import { createDraft, listDrafts, listPublished } from "./api";
 import { msg, t } from "@/lib/i18n";
 
 export const PLUGIN_ID = "geoguessr";
@@ -41,6 +41,11 @@ export async function listMaps(signal?: AbortSignal): Promise<RemoteMapSummary[]
 		}));
 
 	return [...linkable, ...draftless];
+}
+
+/** A new, empty draft to link to. */
+export async function createMap(name: string): Promise<RemoteMapSummary> {
+	return { id: await createDraft(name), name, locationCount: 0 };
 }
 
 export const controller = createSyncController(geoguessrProvider, PLUGIN_ID);
