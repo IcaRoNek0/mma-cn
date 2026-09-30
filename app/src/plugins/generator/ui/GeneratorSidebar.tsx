@@ -28,6 +28,8 @@ import {
 	mdiBullseyeArrow,
 	mdiChartScatterPlot,
 	mdiContentDuplicate,
+	mdiFileExport,
+	mdiFileImport,
 	mdiFilterRemove,
 	mdiMapMarkerCheck,
 	mdiRadar,
@@ -41,6 +43,11 @@ import { t } from "@/lib/i18n";
 import { fieldValueLabel, getFieldDef } from "@/lib/data/fieldDefRegistry";
 import { TextInput } from "@/components/primitives/TextInput";
 import { Button } from "@/components/primitives/Button";
+import { IconButton } from "@/components/primitives/IconButton";
+import { downloadBlob, pickFiles } from "@/lib/util/util";
+import { addPolygonSelections } from "@/lib/map/addPolygonSelections";
+import { toast } from "@/lib/util/toast";
+import { readGeneratorPreset, writeGeneratorPreset } from "../presetFile";
 
 const genStore = storage("map-generator");
 
@@ -320,6 +327,36 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 		resumeGeneration(desired);
 	}, [paused, settings.defaultTarget]);
 
+	const handleExport = useCallback(() => {
+		const polygons = getActiveSelections().flatMap((s) =>
+			s.selector.type === "Polygon" ? [s.selector.polygon] : [],
+		);
+		const preset = writeGeneratorPreset(settings, tagName, polygons);
+		downloadBlob(
+			new Blob([JSON.stringify(preset)], { type: "application/geo+json" }),
+			"generator.geojson",
+		);
+	}, [settings, tagName]);
+
+	const handleImport = useCallback(async () => {
+		const [file] = await pickFiles(".json,.geojson");
+		if (!file) return;
+		const preset = await file
+			.text()
+			.then((text) => readGeneratorPreset(JSON.parse(text)))
+			.catch(() => null);
+		if (!preset) {
+			toast(t("{file} is not valid JSON", { file: file.name }));
+			return;
+		}
+		if (preset.settings) updateSettings(preset.settings);
+		if (preset.tagName !== null) {
+			setTagName(preset.tagName);
+			genStore.set("tagName", preset.tagName);
+		}
+		await addPolygonSelections(preset.polygons);
+	}, [updateSettings]);
+
 	const handleClose = useCallback(() => {
 		onClose();
 	}, [onClose]);
@@ -331,6 +368,25 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 			title={t("Map Generator")}
 			onBack={handleClose}
 			className="generator-sidebar"
+			actions={
+				<>
+					<IconButton
+						icon={mdiFileImport}
+						size={18}
+						label={t("Import regions and settings")}
+						tooltipSide="bottom"
+						disabled={running}
+						onClick={() => void handleImport()}
+					/>
+					<IconButton
+						icon={mdiFileExport}
+						size={18}
+						label={t("Export regions and settings")}
+						tooltipSide="bottom"
+						onClick={handleExport}
+					/>
+				</>
+			}
 			footer={
 				<>
 					<p className="generator-sidebar__summary">{summarizeSettings(settings)}</p>

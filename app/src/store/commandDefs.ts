@@ -72,7 +72,7 @@ import { hasCommitDiff } from "./commitDiff";
 import { MAP_EMBED_PREFS, MAP_TYPES } from "./mapEmbedPrefs";
 import { getLocal, setLocal } from "@/lib/hooks/useLocalStorage";
 import { isReservedMap } from "./mapList";
-import { loadGeoJSON } from "@/lib/util/loadGeoJSON";
+import { loadGeoJSON, polygonFeatureCollection } from "@/lib/util/geojson";
 import { downloadBlob } from "@/lib/util/util";
 import { toggleSeenOverlay } from "@/lib/seen/seenOverlay";
 import { selectReviewedHistory } from "@/lib/review/review";
@@ -267,16 +267,10 @@ const COMMANDS = {
 		group: msg("Selections"),
 		enabled: () => getActiveSelections().some((s) => s.selector.type === "Polygon"),
 		execute: () => {
-			const features: unknown[] = [];
-			for (const sel of getActiveSelections()) {
-				if (sel.selector.type !== "Polygon") continue;
-				features.push({
-					type: "Feature",
-					properties: sel.selector.polygon.properties ?? {},
-					geometry: { type: "Polygon", coordinates: sel.selector.polygon.coordinates },
-				});
-			}
-			const blob = new Blob([JSON.stringify({ type: "FeatureCollection", features })], {
+			const polygons = getActiveSelections().flatMap((s) =>
+				s.selector.type === "Polygon" ? [s.selector.polygon] : [],
+			);
+			const blob = new Blob([JSON.stringify(polygonFeatureCollection(polygons))], {
 				type: "application/geo+json",
 			});
 			downloadBlob(blob, "selections.geojson");

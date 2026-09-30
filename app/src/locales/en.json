@@ -471,6 +471,7 @@
 		"other": "Export everything ({n} locations)"
 	},
 	"Export failed": "Export failed",
+	"Export regions and settings": "Export regions and settings",
 	"Export saved": "Export saved",
 	"Export selection ({n} locations)": {
 		"one": "Export selection ({n} location)",
@@ -602,6 +603,7 @@
 	"Import complete": "Import complete",
 	"Import file": "Import file",
 	"Import maps": "Import maps",
+	"Import regions and settings": "Import regions and settings",
 	"Import {n} maps": {
 		"one": "Import {n} map",
 		"other": "Import {n} maps"
@@ -1581,6 +1583,7 @@
 	"{field} {op} {value}": "{field} {op} {value}",
 	"{field}: local {local} · remote {remote}": "{field}: local {local} · remote {remote}",
 	"{field}’s values": "{field}’s values",
+	"{file} is not valid JSON": "{file} is not valid JSON",
 	"{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances": "{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances",
 	"{maps} maps · {locations} locations": "{maps} maps · {locations} locations",
 	"{min}–{max} links": "{min}–{max} links",

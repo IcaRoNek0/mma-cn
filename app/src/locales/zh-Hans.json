@@ -455,6 +455,7 @@
 		"other": "导出全部（{n} 个位置）"
 	},
 	"Export failed": "导出失败",
+	"Export regions and settings": "导出区域和设置",
 	"Export saved": "导出已保存",
 	"Export selection ({n} locations)": {
 		"other": "导出选择（{n} 个位置）"
@@ -585,6 +586,7 @@
 	"Import complete": "导入完成",
 	"Import file": "导入文件",
 	"Import maps": "导入地图",
+	"Import regions and settings": "导入区域和设置",
 	"Import {n} maps": {
 		"other": "导入 {n} 张地图"
 	},
@@ -1536,6 +1538,7 @@
 	"{field} {op} {value}": "{field} {op} {value}",
 	"{field}: local {local} · remote {remote}": "{field}：本地 {local} · 远程 {remote}",
 	"{field}’s values": "{field} 的值",
+	"{file} is not valid JSON": "{file} 不是有效的 JSON",
 	"{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances": "进行中 {inflight} / {limit}，限速等待 {waiting}，重试 {retries}，实例 {instances}",
 	"{maps} maps · {locations} locations": "{maps} 张地图 · {locations} 个位置",
 	"{min}–{max} links": "{min}–{max} 个链接",

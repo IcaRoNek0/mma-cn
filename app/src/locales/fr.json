@@ -487,6 +487,7 @@
 		"other": "Tout exporter ({n} lieux)"
 	},
 	"Export failed": "Échec de l'export",
+	"Export regions and settings": "Exporter les régions et les paramètres",
 	"Export saved": "Export enregistré",
 	"Export selection ({n} locations)": {
 		"one": "Exporter la sélection ({n} lieu)",
@@ -619,6 +620,7 @@
 	"Import complete": "Import terminé",
 	"Import file": "Importer un fichier",
 	"Import maps": "Importer des cartes",
+	"Import regions and settings": "Importer des régions et des paramètres",
 	"Import {n} maps": {
 		"one": "Importer {n} carte",
 		"many": "Importer {n} cartes",
@@ -1626,6 +1628,7 @@
 	"{field} {op} {value}": "{field} {op} {value}",
 	"{field}: local {local} · remote {remote}": "{field} : local {local} · distant {remote}",
 	"{field}’s values": "Valeurs de {field}",
+	"{file} is not valid JSON": "{file} n'est pas un JSON valide",
 	"{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances": "{inflight} / {limit} en cours, {waiting} en attente de quota, {retries} nouvelles tentatives, {instances} instances",
 	"{maps} maps · {locations} locations": "{maps} cartes · {locations} lieux",
 	"{min}–{max} links": "{min}–{max} liens",

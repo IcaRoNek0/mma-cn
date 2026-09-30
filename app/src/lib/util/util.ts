@@ -96,6 +96,19 @@ export function isWeb(): boolean {
 	);
 }
 
+/** Prompt for files; resolves empty when the picker is dismissed. */
+export function pickFiles(accept: string, opts: { multiple?: boolean } = {}): Promise<File[]> {
+	return new Promise((resolve) => {
+		const input = document.createElement("input");
+		input.type = "file";
+		input.accept = accept;
+		input.multiple = opts.multiple ?? false;
+		input.onchange = () => resolve([...(input.files ?? [])]);
+		input.oncancel = () => resolve([]);
+		input.click();
+	});
+}
+
 /** Trigger a browser download from an in-memory Blob. */
 export function downloadBlob(blob: Blob, fileName: string) {
 	const url = URL.createObjectURL(blob);

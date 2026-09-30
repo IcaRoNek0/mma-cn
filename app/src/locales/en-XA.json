@@ -471,6 +471,7 @@
 		"other": "[Éẋƥöŕţ éṽéŕýţĥîñǧ ({n} ĺöçåţîöñş) åéîöüåéîöüåé]"
 	},
 	"Export failed": "[Éẋƥöŕţ ƒåîĺéð åéîöüå]",
+	"Export regions and settings": "[Éẋƥöŕţ ŕéǧîöñş åñð şéţţîñǧş åéîöüåéîöüå]",
 	"Export saved": "[Éẋƥöŕţ şåṽéð åéîöü]",
 	"Export selection ({n} locations)": {
 		"one": "[Éẋƥöŕţ şéĺéçţîöñ ({n} ĺöçåţîöñ) åéîöüåéîöüåé]",
@@ -602,6 +603,7 @@
 	"Import complete": "[Îɱƥöŕţ çöɱƥĺéţé åéîöüå]",
 	"Import file": "[Îɱƥöŕţ ƒîĺé åéîöü]",
 	"Import maps": "[Îɱƥöŕţ ɱåƥş åéîöü]",
+	"Import regions and settings": "[Îɱƥöŕţ ŕéǧîöñş åñð şéţţîñǧş åéîöüåéîöüå]",
 	"Import {n} maps": {
 		"one": "[Îɱƥöŕţ {n} ɱåƥ åéîöü]",
 		"other": "[Îɱƥöŕţ {n} ɱåƥş åéîöü]"
@@ -1581,6 +1583,7 @@
 	"{field} {op} {value}": "[{field} {op} {value} å]",
 	"{field}: local {local} · remote {remote}": "[{field}: ĺöçåĺ {local} · ŕéɱöţé {remote} åéîöüåéî]",
 	"{field}’s values": "[{field}’ş ṽåĺüéş åéîö]",
+	"{file} is not valid JSON": "[{file} îş ñöţ ṽåĺîð ĴŞÖÑ åéîöüåéî]",
 	"{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances": "[{inflight} / {limit} îñ ƒĺîǧĥţ, {waiting} ŕåţé-ŵåîţîñǧ, {retries} ŕéţŕîéş, {instances} îñşţåñçéş åéîöüåéîöüåéîöüåéîöü]",
 	"{maps} maps · {locations} locations": "[{maps} ɱåƥş · {locations} ĺöçåţîöñş åéîöüåéî]",
 	"{min}–{max} links": "[{min}–{max} ĺîñķş åéî]",

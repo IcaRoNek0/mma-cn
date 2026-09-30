@@ -503,6 +503,7 @@
 		"other": "Экспортировать всё ({n} локации)"
 	},
 	"Export failed": "Не удалось экспортировать",
+	"Export regions and settings": "Экспортировать регионы и настройки",
 	"Export saved": "Экспорт сохранён",
 	"Export selection ({n} locations)": {
 		"one": "Экспортировать выборку ({n} локация)",
@@ -636,6 +637,7 @@
 	"Import complete": "Импорт завершён",
 	"Import file": "Импортировать файл",
 	"Import maps": "Импортировать карты",
+	"Import regions and settings": "Импортировать регионы и настройки",
 	"Import {n} maps": {
 		"one": "Импортировать {n} карту",
 		"few": "Импортировать {n} карты",
@@ -1671,6 +1673,7 @@
 	"{field} {op} {value}": "{field} {op} {value}",
 	"{field}: local {local} · remote {remote}": "{field}: локально {local} · на сервере {remote}",
 	"{field}’s values": "Значения {field}",
+	"{file} is not valid JSON": "{file} не является корректным JSON",
 	"{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances": "{inflight} / {limit} в работе, {waiting} ждут лимита, {retries} повторов, {instances} экземпляров",
 	"{maps} maps · {locations} locations": "Карт: {maps} · локаций: {locations}",
 	"{min}–{max} links": "{min}–{max} ссылок",

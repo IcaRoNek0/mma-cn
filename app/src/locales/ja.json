@@ -455,6 +455,7 @@
 		"other": "すべてエクスポート（{n} 地点）"
 	},
 	"Export failed": "エクスポートに失敗しました",
+	"Export regions and settings": "地域と設定をエクスポート",
 	"Export saved": "エクスポートを保存しました",
 	"Export selection ({n} locations)": {
 		"other": "選択をエクスポート（{n} 地点）"
@@ -585,6 +586,7 @@
 	"Import complete": "インポート完了",
 	"Import file": "ファイルをインポート",
 	"Import maps": "マップをインポート",
+	"Import regions and settings": "地域と設定をインポート",
 	"Import {n} maps": {
 		"other": "{n} 件のマップをインポート"
 	},
@@ -1536,6 +1538,7 @@
 	"{field} {op} {value}": "{field} {op} {value}",
 	"{field}: local {local} · remote {remote}": "{field}: ローカル {local}・リモート {remote}",
 	"{field}’s values": "{field} の値",
+	"{file} is not valid JSON": "{file} は有効な JSON ではありません",
 	"{inflight} / {limit} in flight, {waiting} rate-waiting, {retries} retries, {instances} instances": "実行中 {inflight} / {limit}、レート待ち {waiting}、再試行 {retries}、インスタンス {instances}",
 	"{maps} maps · {locations} locations": "{maps} マップ・{locations} 地点",
 	"{min}–{max} links": "リンク {min}–{max}",

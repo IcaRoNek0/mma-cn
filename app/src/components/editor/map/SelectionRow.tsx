@@ -26,6 +26,7 @@ import {
 } from "@/store/selections";
 import { toast } from "@/lib/util/toast";
 import { downloadBlob } from "@/lib/util/util";
+import { polygonFeature } from "@/lib/util/geojson";
 import { stepFilterWindow } from "@/lib/util/date";
 import type { RGB } from "@/lib/util/color";
 import type { Selection } from "@/bindings.gen";
@@ -208,13 +209,8 @@ export const SelectionRow = memo(function SelectionRow({
 		if (selection.selector.type !== "Polygon") return;
 		const poly = selection.selector.polygon;
 		const name = poly.properties?.name ?? "polygon";
-		const fc = {
-			type: "Feature",
-			properties: poly.properties ?? {},
-			geometry: { type: "Polygon", coordinates: poly.coordinates },
-		};
 		downloadBlob(
-			new Blob([JSON.stringify(fc)], { type: "application/geo+json" }),
+			new Blob([JSON.stringify(polygonFeature(poly))], { type: "application/geo+json" }),
 			`${name}.geojson`,
 		);
 	};
