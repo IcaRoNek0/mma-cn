@@ -171,7 +171,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             store::commands::polygon_poisson_points,
             store::commands::polygon_contains_points,
             store::commands::polygon_bounds,
-            store::commands::polygon_untangle,
+            store::commands::polygon_fill,
             store::commands::store_group_by,
             store::commands::store_count_by,
             store::commands::store_values,

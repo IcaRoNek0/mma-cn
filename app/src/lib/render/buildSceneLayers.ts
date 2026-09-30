@@ -22,6 +22,7 @@ import {
 	seenEntryColor,
 } from "@/lib/seen/seenOverlay";
 import { getMapState } from "@/store/useMapStore";
+import { drawnPolygons, getPolygonFill } from "@/lib/render/polygonFills";
 import { getCommitDiffPreview } from "@/store/commitDiff";
 import { getImportPreviewPositions } from "@/store/importStaging";
 import { getTrail } from "@/lib/sv/svTrail";
@@ -111,7 +112,12 @@ export const DIFF_COLORS: Record<"added" | "removed" | "modified", RGB> = {
 	removed: [239, 68, 68],
 	modified: [245, 158, 11],
 };
-export type PolyGeom = { poly: object; fill: Position[][][]; stroke: Position[][] };
+export type PolyGeom = {
+	poly: object;
+	pieces: object | undefined;
+	fill: Position[][][];
+	stroke: Position[][];
+};
 
 interface SceneContext {
 	markerStyle: MarkerStyle;
@@ -168,20 +174,19 @@ export function buildSceneLayers(cm: CellManager, ctx: SceneContext): Layer[] {
 		return layers;
 	}
 
-	const polygonSels = getMapState().selectionList.flatMap(({ selection: sel }) =>
-		sel.selector.type === "Intersection" ? sel.selector.selections : [sel],
-	);
 	const livePolygonKeys = new Set<string>();
-	for (const sel of polygonSels) {
-		if (sel.selector.type !== "Polygon") continue;
+	for (const sel of drawnPolygons(getMapState().selectionList)) {
 		const poly = sel.selector.polygon;
+		const pieces = getPolygonFill(sel.key);
 		livePolygonKeys.add(sel.key);
 		let geom = ctx.polygonGeomCache.get(sel.key);
-		if (!geom || geom.poly !== poly) {
-			const fill = [poly.coordinates, ...(poly.extraPolygons ?? [])].map((rings) =>
-				rings.map(unwrapRing),
-			);
-			geom = { poly, fill, stroke: fill.flatMap((p) => p) as Position[][] };
+		if (!geom || geom.poly !== poly || geom.pieces !== pieces) {
+			geom = {
+				poly,
+				pieces,
+				fill: (pieces ?? []).map((rings) => rings.map(unwrapRing)),
+				stroke: [poly.coordinates, ...(poly.extraPolygons ?? [])].flat().map(unwrapRing),
+			};
 			ctx.polygonGeomCache.set(sel.key, geom);
 		}
 		const fillColor: RGBA = [...sel.color, 26];

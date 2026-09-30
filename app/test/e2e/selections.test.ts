@@ -153,7 +153,7 @@ describe("Selections - basic types", () => {
 		expect(result).toBeGreaterThan(0);
 	});
 
-	it("an untangled bowtie selects exactly what the crossed one did, as two pieces", async () => {
+	it("a bowtie's fill is two pieces that select exactly what the crossed ring does", async () => {
 		const bowtie: PolygonGeometry = {
 			coordinates: [
 				[
@@ -172,16 +172,16 @@ describe("Selections - basic types", () => {
 				await api.applySelectionUpdate(api.addSelection({ type: "Polygon", polygon }));
 				return api.getMapState().selectedLocationIds.size;
 			};
-			const untangled = await api.cmd.polygonUntangle(crossed);
+			const [first, ...rest] = await api.cmd.polygonFill(crossed);
 			return {
-				pieces: untangled ? 1 + (untangled.extraPolygons?.length ?? 0) : 0,
+				pieces: rest.length + 1,
 				crossed: await count(crossed),
-				untangled: untangled ? await count(untangled) : -1,
+				filled: await count({ coordinates: first, extraPolygons: rest }),
 			};
 		}, bowtie);
 		expect(result.pieces).toBe(2);
 		expect(result.crossed).toBeGreaterThan(0);
-		expect(result.untangled).toBe(result.crossed);
+		expect(result.filled).toBe(result.crossed);
 	});
 
 	// --- Duplicates ---

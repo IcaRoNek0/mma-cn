@@ -1036,21 +1036,14 @@ pub async fn polygon_bounds(polygon: selections::PolygonGeometry) -> Option<[f64
     Some(crossing_bounds(polygon.prepared().bbox()?))
 }
 
-/// The polygon redrawn so none of its edges cross, covering the same area, or `null` when
-/// it encloses none.
+/// The area a polygon selects, as polygons whose edges never cross, for drawing its fill.
 #[tauri::command]
 #[specta::specta]
-pub async fn polygon_untangle(
-    polygon: selections::PolygonGeometry,
-) -> Option<selections::PolygonGeometry> {
-    let mut parts = polygon.parts().flat_map(mma_geo::untangle_polygon);
-    let coordinates = parts.next()?;
-    let extra: Vec<_> = parts.collect();
-    Some(selections::PolygonGeometry {
-        coordinates,
-        extra_polygons: (!extra.is_empty()).then_some(extra),
-        properties: polygon.properties,
-    })
+pub async fn polygon_fill(polygon: selections::PolygonGeometry) -> Vec<Vec<Vec<[f64; 2]>>> {
+    polygon
+        .parts()
+        .flat_map(mma_geo::untangle_polygon)
+        .collect()
 }
 
 /// An anchored bbox in the crossing form: both edges in [-180, 180), `west > east` when

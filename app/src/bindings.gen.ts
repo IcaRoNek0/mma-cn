@@ -218,11 +218,8 @@ export const commands = {
 	 *  has no vertices. `west > east` means the box crosses the antimeridian.
 	 */
 	polygonBounds: (polygon: PolygonGeometry) => __TAURI_INVOKE<[number, number, number, number] | null>("polygon_bounds", { polygon: ({...polygon,coordinates:polygon.coordinates.map(i=>i.map(i=>i.map(i=>i))),extraPolygons:polygon.extraPolygons==null?polygon.extraPolygons:polygon.extraPolygons.map(i=>i.map(i=>i.map(i=>i.map(i=>i))))}) }).then((v) => (v==null?v:v.map(i=>i) as typeof v)),
-	/**
-	 *  The polygon redrawn so none of its edges cross, covering the same area, or `null` when
-	 *  it encloses none.
-	 */
-	polygonUntangle: (polygon: PolygonGeometry) => __TAURI_INVOKE<PolygonGeometry | null>("polygon_untangle", { polygon: ({...polygon,coordinates:polygon.coordinates.map(i=>i.map(i=>i.map(i=>i))),extraPolygons:polygon.extraPolygons==null?polygon.extraPolygons:polygon.extraPolygons.map(i=>i.map(i=>i.map(i=>i.map(i=>i))))}) }).then((v) => (v==null?v:({...v,coordinates:v.coordinates.map(i=>i.map(i=>i.map(i=>i))),extraPolygons:v.extraPolygons==null?v.extraPolygons:v.extraPolygons.map(i=>i.map(i=>i.map(i=>i.map(i=>i))))}) as typeof v)),
+	/**  The area a polygon selects, as polygons whose edges never cross, for drawing its fill. */
+	polygonFill: (polygon: PolygonGeometry) => __TAURI_INVOKE<((([number, number])[])[])[]>("polygon_fill", { polygon: ({...polygon,coordinates:polygon.coordinates.map(i=>i.map(i=>i.map(i=>i))),extraPolygons:polygon.extraPolygons==null?polygon.extraPolygons:polygon.extraPolygons.map(i=>i.map(i=>i.map(i=>i.map(i=>i))))}) }).then((v) => (v.map(i=>i.map(i=>i.map(i=>i.map(i=>i)))) as typeof v)),
 	/**  Group by a derived key, returning `{ key, ids, bin }` per group. */
 	storeGroupBy: (selector: Selector, field: string, key: KeySpec) => __TAURI_INVOKE<PartitionBucket[]>("store_group_by", { selector, field, key }).then((v) => (v.map(i=>({...i,bin:i.bin==null?i.bin:i.bin.map(i=>i)})) as typeof v)),
 	/**

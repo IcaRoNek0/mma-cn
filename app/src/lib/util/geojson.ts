@@ -1,5 +1,6 @@
 import type { PolygonGeometry } from "@/bindings.gen";
-import { addPolygonSelections } from "@/lib/map/addPolygonSelections";
+import { addSelection } from "@/store/selections";
+import { applySelectionUpdate } from "@/store/useMapStore";
 import { pickFiles } from "@/lib/util/util";
 
 /** A GeoJSON Feature for a polygon, as a MultiPolygon when it has more than one part. */
@@ -55,5 +56,7 @@ export async function loadGeoJSON() {
 			/* ignore malformed files */
 		}
 	}
-	await addPolygonSelections(polygons);
+	await applySelectionUpdate(
+		addSelection(...polygons.map((polygon) => ({ type: "Polygon" as const, polygon }))),
+	);
 }

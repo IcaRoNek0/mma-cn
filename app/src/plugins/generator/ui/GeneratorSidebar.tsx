@@ -4,7 +4,8 @@ import { GENERATION_CAMERA_TYPE, normalizeGeneratorSettings } from "../engine/ty
 import { RegionSelector } from "./RegionSelector";
 import { SettingsPanel } from "./SettingsPanel";
 import { google } from "@/lib/sv/opensv";
-import { getActiveSelections, useMapState } from "@/store/useMapStore";
+import { applySelectionUpdate, getActiveSelections, useMapState } from "@/store/useMapStore";
+import { addSelection } from "@/store/selections";
 import { usePluginEvent } from "@/plugins/pluginEvents";
 import type { Selection } from "@/bindings.gen";
 import { storage } from "@/plugins/pluginStorage";
@@ -45,7 +46,6 @@ import { TextInput } from "@/components/primitives/TextInput";
 import { Button } from "@/components/primitives/Button";
 import { IconButton } from "@/components/primitives/IconButton";
 import { downloadBlob, pickFiles } from "@/lib/util/util";
-import { addPolygonSelections } from "@/lib/map/addPolygonSelections";
 import { toast } from "@/lib/util/toast";
 import { readGeneratorPreset, writeGeneratorPreset } from "../presetFile";
 
@@ -354,7 +354,9 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 			setTagName(preset.tagName);
 			genStore.set("tagName", preset.tagName);
 		}
-		await addPolygonSelections(preset.polygons);
+		await applySelectionUpdate(
+			addSelection(...preset.polygons.map((polygon) => ({ type: "Polygon" as const, polygon }))),
+		);
 	}, [updateSettings]);
 
 	const handleClose = useCallback(() => {

@@ -19,8 +19,14 @@ import { getSettings, useSetting } from "@/store/settings";
 import { useMeasure, useMeasureInteraction } from "@/lib/sv/measure";
 import { MeasurementBar } from "@/components/primitives/MeasurementBar";
 import { MapContextMenuContent } from "@/components/editor/map/MapContextMenu";
-import { currentSelection, getActiveSelections, query, useMapState } from "@/store/useMapStore";
-import { displayColor } from "@/store/selections";
+import {
+	applySelectionUpdate,
+	currentSelection,
+	getActiveSelections,
+	query,
+	useMapState,
+} from "@/store/useMapStore";
+import { addSelection, displayColor } from "@/store/selections";
 import { rgbCss } from "@/lib/util/color";
 import { mapOpen } from "@/lib/util/debug";
 import { loadOpenSV, google } from "@/lib/sv/opensv";
@@ -51,7 +57,6 @@ import {
 import { FpsCounter } from "@/components/editor/map/FpsCounter";
 import { msg, t } from "@/lib/i18n";
 import { IconButton } from "@/components/primitives/IconButton";
-import { addPolygonSelections } from "@/lib/map/addPolygonSelections";
 
 const OPACITY_TARGET_ICONS: Record<OpacityLayer, string> = {
 	sv: mdiGoogleStreetView,
@@ -405,9 +410,12 @@ export function MapEmbed({
 							onDraw={(rings) => {
 								if (rings.length === 0) return;
 								if (tryInterceptDraw(rings)) return;
-								void addPolygonSelections([
-									{ coordinates: rings as [number, number][][], extraPolygons: null },
-								]);
+								void applySelectionUpdate(
+									addSelection({
+										type: "Polygon",
+										polygon: { coordinates: rings as [number, number][][], extraPolygons: null },
+									}),
+								);
 							}}
 							freehandPathRef={freehandPathRef}
 							polygonVerticesRef={polygonVerticesRef}

@@ -31,6 +31,7 @@ import type {
 } from "@/bindings.gen";
 import type { MergeWinner } from "@/bindings.consts";
 import { SelectedIds, decodeSelectionBitmask, type ReadonlyIdSet } from "@/lib/render/CellManager";
+import { refreshPolygonFills } from "@/lib/render/polygonFills";
 import { resetImportState } from "./importStaging";
 import { resetCommitDiffState, resetCommitDiffCounts } from "./commitDiff";
 import { setCachedMapList, invalidateMapList, reloadMapList } from "./mapList";
@@ -693,12 +694,15 @@ export async function applySelectionUpdate(op: (rows: ListedSelection[]) => List
 export async function syncSelections() {
 	if (!state.map) return;
 	const t = trace("selection", { summary: true });
-	const result = await cmd.storeSyncSelections(
-		state.selectionList.map((r) => ({
-			...r,
-			selection: { ...r.selection, color: displayColor(r.selection) },
-		})),
-	);
+	const [result] = await Promise.all([
+		cmd.storeSyncSelections(
+			state.selectionList.map((r) => ({
+				...r,
+				selection: { ...r.selection, color: displayColor(r.selection) },
+			})),
+		),
+		refreshPolygonFills(state.selectionList),
+	]);
 	t.step("ipc");
 	applySelectionSync(result);
 	emitEvent("store:changed");

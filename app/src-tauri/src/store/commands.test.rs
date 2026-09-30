@@ -51,37 +51,39 @@ fn polygon_bounds_spans_the_extra_polygons_too() {
 }
 
 #[test]
-fn polygon_untangle_spreads_split_pieces_into_extra_polygons() {
-    let mut g = geom(vec![vec![
+fn polygon_fill_covers_exactly_what_the_polygon_selects() {
+    let mut drawn = geom(vec![vec![
         [0.0, 0.0],
         [2.0, 2.0],
         [2.0, 0.0],
         [0.0, 2.0],
         [0.0, 0.0],
     ]]);
-    g.extra_polygons = Some(vec![vec![square(40.0, 0.0, 50.0, 10.0)]]);
-    g.properties = Some(serde_json::json!({ "name": "bow" }));
-    let out = tauri::async_runtime::block_on(polygon_untangle(g)).unwrap();
-    assert_eq!(out.extra_polygons.as_ref().map(Vec::len), Some(2));
-    assert_eq!(out.properties, Some(serde_json::json!({ "name": "bow" })));
-    for (lng, lat, inside) in [
-        (0.3, 1.0, true),
-        (1.7, 1.0, true),
-        (1.0, 0.3, false),
-        (45.0, 5.0, true),
-    ] {
-        assert_eq!(
-            out.prepared().contains(lng, lat),
-            inside,
-            "at ({lng}, {lat})"
-        );
+    drawn.extra_polygons = Some(vec![vec![
+        square(40.0, 0.0, 50.0, 10.0),
+        square(44.0, 4.0, 46.0, 6.0),
+    ]]);
+    let pieces = tauri::async_runtime::block_on(polygon_fill(drawn.clone()));
+    assert_eq!(pieces.len(), 3);
+    let (first, rest) = pieces.split_first().unwrap();
+    let mut fill = geom(first.clone());
+    fill.extra_polygons = Some(rest.to_vec());
+    let (drawn, fill) = (drawn.prepared(), fill.prepared());
+    for lng in (0..=100).map(|i| f64::from(i) * 0.51 - 0.5) {
+        for lat in (0..=24).map(|i| f64::from(i) * 0.47 - 0.5) {
+            assert_eq!(
+                fill.contains(lng, lat),
+                drawn.contains(lng, lat),
+                "at ({lng}, {lat})"
+            );
+        }
     }
 }
 
 #[test]
-fn polygon_untangle_of_nothing_is_null() {
+fn polygon_fill_of_nothing_is_empty() {
     let flat = geom(vec![vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]]);
-    assert!(tauri::async_runtime::block_on(polygon_untangle(flat)).is_none());
+    assert!(tauri::async_runtime::block_on(polygon_fill(flat)).is_empty());
 }
 
 #[test]

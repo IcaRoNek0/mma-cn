@@ -5156,6 +5156,16 @@ cmd.polygonContainsPoints(
 
 Whether each of the points sits inside the polygon.
 
+#### cmd.polygonFill
+
+`unstable` · unreleased
+
+```ts
+cmd.polygonFill(polygon: PolygonGeometry): Promise<[number, number][][][]>
+```
+
+The area a polygon selects, as polygons whose edges never cross, for drawing its fill.
+
 #### cmd.polygonPoissonPoints
 
 `unstable` · since v0.11.0
@@ -5183,17 +5193,6 @@ cmd.polygonRandomPoints(
 
 Up to `count` points drawn uniformly at random inside the polygon, as `[lng, lat]`
 pairs. Fewer come back when the polygon fills little of its bounding box.
-
-#### cmd.polygonUntangle
-
-`unstable` · since v0.11.3
-
-```ts
-cmd.polygonUntangle(polygon: PolygonGeometry): Promise<PolygonGeometry | null>
-```
-
-The polygon redrawn so none of its edges cross, covering the same area, or `null` when
-it encloses none.
 
 #### cmd.procedureActivity
 
