@@ -2070,6 +2070,8 @@ export type ValiProgress = { kind: "workItems"; total: number } | { kind: "workI
  */
 export type VirtualTag = {
 	color?: string | null,
+	/**  Where the folder sorts while it holds no tags, on the same scale as tag order. */
+	order?: number | null,
 };
 
 /* Tauri Specta runtime */

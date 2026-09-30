@@ -30,7 +30,7 @@ export interface TagTreeNode {
 	/** This node's own tag and every tag under it, aliases included. */
 	subtreeTagIds: number[];
 	/** Min `order` across descendant tags — used for "default" sort parity with flat mode.
-	 *  MAX_SAFE_INTEGER for a subtree with no tags (declared empty folders), sorting it last. */
+	 *  A subtree with no tags (declared empty folders) sorts by its own stored order, else last. */
 	sortOrder: number;
 	/** A synthetic leaf placing a real tag at a second tree location. Reuses `tag`, but is
 	 *  not draggable and never contributes its id to reorder (the real leaf owns that). */
@@ -229,6 +229,7 @@ export function buildTagTree(
 			if (c.minOrder < minOrder) minOrder = c.minOrder;
 		}
 		node.subtreeTagIds = ids;
+		if (ids.length === 0) minOrder = virtualTags[node.fullPath]?.order ?? minOrder;
 		node.sortOrder = minOrder === Number.POSITIVE_INFINITY ? Number.MAX_SAFE_INTEGER : minOrder;
 		return { ids, minOrder: node.sortOrder };
 	}
@@ -400,6 +401,50 @@ export function canDropInto(tree: TagTreeNode[], dragPaths: string[], targetPath
 	return nodes[0]!.parentPath !== targetPath;
 }
 
+/** The full tag order, and the declared empty folders re-placed among it. */
+export interface FlatOrder {
+	orderedIds: number[];
+	virtualTags: Record<string, VirtualTag>;
+}
+
+/** A tag, or a folder with no tags, in display order. */
+type FlatItem = { tagId: number } | { folder: string };
+
+/** One DFS step: a node's own tag, or the node itself when its subtree holds no tags. */
+function flatItem(
+	n: TagTreeNode,
+	path = n.fullPath,
+	empty = n.subtreeTagIds.length === 0,
+): FlatItem | null {
+	if (n.tag && !n.isAlias) return { tagId: n.tag.id }; // alias leaves don't own the id
+	return empty ? { folder: path } : null;
+}
+
+/** The tag ids in order, and every declared empty folder among them placed on the same scale:
+ *  a reorder gives the tag at position k order k, so folders just before it sit between k-1 and k. */
+function flatten(items: FlatItem[], virtualTags: Record<string, VirtualTag>): FlatOrder {
+	const orderedIds: number[] = [];
+	const next = { ...virtualTags };
+	let pending: string[] = [];
+	const place = () => {
+		const k = orderedIds.length;
+		pending.forEach((path, j) => {
+			next[path] = { ...next[path], order: k - 1 + (j + 1) / (pending.length + 1) };
+		});
+		pending = [];
+	};
+	for (const item of items) {
+		if ("tagId" in item) {
+			place();
+			orderedIds.push(item.tagId);
+		} else if (item.folder in virtualTags) {
+			pending.push(item.folder);
+		}
+	}
+	place();
+	return { orderedIds, virtualTags: next };
+}
+
 export interface TagMoveResult {
 	tagRenames: TagNameChange[];
 	virtualTags: Record<string, VirtualTag>;
@@ -446,27 +491,41 @@ export function moveIntoFolder(
 	}
 
 	const dragSet = new Set(dragPaths);
-	const orderedIds: number[] = [];
-	const emitSubtree = (n: TagTreeNode) => {
-		if (n.tag && !n.isAlias) orderedIds.push(n.tag.id);
-		for (const c of n.children) emitSubtree(c);
+	const movedIds = new Set(nodes.flatMap((b) => b.subtreeTagIds));
+	// Whether a node that stays put holds no tags once the block has left it and landed.
+	const emptyAfterMove = (n: TagTreeNode) =>
+		n.subtreeTagIds.every((id) => movedIds.has(id)) &&
+		!(movedIds.size > 0 && isAtOrUnder(targetPath, n.fullPath));
+	const items: FlatItem[] = [];
+	const push = (item: FlatItem | null) => item && items.push(item);
+	// A moved node's folders are keyed by their new path in `workingVT`.
+	const emitSubtree = (n: TagTreeNode, oldRoot: string, newRoot: string) => {
+		push(flatItem(n, newRoot + n.fullPath.slice(oldRoot.length)));
+		for (const c of n.children) emitSubtree(c, oldRoot, newRoot);
+	};
+	const emitBlock = () => {
+		for (const b of nodes) {
+			const newPath = targetPath === "" ? b.segment : `${targetPath}/${b.segment}`;
+			emitSubtree(b, b.fullPath, newPath);
+		}
 	};
 	const walk = (level: TagTreeNode[]) => {
 		for (const n of level) {
 			if (dragSet.has(n.fullPath)) continue;
-			if (n.tag && !n.isAlias) orderedIds.push(n.tag.id);
+			push(flatItem(n, n.fullPath, emptyAfterMove(n)));
 			walk(n.children);
-			if (n.fullPath === targetPath) for (const b of nodes) emitSubtree(b);
+			if (n.fullPath === targetPath) emitBlock();
 		}
 	};
 	walk(tree);
-	if (targetPath === "") for (const b of nodes) emitSubtree(b);
+	if (targetPath === "") emitBlock();
+	const flat = flatten(items, workingVT);
 
 	return {
 		tagRenames: [...renameById].map(([id, name]) => ({ id, name })),
-		virtualTags: workingVT,
+		virtualTags: flat.virtualTags,
 		aliases: workingAliases,
-		orderedIds,
+		orderedIds: flat.orderedIds,
 		pathRemaps,
 	};
 }
@@ -506,7 +565,8 @@ export function stepSiblingFlatOrder(
 	path: string,
 	parent: string,
 	delta: -1 | 1,
-): number[] | null {
+	virtualTags: Record<string, VirtualTag> = {},
+): FlatOrder | null {
 	const siblings = siblingsAt(tree, parent);
 	const from = siblings.findIndex((n) => n.fullPath === path);
 	if (from === -1) return null;
@@ -519,11 +579,12 @@ export function stepSiblingFlatOrder(
 		neighbour.fullPath,
 		delta < 0 ? "before" : "after",
 		parent,
+		virtualTags,
 	);
 }
 
-/** Full DFS tag-id order reflecting an in-level move of the `dragPaths` block to
- *  before/after `dropPath`. The block keeps its relative sibling order and lands as one
+/** Full DFS tag-id order, with empty folders placed among it, reflecting an in-level move of
+ *  the `dragPaths` block to before/after `dropPath`. The block keeps its relative sibling order and lands as one
  *  contiguous run. `parent` is the block's structural parentPath ("" at root) -- it can't
  *  be derived from the path string, which may contain literal "/" in no-split mode.
  *  Returns null if the target isn't a sibling under `parent`, is part of the block, or
@@ -535,7 +596,8 @@ export function reorderSiblingsFlatOrder(
 	dropPath: string,
 	position: "before" | "after",
 	parent: string,
-): number[] | null {
+	virtualTags: Record<string, VirtualTag> = {},
+): FlatOrder | null {
 	const dragSet = new Set(dragPaths);
 	if (dragSet.has(dropPath)) return null;
 
@@ -549,14 +611,15 @@ export function reorderSiblingsFlatOrder(
 	if (position === "after") idx++;
 	without.splice(idx, 0, ...block);
 
-	const out: number[] = [];
+	const items: FlatItem[] = [];
 	const dfs = (nodes: TagTreeNode[], cur: string) => {
 		const ordered = cur === parent ? without : nodes;
 		for (const n of ordered) {
-			if (n.tag && !n.isAlias) out.push(n.tag.id); // alias leaves don't own the id
+			const item = flatItem(n);
+			if (item) items.push(item);
 			dfs(n.children, n.fullPath);
 		}
 	};
 	dfs(tree, "");
-	return out;
+	return flatten(items, virtualTags);
 }

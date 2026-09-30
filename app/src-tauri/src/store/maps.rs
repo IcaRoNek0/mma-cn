@@ -54,6 +54,8 @@ pub struct MapKeyBinding {
 #[serde(default, rename_all = "camelCase")]
 pub struct VirtualTag {
     pub color: Option<String>,
+    /// Where the folder sorts while it holds no tags, on the same scale as tag order.
+    pub order: Option<f64>,
 }
 
 /// Per-map editor preferences. Controls Street View lookup behavior (official vs

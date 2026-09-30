@@ -16,6 +16,7 @@ import {
 	resolveExpandedPaths,
 	type TagTreeNode,
 	type FolderColorOpts,
+	type FlatOrder,
 } from "@/components/editor/tags/tagTreeModel";
 import type { VirtualTag } from "@/bindings.gen";
 import { findNode, mkTag, segs } from "./fixtures/tagFixtures";
@@ -157,16 +158,16 @@ describe("reorderSiblingsFlatOrder", () => {
 	const tree = tree3();
 
 	it("moves a root sibling after another", () => {
-		expect(reorderSiblingsFlatOrder(tree, ["a"], "c", "after", "")).toEqual([2, 3, 1]);
+		expect(reorderSiblingsFlatOrder(tree, ["a"], "c", "after", "")?.orderedIds).toEqual([2, 3, 1]);
 	});
 
 	it("moves a root sibling before another", () => {
-		expect(reorderSiblingsFlatOrder(tree, ["c"], "a", "before", "")).toEqual([3, 1, 2]);
+		expect(reorderSiblingsFlatOrder(tree, ["c"], "a", "before", "")?.orderedIds).toEqual([3, 1, 2]);
 	});
 
 	it("reorders within a parent and preserves other subtrees + relative order", () => {
 		// move p/z before p/x -> z,x,y under p; q untouched
-		expect(reorderSiblingsFlatOrder(pxyzq(), ["p/z"], "p/x", "before", "p")).toEqual([
+		expect(reorderSiblingsFlatOrder(pxyzq(), ["p/z"], "p/x", "before", "p")?.orderedIds).toEqual([
 			20, 12, 10, 11,
 		]);
 	});
@@ -183,7 +184,9 @@ describe("reorderSiblingsFlatOrder", () => {
 		const withAlias = buildTagTree([mkTag(1, "a"), mkTag(3, "c")], "default", {}, {}, { b: 1 });
 		expect(findNode(withAlias, "b")!.isAlias).toBe(true);
 		// Reordering real siblings must not duplicate/emit the alias's id 1.
-		expect(reorderSiblingsFlatOrder(withAlias, ["a"], "c", "after", "")).toEqual([3, 1]);
+		expect(reorderSiblingsFlatOrder(withAlias, ["a"], "c", "after", "")?.orderedIds).toEqual([
+			3, 1,
+		]);
 	});
 
 	it("treats a root leaf whose name contains '/' as a root sibling (no-split flat view)", () => {
@@ -196,19 +199,19 @@ describe("reorderSiblingsFlatOrder", () => {
 			{},
 			false,
 		);
-		expect(reorderSiblingsFlatOrder(flat, ["Europe/France"], "Blue", "after", "")).toEqual([
-			2, 3, 1,
-		]);
+		expect(
+			reorderSiblingsFlatOrder(flat, ["Europe/France"], "Blue", "after", "")?.orderedIds,
+		).toEqual([2, 3, 1]);
 	});
 
 	it("moves a non-contiguous block after a target, preserving relative order", () => {
-		expect(reorderSiblingsFlatOrder(tree5(), ["b", "d"], "e", "after", "")).toEqual([
+		expect(reorderSiblingsFlatOrder(tree5(), ["b", "d"], "e", "after", "")?.orderedIds).toEqual([
 			1, 3, 5, 2, 4,
 		]);
 	});
 
 	it("moves a block before the first sibling", () => {
-		expect(reorderSiblingsFlatOrder(tree5(), ["c", "e"], "a", "before", "")).toEqual([
+		expect(reorderSiblingsFlatOrder(tree5(), ["c", "e"], "a", "before", "")?.orderedIds).toEqual([
 			3, 5, 1, 2, 4,
 		]);
 	});
@@ -224,7 +227,7 @@ describe("reorderSiblingsFlatOrder", () => {
 			{},
 		);
 		// p/x isn't a root sibling; only q moves.
-		expect(reorderSiblingsFlatOrder(nested, ["q", "p/x"], "r", "after", "")).toEqual([
+		expect(reorderSiblingsFlatOrder(nested, ["q", "p/x"], "r", "after", "")?.orderedIds).toEqual([
 			30, 20, 10, 11,
 		]);
 	});
@@ -714,13 +717,52 @@ describe("declared empty folders (virtualTags)", () => {
 		expect(move!.virtualTags).toEqual({ E: {} });
 	});
 
-	it("moveIntoFolder moves an empty folder as a pure virtualTags rewrite", () => {
+	it("moveIntoFolder moves an empty folder as a pure virtualTags rewrite, placed after the target's tags", () => {
 		const tags = [mkTag(1, "F/u")];
 		const tree = buildTagTree(tags, "default", {}, { E: {} });
 		const move = moveIntoFolder(tree, ["E"], "F", tags, { E: {} }, {});
 		expect(move!.tagRenames).toEqual([]);
-		expect(move!.virtualTags).toEqual({ "F/E": {} });
+		expect(move!.virtualTags).toEqual({ "F/E": { order: 0.5 } });
 		expect(move!.orderedIds).toEqual([1]);
+	});
+});
+
+describe("declared empty folders keep their place", () => {
+	// Tags take their position in the order list as `order`, as a reorder writes it.
+	const applied = (tags: Tag[], order: FlatOrder) =>
+		buildTagTree(
+			tags.map((t) => ({ ...t, order: order.orderedIds.indexOf(t.id) })),
+			"default",
+			{},
+			order.virtualTags,
+		);
+	const tags = [mkTag(1, "A/x", "#888888", 0), mkTag(2, "C/y", "#888888", 1)];
+
+	it("sorts among its siblings by its stored order, and last without one", () => {
+		expect(segs(buildTagTree(tags, "default", {}, { B: { order: 0.5 } }))).toEqual(["A", "B", "C"]);
+		expect(segs(buildTagTree(tags, "default", {}, { B: {} }))).toEqual(["A", "C", "B"]);
+	});
+
+	it("dragging it between two folders stores a position that holds after the rebuild", () => {
+		const tree = buildTagTree(tags, "default", {}, { B: {} });
+		const order = reorderSiblingsFlatOrder(tree, ["B"], "A", "after", "", { B: {} })!;
+		expect(order.orderedIds).toEqual([1, 2]);
+		expect(segs(applied(tags, order))).toEqual(["A", "B", "C"]);
+	});
+
+	it("keeps its place relative to its neighbours when the tags around it are reordered", () => {
+		const vt = { B: { order: 0.5 } };
+		const tree = buildTagTree(tags, "default", {}, vt);
+		const order = reorderSiblingsFlatOrder(tree, ["C"], "A", "before", "", vt)!;
+		expect(order.orderedIds).toEqual([2, 1]);
+		expect(segs(applied(tags, order))).toEqual(["C", "A", "B"]);
+	});
+
+	it("a declared folder its last tag moves out of gets a place of its own", () => {
+		const fTags = [mkTag(1, "F/u", "#888888", 0), mkTag(2, "G", "#888888", 1)];
+		const tree = buildTagTree(fTags, "default", {}, { F: {} });
+		const move = moveIntoFolder(tree, ["F/u"], "", fTags, { F: {} }, {})!;
+		expect(move.virtualTags.F.order).toBeTypeOf("number");
 	});
 });
 
@@ -728,11 +770,11 @@ describe("stepSiblingFlatOrder", () => {
 	const tree = tree3();
 
 	it("moves a node up one slot", () => {
-		expect(stepSiblingFlatOrder(tree, "c", "", -1)).toEqual([1, 3, 2]);
+		expect(stepSiblingFlatOrder(tree, "c", "", -1)?.orderedIds).toEqual([1, 3, 2]);
 	});
 
 	it("moves a node down one slot", () => {
-		expect(stepSiblingFlatOrder(tree, "a", "", 1)).toEqual([2, 1, 3]);
+		expect(stepSiblingFlatOrder(tree, "a", "", 1)?.orderedIds).toEqual([2, 1, 3]);
 	});
 
 	it("stops at either end", () => {
@@ -741,7 +783,7 @@ describe("stepSiblingFlatOrder", () => {
 	});
 
 	it("steps within a parent and leaves other subtrees alone", () => {
-		expect(stepSiblingFlatOrder(pxyzq(), "p/z", "p", -1)).toEqual([20, 10, 12, 11]);
+		expect(stepSiblingFlatOrder(pxyzq(), "p/z", "p", -1)?.orderedIds).toEqual([20, 10, 12, 11]);
 	});
 
 	it("returns null for a path that isn't under the given parent", () => {

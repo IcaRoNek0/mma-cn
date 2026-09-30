@@ -4,6 +4,7 @@ import type { Tag } from "@/types";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TagTreeView } from "@/components/editor/tags/TagTree";
+import type { FlatOrder } from "@/components/editor/tags/tagTreeModel";
 import type { TagSortMode } from "@/types";
 
 const tags: Tag[] = [
@@ -28,7 +29,7 @@ afterEach(() => {
 	container.remove();
 });
 
-function render(onReorder: (ids: number[]) => void, sortMode: TagSortMode = "default") {
+function render(onReorder: (order: FlatOrder) => void, sortMode: TagSortMode = "default") {
 	act(() =>
 		root.render(
 			<TagTreeView
@@ -70,7 +71,7 @@ describe("TagTreeView keyboard reorder", () => {
 				new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }),
 			);
 		});
-		expect(onReorder).toHaveBeenCalledWith([2, 1, 3]);
+		expect(onReorder).toHaveBeenCalledWith({ orderedIds: [2, 1, 3], virtualTags: {} });
 	});
 
 	it("ignores an unmodified arrow", () => {

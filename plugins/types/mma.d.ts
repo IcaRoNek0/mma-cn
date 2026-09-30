@@ -2916,6 +2916,8 @@ type ValiProgress = {
  */
 type VirtualTag = {
     color?: string | null;
+    /**  Where the folder sorts while it holds no tags, on the same scale as tag order. */
+    order?: number | null;
 };
 
 /**

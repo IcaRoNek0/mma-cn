@@ -331,6 +331,7 @@ fn merge_settings_overlays_present_keys_only() {
         "Europe".into(),
         VirtualTag {
             color: Some("#existing".into()),
+            ..VirtualTag::default()
         },
     );
 

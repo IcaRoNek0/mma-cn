@@ -43,6 +43,7 @@ import {
 	type TagTreeNode,
 	type TagMoveResult,
 	type TagTreeExpansionIntent,
+	type FlatOrder,
 } from "./tagTreeModel";
 import type { TagSortMode } from "@/types";
 import type { VirtualTag } from "@/bindings.gen";
@@ -97,9 +98,9 @@ interface TagTreeViewProps {
 	onEditVirtual: (fullPath: string) => void;
 	onAddAlias: (tag: { id: number; name: string }) => void;
 	onRemoveAlias: (aliasPath: string) => void;
-	/** Commit a drag reorder (full DFS tag-id order). Must render the new order
-	 *  optimistically -- the drop handler clears its drag state synchronously. */
-	onReorder: (orderedIds: number[]) => void;
+	/** Commit a drag reorder (full DFS tag-id order, empty folders placed among it). Must
+	 *  render the new order optimistically -- the drop handler clears its drag state synchronously. */
+	onReorder: (order: FlatOrder) => void;
 	/** Commit a drag-into-folder move (renames + settings rewrites + order rebase).
 	 *  Same optimistic contract as onReorder. */
 	onMoveInto: (move: TagMoveResult) => void;
@@ -314,6 +315,7 @@ export function TagTreeView({
 						dropT.path,
 						dropT.position,
 						node.parentPath,
+						virtualTags,
 					);
 					if (order) onReorder(order);
 				}
@@ -342,14 +344,10 @@ export function TagTreeView({
 			const block = dragBlockRef.current;
 			if (block?.has(node.fullPath)) return; // block members travel with the drag
 			// In-level, same-kind (pills among pills, rows among rows): live reorder.
-			// Empty folders sit outside the persisted tag order, so they neither reorder
-			// nor serve as before/after targets — for them only "into" applies.
 			if (
 				reorderEnabled &&
 				src.parentPath === node.parentPath &&
-				isLeafTag(src) === isLeafTag(node) &&
-				src.subtreeTagIds.length > 0 &&
-				node.subtreeTagIds.length > 0
+				isLeafTag(src) === isLeafTag(node)
 			) {
 				const rect = el.getBoundingClientRect();
 				const position = horizontal
@@ -393,6 +391,7 @@ export function TagTreeView({
 			node.fullPath,
 			node.parentPath,
 			e.key === "ArrowUp" ? -1 : 1,
+			virtualTags,
 		);
 		if (!order) return;
 		e.preventDefault();

@@ -44,6 +44,7 @@ import {
 	syncAliasSegments,
 	type TagTreeNode,
 	type TagMoveResult,
+	type FlatOrder,
 } from "./tagTreeModel";
 import { t } from "@/lib/i18n";
 import { matches } from "@/lib/search";
@@ -120,13 +121,14 @@ export function TagManager() {
 		[addOptimisticTags],
 	);
 	const commitReorder = useCallback(
-		(orderedIds: number[]) => {
+		({ orderedIds, virtualTags }: FlatOrder) => {
 			startTransition(async () => {
 				addOptimisticTags(orderedIds.map((id, i) => ({ id, patch: { order: i } })));
 				await reorderTags(orderedIds);
 			});
+			setVirtualTags(virtualTags);
 		},
-		[addOptimisticTags],
+		[addOptimisticTags, setVirtualTags],
 	);
 	const commitMoveInto = useCallback(
 		(move: TagMoveResult) => {
