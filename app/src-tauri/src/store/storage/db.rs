@@ -432,4 +432,15 @@ pub(super) const MIGRATIONS: &[(u32, &str)] = &[
           ALTER TABLE maps ADD COLUMN pending_removed INTEGER NOT NULL DEFAULT 0;
           ALTER TABLE maps ADD COLUMN pending_modified INTEGER NOT NULL DEFAULT 0;",
     ),
+    (
+        23,
+        "CREATE TABLE IF NOT EXISTS sync_log (
+            id         INTEGER PRIMARY KEY,
+            map_id     TEXT    NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+            provider   TEXT    NOT NULL,
+            started_at INTEGER NOT NULL,
+            entry      TEXT    NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sync_log_map ON sync_log(map_id, provider, started_at);",
+    ),
 ];

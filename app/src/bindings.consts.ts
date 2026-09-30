@@ -141,6 +141,19 @@ export const Sink = {
 } as const;
 export type Sink = (typeof Sink)[keyof typeof Sink];
 
+/** What started a sync pass. @unstable */
+export const SyncTrigger = {
+	/** Sync now was pressed. */
+	Manual: "manual",
+	/** Live sync ran it, after an edit or on its schedule. */
+	Live: "live",
+	/** Linking the map ran its first sync. */
+	Link: "link",
+	/** Resolving held conflicts ran it. */
+	Resolve: "resolve",
+} as const;
+export type SyncTrigger = (typeof SyncTrigger)[keyof typeof SyncTrigger];
+
 /** Per-location bitfield, serialized as a plain `u32` over IPC and Arrow. */
 export const LocationFlag = {
 	/** No flags set. */

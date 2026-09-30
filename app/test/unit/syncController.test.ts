@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import type { SyncReconcileResult } from "@/bindings.gen";
+import type { SyncLogEntry, SyncReconcileResult } from "@/bindings.gen";
 import { createSyncController } from "@/lib/sync/controller";
 import { setPluginEnabled } from "@/plugins/pluginHost";
 import { getMapBadges } from "@/store/mapList";
@@ -33,6 +33,8 @@ function makeMma() {
 	let mapId: string | null = "map-a";
 	let gate: Promise<void> | null = null;
 	let release: (() => void) | null = null;
+	let failWith: string | null = null;
+	const history: { provider: string; mapId: string; entry: SyncLogEntry }[] = [];
 
 	const kv = {
 		get: <T>(k: string, fallback?: T): T =>
@@ -54,12 +56,22 @@ function makeMma() {
 		updateLocations: async () => {},
 		removeLocations: async () => {},
 		createTags: async () => [],
+		getTags: () => ({}),
 		on: () => () => {},
 		cmd: {
 			syncReconcile: async (): Promise<SyncReconcileResult> => {
 				if (gate) await gate;
+				if (failWith) throw new Error(failWith);
 				return EMPTY_RESULT;
 			},
+			syncLogAppend: async (provider: string, id: string, entry: SyncLogEntry) => {
+				history.push({ provider, mapId: id, entry });
+			},
+			syncLogList: async (provider: string, id: string) =>
+				history
+					.filter((h) => h.provider === provider && h.mapId === id)
+					.map((h) => h.entry)
+					.reverse(),
 			remoteMappingGet: async (provider: string, id: string) =>
 				(mapping.get(`${provider}:${id}`) ?? []).map((r) => ({ ...r })),
 			remoteMappingUpsert: async (provider: string, id: string, rows: RemoteMappingRow[]) => {
@@ -84,6 +96,10 @@ function makeMma() {
 	return {
 		storage,
 		mapping,
+		history,
+		fail: (message: string | null) => {
+			failWith = message;
+		},
 		install: () => {
 			(window as unknown as { MMA: unknown }).MMA = api;
 		},
@@ -228,5 +244,91 @@ describe("createSyncController", () => {
 		await controller.unlink();
 		expect(badgeKeys()).not.toContain("sync:map-making.app");
 		setPluginEnabled("badge-plugin", false);
+	});
+});
+
+describe("sync history", () => {
+	const nextRecord = (controller: ReturnType<typeof createSyncController>) =>
+		new Promise<void>((resolve) => {
+			const off = controller.onHistory(() => {
+				off();
+				resolve();
+			});
+		});
+
+	it("records each pass with what started it and what it changed, newest first", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		let recorded = nextRecord(controller);
+		await controller.firstSync("merge");
+		await recorded;
+		recorded = nextRecord(controller);
+		await controller.syncNow();
+		await recorded;
+
+		const entries = await controller.history();
+		expect(entries.map((e) => e.trigger)).toEqual(["manual", "link"]);
+		expect(entries[0].result).toEqual({
+			kind: "ok",
+			pushed: EMPTY_RESULT.pushed,
+			pulled: EMPTY_RESULT.pulled,
+			adopted: 0,
+			conflicts: 0,
+		});
+		expect(entries[0].startedAt).toBeGreaterThanOrEqual(entries[1].startedAt);
+	});
+
+	it("records a failed pass with its error", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		mma.fail("auth: session expired");
+		const recorded = nextRecord(controller);
+		await expect(controller.syncNow()).rejects.toThrow();
+		await recorded;
+
+		expect((await controller.history())[0].result).toEqual({
+			kind: "error",
+			message: "auth: session expired",
+		});
+	});
+
+	it("records a pass once when a second request joins it", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		mma.block();
+		const first = controller.syncNow();
+		const joined = controller.syncNow();
+		const recorded = nextRecord(controller);
+		mma.release();
+		await Promise.all([first, joined]);
+		await recorded;
+
+		expect(mma.history).toHaveLength(1);
+	});
+
+	it("does not record a pass cut short by an unlink", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		mma.block();
+		const syncing = controller.syncNow();
+		await Promise.resolve();
+		const unlinking = controller.unlink();
+		mma.release();
+		await Promise.all([syncing.catch(() => undefined), unlinking]);
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(mma.history).toHaveLength(0);
 	});
 });

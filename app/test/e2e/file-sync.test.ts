@@ -19,7 +19,7 @@ const writeSource = (coords: ReturnType<typeof coord>[]) =>
 const lats = async () => (await getAllLocs()).map((l) => l.lat).sort((a, b) => a - b);
 
 describe("File sync", () => {
-	useMap("E2E File Sync");
+	const map = useMap("E2E File Sync");
 
 	before(async () => {
 		await withApi(async (api) => {
@@ -62,5 +62,18 @@ describe("File sync", () => {
 		expect(await lats()).toEqual([10, 11, 99]);
 		const written = JSON.parse(readFileSync(SOURCE, "utf8")) as { customCoordinates: unknown[] };
 		expect(written.customCoordinates).toEqual(regenerated);
+	});
+
+	it("keeps a history of its passes, newest first", async () => {
+		const passes = () => withApi(async (api, id) => api.cmd.syncLogList("file", id), map.id);
+		await browser.waitUntil(async () => (await passes()).length >= 2, {
+			timeoutMsg: "the link and the sync were never recorded",
+		});
+		// Linking turns live sync on, which runs a pass of its own between these two.
+		const all = await passes();
+		expect(all[0].trigger).toBe("manual");
+		expect(all.at(-1)!.trigger).toBe("link");
+		expect(all[0].result).toMatchObject({ kind: "ok", pulled: { create: 2, delete: 3 } });
+		expect(all.every((p) => p.result.kind === "ok")).toBe(true);
 	});
 });

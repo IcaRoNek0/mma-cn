@@ -247,6 +247,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             sync::remote_mapping::remote_mapping_delete,
             sync::remote_mapping::remote_mapping_clear,
             sync::engine::sync_reconcile,
+            sync::log::sync_log_append,
+            sync::log::sync_log_list,
             sync::map_making::map_making_me,
             sync::map_making::map_making_validate,
             sync::map_making::map_making_maps,
@@ -329,7 +331,7 @@ pub fn export_bindings() -> Result<(), String> {
     export_consts()
 }
 
-fn wire_string_enums() -> [(&'static str, TsConst); 11] {
+fn wire_string_enums() -> [(&'static str, TsConst); 12] {
     [
         ("CameraType", store::maps::CameraType::ts_const()),
         ("CapturePick", store::maps::CapturePick::ts_const()),
@@ -345,6 +347,7 @@ fn wire_string_enums() -> [(&'static str, TsConst); 11] {
             sync::engine::ResolutionSide::ts_const().unstable(),
         ),
         ("Sink", procedure::engine::Sink::ts_const()),
+        ("SyncTrigger", sync::log::SyncTrigger::ts_const().unstable()),
     ]
 }
 

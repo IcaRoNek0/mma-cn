@@ -7,6 +7,7 @@ pub(crate) mod engine;
 pub(crate) mod file;
 pub(crate) mod geoguessr;
 pub(crate) mod keying;
+pub(crate) mod log;
 pub(crate) mod map_making;
 pub(crate) mod remote_mapping;
 

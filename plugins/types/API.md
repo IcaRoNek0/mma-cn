@@ -640,6 +640,25 @@ SyncDirection: {
 
 Which way a link carries changes.
 
+### SyncTrigger
+
+`unstable` · unreleased
+
+```ts
+SyncTrigger: {
+  /** Sync now was pressed. */
+  Manual: "manual";
+  /** Live sync ran it, after an edit or on its schedule. */
+  Live: "live";
+  /** Linking the map ran its first sync. */
+  Link: "link";
+  /** Resolving held conflicts ran it. */
+  Resolve: "resolve";
+}
+```
+
+What started a sync pass.
+
 ### ValidationState
 
 `stable` · since v0.11.0
@@ -6386,6 +6405,30 @@ cmd.storeValues(selector: Selector, field: string): Promise<string[]>
 ```
 
 Distinct values of `field` across the selected set, sorted.
+
+#### cmd.syncLogAppend
+
+`unstable` · unreleased
+
+```ts
+cmd.syncLogAppend(
+  provider: string,
+  mapId: string,
+  entry: SyncLogEntry,
+): Promise<null>
+```
+
+Record a settled sync pass for a map. Only the most recent passes per provider are kept.
+
+#### cmd.syncLogList
+
+`unstable` · unreleased
+
+```ts
+cmd.syncLogList(provider: string, mapId: string): Promise<SyncLogEntry[]>
+```
+
+A map's recorded sync passes with a provider, newest first.
 
 #### cmd.syncReconcile
 

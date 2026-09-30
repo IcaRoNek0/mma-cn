@@ -9,8 +9,8 @@ import { SuggestInput } from "@/components/primitives/SuggestInput";
 import { TextInput } from "@/components/primitives/TextInput";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiInformationOutline } from "@mdi/js";
-import type { Conflict, NormalizedSyncLocation } from "@/bindings.gen";
-import { SyncDirection, type FirstSyncMode } from "@/bindings.consts";
+import type { Conflict, NormalizedSyncLocation, SideCounts, SyncLogEntry } from "@/bindings.gen";
+import { SyncDirection, type FirstSyncMode, type SyncTrigger } from "@/bindings.consts";
 import type { SyncController } from "../controller";
 import type { SyncOutcome } from "../engine";
 import type { RemoteMapSummary } from "../provider";
@@ -156,6 +156,88 @@ const CONFLICT_LABEL: Record<Conflict["kind"], string> = {
 	"delete-update": msg("Deleted on one side, edited on the other"),
 	"add-add": msg("Both sides added"),
 };
+
+/** One line for what a pass changed on each side. */
+function passSummary(
+	r: { pushed: SideCounts; pulled: SideCounts; adopted: number; conflicts: number },
+	pullOnly: boolean,
+): string {
+	const counts = pullOnly
+		? t("Pulled +{lc} ~{lu} -{ld}", {
+				lc: r.pulled.create,
+				lu: r.pulled.update,
+				ld: r.pulled.delete,
+			})
+		: t("Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}", {
+				pc: r.pushed.create,
+				pu: r.pushed.update,
+				pd: r.pushed.delete,
+				lc: r.pulled.create,
+				lu: r.pulled.update,
+				ld: r.pulled.delete,
+			});
+	const adopted = r.adopted ? " · " + t("Adopted {n}", { n: r.adopted }) : "";
+	const conflicts = r.conflicts
+		? " · " +
+			t(
+				{ one: "{n} conflict held for review", other: "{n} conflicts held for review" },
+				{ n: r.conflicts },
+			)
+		: "";
+	return counts + adopted + conflicts;
+}
+
+const TRIGGER_LABEL: Record<SyncTrigger, string> = {
+	manual: msg("Sync now"),
+	live: msg("Live"),
+	link: msg("Linked"),
+	resolve: msg("Conflicts resolved"),
+};
+
+/** The map's recorded sync passes with this provider, newest first. */
+function SyncHistory({
+	controller,
+	mapId,
+	pullOnly,
+}: {
+	controller: SyncController;
+	mapId: string;
+	pullOnly: boolean;
+}) {
+	const [entries, setEntries] = useState<SyncLogEntry[]>([]);
+	useEffect(() => {
+		let live = true;
+		const load = () =>
+			void controller
+				.history()
+				.then((e) => live && setEntries(e))
+				.catch(() => live && setEntries([]));
+		load();
+		const off = controller.onHistory(load);
+		return () => {
+			live = false;
+			off();
+		};
+	}, [controller, mapId]);
+
+	if (entries.length === 0) return null;
+	return (
+		<Section title={t("History")} defaultOpen={false}>
+			<ul className="sync-history">
+				{entries.map((e) => (
+					<li key={`${e.startedAt}:${e.trigger}`}>
+						<span className="text-muted">
+							{dateTimeFmt.format(new Date(e.startedAt))} · {t(TRIGGER_LABEL[e.trigger])}
+						</span>
+						<div className={e.result.kind === "error" ? "sync-history__error" : undefined}>
+							{e.result.kind === "ok" ? passSummary(e.result, pullOnly) : errText(e.result.message)}
+						</div>
+					</li>
+				))}
+			</ul>
+		</Section>
+	);
+}
 
 const coord = (n: NormalizedSyncLocation): string => `${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
 
@@ -502,33 +584,7 @@ export function SyncSidebar({ onClose, controller, auth, identity, source }: Syn
 						<Notice tone="error">{controller.liveError()}</Notice>
 					)}
 					{outcome && (
-						<p>
-							{pullOnly
-								? t("Pulled +{lc} ~{lu} -{ld}", {
-										lc: outcome.pulled.create,
-										lu: outcome.pulled.update,
-										ld: outcome.pulled.delete,
-									})
-								: t("Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}", {
-										pc: outcome.pushed.create,
-										pu: outcome.pushed.update,
-										pd: outcome.pushed.delete,
-										lc: outcome.pulled.create,
-										lu: outcome.pulled.update,
-										ld: outcome.pulled.delete,
-									})}
-							{outcome.adopted ? " · " + t("Adopted {n}", { n: outcome.adopted }) : ""}
-							{outcome.conflicts.length
-								? " · " +
-									t(
-										{
-											one: "{n} conflict held for review",
-											other: "{n} conflicts held for review",
-										},
-										{ n: outcome.conflicts.length },
-									)
-								: ""}
-						</p>
+						<p>{passSummary({ ...outcome, conflicts: outcome.conflicts.length }, pullOnly)}</p>
 					)}
 					{outcome && outcome.conflicts.length > 0 && (
 						<>
@@ -649,6 +705,8 @@ export function SyncSidebar({ onClose, controller, auth, identity, source }: Syn
 					</Button>
 				</Section>
 			)}
+
+			{mapId && <SyncHistory controller={controller} mapId={mapId} pullOnly={pullOnly} />}
 
 			{error && <Notice tone="error">{error}</Notice>}
 		</Sidebar>

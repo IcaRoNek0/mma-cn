@@ -2,7 +2,7 @@
 
 import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 import * as __TAURI_EVENT from "@tauri-apps/api/event";
-import type { CameraType, CapturePick, DatePart, FieldType, FirstSyncMode, IssueState, MapShape, MergeWinner, RateCost, ResolutionSide, Sink } from "./bindings.consts";
+import type { CameraType, CapturePick, DatePart, FieldType, FirstSyncMode, IssueState, MapShape, MergeWinner, RateCost, ResolutionSide, Sink, SyncTrigger } from "./bindings.consts";
 
 /** Commands */
 export const commands = {
@@ -451,6 +451,10 @@ export const commands = {
 	 *  remote ones. Returns the creates, updates, and deletes for each side to apply.
 	 */
 	syncReconcile: (provider: string, mapId: string, remoteMapId: string, firstSync: FirstSyncMode | null, resolutions: ([string, ResolutionSide])[] | null) => __TAURI_INVOKE<SyncReconcileResult>("sync_reconcile", { provider, mapId, remoteMapId, firstSync, resolutions }).then((v) => (({...v,conflicts:v.conflicts.map(i=>({...i,local:i.local==null?i.local:i.local,remote:i.remote==null?i.remote:i.remote})),pullUpdates:v.pullUpdates.map(i=>({...i,patch:({...i.patch,lat:i.patch.lat==null?i.patch.lat:i.patch.lat,lng:i.patch.lng==null?i.patch.lng:i.patch.lng,heading:i.patch.heading==null?i.patch.heading:i.patch.heading,pitch:i.patch.pitch==null?i.patch.pitch:i.patch.pitch,zoom:i.patch.zoom==null?i.patch.zoom:i.patch.zoom})}))}) as typeof v)),
+	/**  Record a settled sync pass for a map. Only the most recent passes per provider are kept. */
+	syncLogAppend: (provider: string, mapId: string, entry: SyncLogEntry) => __TAURI_INVOKE<null>("sync_log_append", { provider, mapId, entry }),
+	/**  A map's recorded sync passes with a provider, newest first. */
+	syncLogList: (provider: string, mapId: string) => __TAURI_INVOKE<SyncLogEntry[]>("sync_log_list", { provider, mapId }),
 	/**  The account behind the stored key, or null when no key is stored. */
 	mapMakingMe: () => __TAURI_INVOKE<MmUser | null>("map_making_me"),
 	/**  Check `key` against the remote without storing it. */
@@ -1955,6 +1959,22 @@ export type SummaryResult = {
 	dirtyCount: number,
 };
 
+/**  One settled sync pass. */
+export type SyncLogEntry = {
+	trigger: SyncTrigger,
+	/**  When the pass started, in milliseconds since 1970. */
+	startedAt: number,
+	durationMs: number,
+	result: SyncLogResult,
+};
+
+/**  How a sync pass ended. */
+export type SyncLogResult = 
+/**  The pass finished, with what it changed on each side. */
+{ kind: "ok"; pushed: SideCounts; pulled: SideCounts; adopted: number; conflicts: number } | 
+/**  The pass stopped with this error. */
+{ kind: "error"; message: string };
+
 /**
  *  Only the fields a pull genuinely changes. A field the provider cannot represent reads as empty
  *  on the remote side and must not overwrite local data, so absent fields are left untouched.
@@ -1988,6 +2008,7 @@ export type SyncReconcileResult = {
 	pullDeleteIds: number[],
 	mirrorLocalDeleteIds: number[],
 };
+
 
 /**
  *  Generic `{id, patch}` update envelope, parameterized by the patch type. Specta
