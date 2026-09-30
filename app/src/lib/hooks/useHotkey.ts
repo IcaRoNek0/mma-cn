@@ -112,11 +112,45 @@ export function formatBinding(binding: string, mac = IS_MAC): string {
 // Number-row physical key. e.key here is shift-dependent (Shift+0 -> ")"), so we key
 // off e.code to speak in base digits and keep Shift explicit in the combo.
 const DIGIT_CODE = /^Digit([0-9])$/;
+const LETTER_CODE = /^Key([A-Z])$/;
+const US_PUNCTUATION_BY_CODE = new Map([
+	["Backquote", "`"],
+	["Minus", "-"],
+	["Equal", "="],
+	["BracketLeft", "["],
+	["BracketRight", "]"],
+	["Backslash", "\\"],
+	["Semicolon", ";"],
+	["Quote", "'"],
+	["Comma", ","],
+	["Period", "."],
+	["Slash", "/"],
+]);
+const LETTER = /^\p{L}$/u;
+const LATIN = /\p{Script=Latin}/u;
+
+// A non-Latin layout (Cyrillic, Greek, ...) types letters no binding can name, so those
+// keys fall back to where they sit on a US layout.
+function positionalKey(e: KeyboardEvent): string | undefined {
+	const digit = e.code?.match(DIGIT_CODE);
+	if (digit) return digit[1];
+	if (!LETTER.test(e.key) || LATIN.test(e.key)) return undefined;
+	const letter = e.code?.match(LETTER_CODE);
+	if (letter) return letter[1].toLowerCase();
+	return US_PUNCTUATION_BY_CODE.get(e.code);
+}
+
+/** The key name a binding uses for this event, before lowercasing. */
+export function eventKey(e: KeyboardEvent): string {
+	const key = positionalKey(e) ?? e.key;
+	if (key === " ") return "space";
+	if (key === "=") return "+";
+	return key;
+}
 
 /** Canonical combo string for a captured keydown, or null for a bare modifier. */
 export function buildComboString(e: KeyboardEvent): string | null {
-	const key = e.key;
-	if (["Control", "Alt", "Shift", "Meta"].includes(key)) return null;
+	if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
 
 	const parts: string[] = [];
 	if (e.ctrlKey && !IS_MAC) parts.push("Mod");
@@ -126,13 +160,9 @@ export function buildComboString(e: KeyboardEvent): string | null {
 	if (e.altKey) parts.push("Alt");
 	if (e.shiftKey) parts.push("Shift");
 
-	const digit = e.code?.match(DIGIT_CODE);
-	let keyName = key;
-	if (digit) keyName = digit[1];
-	else if (key === " ") keyName = "space";
-	else if (key === ",") keyName = "comma";
-	else if (key === "=" && !e.shiftKey) keyName = "+";
-	else if (key.length === 1) keyName = key.toLowerCase();
+	let keyName = eventKey(e);
+	if (keyName === ",") keyName = "comma";
+	else if (keyName.length === 1) keyName = keyName.toLowerCase();
 
 	if (keyName === "+" && parts.length === 0) {
 		parts.push("plus");
@@ -156,14 +186,11 @@ export function matchesKey(
 	const alt = e.altKey;
 	const meta = e.metaKey;
 	const shift = e.shiftKey;
-	const digit = e.code?.match(DIGIT_CODE);
-	let key = e.key.toLowerCase();
-	if (digit) key = digit[1];
-	else if (key === " ") key = "space";
-	else if (key === "=") key = "+";
+	const key = eventKey(e).toLowerCase();
 
 	// Digit row keeps Shift explicit (key is normalized via e.code), so the implied-shift
 	// relaxation must not apply or Shift+1 would also match a bare "1" binding.
+	const digit = DIGIT_CODE.test(e.code ?? "");
 	const shiftImplied = !digit && (SHIFTED_CHARS.has(pk.key) || SHIFTED_CHARS.has(e.key));
 
 	return (

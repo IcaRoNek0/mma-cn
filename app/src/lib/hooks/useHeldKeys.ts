@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useState } from "react";
-import { parseHotkey, matchesKey, isEditableElement } from "@/lib/hooks/useHotkey";
+import { parseHotkey, matchesKey, eventKey, isEditableElement } from "@/lib/hooks/useHotkey";
 import { getBinding, type HotkeyAction } from "@/lib/util/hotkeys";
 import { FRAME_MS } from "@/lib/sv/constants";
 
@@ -62,7 +62,7 @@ export function useHeldKeys<A extends HotkeyAction>(
 		function onKeyUp(e: KeyboardEvent) {
 			alt = e.altKey;
 			if (held.size === 0) return;
-			const key = e.key.toLowerCase();
+			const key = eventKey(e).toLowerCase();
 			for (const { action, parsed } of bindings) {
 				if (parsed.some((keys) => keys.length === 1 && keys[0].key === key)) held.delete(action);
 			}

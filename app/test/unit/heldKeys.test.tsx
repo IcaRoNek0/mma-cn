@@ -39,6 +39,16 @@ describe("useHeldKeys", () => {
 		expect(p.ticks).not.toHaveBeenCalled();
 	});
 
+	it("releases a key held in a non-Latin layout", async () => {
+		const p = probe();
+		key("keydown", { key: "ф", code: "KeyA" });
+		await nextFrame();
+		expect(p.held().has("panLeft")).toBe(true);
+		key("keyup", { key: "ф", code: "KeyA" });
+		expect(p.held().size).toBe(0);
+		p.unmount();
+	});
+
 	it("does not hold a press that onPress declines", async () => {
 		const p = probe(() => false);
 		key("keydown");

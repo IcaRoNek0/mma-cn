@@ -130,6 +130,24 @@ describe("matchesKey", () => {
 		expect(matchesKey(mockEvent({ key: "!", code: "Digit1", shiftKey: true }), combo)).toBe(false);
 		expect(matchesKey(mockEvent({ key: "1", code: "Digit1", shiftKey: false }), combo)).toBe(true);
 	});
+
+	it("matches a letter typed in a non-Latin layout by its US position", () => {
+		const [w] = parseHotkey("w")[0];
+		expect(matchesKey(mockEvent({ key: "ц", code: "KeyW" }), w)).toBe(true);
+		expect(matchesKey(mockEvent({ key: "Ц", code: "KeyW", shiftKey: true }), w)).toBe(false);
+		const [shiftW] = parseHotkey("Shift+w")[0];
+		expect(matchesKey(mockEvent({ key: "Ц", code: "KeyW", shiftKey: true }), shiftW)).toBe(true);
+		const [period] = parseHotkey(".")[0];
+		expect(matchesKey(mockEvent({ key: "ю", code: "Period" }), period)).toBe(true);
+	});
+
+	it("keeps matching Latin layouts by the letter they type", () => {
+		const [q] = parseHotkey("q")[0];
+		expect(matchesKey(mockEvent({ key: "q", code: "KeyA" }), q)).toBe(true);
+		expect(matchesKey(mockEvent({ key: "a", code: "KeyA" }), q)).toBe(false);
+		const [umlaut] = parseHotkey("ö")[0];
+		expect(matchesKey(mockEvent({ key: "ö", code: "Semicolon" }), umlaut)).toBe(true);
+	});
 });
 
 describe("buildComboString", () => {
@@ -161,6 +179,13 @@ describe("buildComboString", () => {
 
 	it("records a plain digit as itself", () => {
 		expect(buildComboString(mockEvent({ key: "0", code: "Digit0" }))).toBe("0");
+	});
+
+	it("records a non-Latin letter by its US position", () => {
+		expect(buildComboString(mockEvent({ key: "ц", code: "KeyW" }))).toBe("w");
+		expect(buildComboString(mockEvent({ key: "б", code: "Comma", ctrlKey: true }))).toBe(
+			"Mod+comma",
+		);
 	});
 });
 
