@@ -5068,6 +5068,16 @@ cmd.listUserPlugins(): Promise<PluginManifest[]>
 
 Manifests of every installed plugin.
 
+#### cmd.mapMakingCreateMap
+
+`unstable` · unreleased
+
+```ts
+cmd.mapMakingCreateMap(name: string): Promise<MmMapSummary>
+```
+
+Create an empty map named `name` for the stored key.
+
 #### cmd.mapMakingHasKey
 
 `unstable` · since v0.10.7

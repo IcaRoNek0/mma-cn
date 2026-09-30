@@ -461,6 +461,8 @@ export const commands = {
 	mapMakingValidate: (key: string) => __TAURI_INVOKE<MmUser>("map_making_validate", { key }),
 	/**  Linkable maps for the stored key. */
 	mapMakingMaps: () => __TAURI_INVOKE<MmMapSummary[]>("map_making_maps"),
+	/**  Create an empty map named `name` for the stored key. */
+	mapMakingCreateMap: (name: string) => __TAURI_INVOKE<MmMapSummary>("map_making_create_map", { name }),
 	/**  Store the API key, or clear it with null. */
 	mapMakingSetKey: (key: string | null) => __TAURI_INVOKE<null>("map_making_set_key", { key }),
 	/**  Local-only check: is a key stored? Says nothing about its validity. */

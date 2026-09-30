@@ -1028,6 +1028,8 @@ declare const commands$1: {
     mapMakingValidate: (key: string) => Promise<MmUser>;
     /**  Linkable maps for the stored key. @unstable */
     mapMakingMaps: () => Promise<MmMapSummary[]>;
+    /**  Create an empty map named `name` for the stored key. @unstable */
+    mapMakingCreateMap: (name: string) => Promise<MmMapSummary>;
     /**  Store the API key, or clear it with null. @unstable */
     mapMakingSetKey: (key: string | null) => Promise<null>;
     /**  Local-only check: is a key stored? Says nothing about its validity. @unstable */

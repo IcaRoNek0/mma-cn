@@ -643,6 +643,15 @@ fn parse_maps_tolerates_unknown_and_missing_fields() {
 }
 
 #[test]
+fn parse_created_reads_the_new_map_as_linkable() {
+    let body = br#"{"id": 42, "name": "Fresh", "description": "", "archivedAt": null}"#;
+    let map = parse_created(body).unwrap();
+    assert_eq!(map.id, "42");
+    assert_eq!(map.name, "Fresh");
+    assert_eq!(map.location_count, 0);
+}
+
+#[test]
 fn key_round_trips_through_the_credential_store() {
     KEY.set(Some("k".into())).unwrap();
     assert_eq!(KEY.get().unwrap().as_deref(), Some("k"));

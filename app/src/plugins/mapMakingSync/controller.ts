@@ -53,3 +53,7 @@ export async function adoptStoredKey(): Promise<void> {
 
 /** Maps the stored key can link to. */
 export const listMaps = (): Promise<RemoteMapSummary[]> => window.MMA.cmd.mapMakingMaps();
+
+/** A new, empty map to link to. */
+export const createMap = (name: string): Promise<RemoteMapSummary> =>
+	window.MMA.cmd.mapMakingCreateMap(name);

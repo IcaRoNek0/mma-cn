@@ -103,7 +103,7 @@ export function SyncSidebar({ onClose }: { onClose: () => void }) {
 			controller={controller}
 			auth={authUi}
 			identity={checking ? undefined : user ? { id: String(user.id) } : null}
-			source={{ kind: "list", listMaps: auth.listMaps }}
+			source={{ kind: "list", listMaps: auth.listMaps, createMap: auth.createMap }}
 		/>
 	);
 }

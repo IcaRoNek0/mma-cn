@@ -252,6 +252,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             sync::map_making::map_making_me,
             sync::map_making::map_making_validate,
             sync::map_making::map_making_maps,
+            sync::map_making::map_making_create_map,
             sync::map_making::map_making_set_key,
             sync::map_making::map_making_has_key,
             sync::file::file_source_probe,

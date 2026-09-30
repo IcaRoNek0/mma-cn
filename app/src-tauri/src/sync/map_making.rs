@@ -296,8 +296,14 @@ struct MapRow {
 }
 
 fn get_bytes(api_key: &str, path: &str) -> AppResult<Vec<u8>> {
-    let resp = proxy::sync_client()
-        .get(format!("{BASE_URL}{path}"))
+    send_json(
+        proxy::sync_client().get(format!("{BASE_URL}{path}")),
+        api_key,
+    )
+}
+
+fn send_json(req: reqwest::blocking::RequestBuilder, api_key: &str) -> AppResult<Vec<u8>> {
+    let resp = req
         .header("authorization", format!("API {api_key}"))
         .header("accept", "application/json")
         .send()?;
@@ -315,6 +321,24 @@ fn fetch_user(api_key: &str) -> AppResult<MmUser> {
 
 fn fetch_maps(api_key: &str) -> AppResult<Vec<MmMapSummary>> {
     parse_maps(&get_bytes(api_key, "/api/maps")?)
+}
+
+fn create_map(api_key: &str, name: &str) -> AppResult<MmMapSummary> {
+    let body = serde_json::json!({ "name": name, "description": "" });
+    let req = proxy::sync_client()
+        .post(format!("{BASE_URL}/api/maps"))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&body)?);
+    parse_created(&send_json(req, api_key)?)
+}
+
+fn parse_created(body: &[u8]) -> AppResult<MmMapSummary> {
+    let row: MapRow = serde_json::from_slice(body)?;
+    Ok(MmMapSummary {
+        id: row.id.to_string(),
+        name: row.name,
+        location_count: row.location_count,
+    })
 }
 
 /// Archived maps cannot be linked, so they never reach the picker.
@@ -356,6 +380,13 @@ pub async fn map_making_validate(key: String) -> AppResult<MmUser> {
 #[specta::specta]
 pub async fn map_making_maps() -> AppResult<Vec<MmMapSummary>> {
     blocking(|| fetch_maps(&MapMakingProvider::from_key()?.api_key)).await?
+}
+
+/// Create an empty map named `name` for the stored key.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_create_map(name: String) -> AppResult<MmMapSummary> {
+    blocking(move || create_map(&MapMakingProvider::from_key()?.api_key, &name)).await?
 }
 
 /// Store the API key, or clear it with null.
