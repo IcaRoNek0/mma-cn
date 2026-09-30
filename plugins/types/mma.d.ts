@@ -3179,7 +3179,7 @@ export type HSL = {
     s: number;
     l: number;
 };
-/** Parse "#rrggbb" to an [r, g, b] byte tuple. @unstable */
+/** Parse "#rrggbb" or "#rgb" to an [r, g, b] byte tuple; black when it is not hex. @unstable */
 declare function hexToRgb(hex: string): RGB;
 /** Return "#000" or "#fff" for readable text on the given hex background. @unstable */
 declare function textColorFor(bg: string): string;
@@ -3202,7 +3202,7 @@ declare function colorForName(name: string): string;
 /** Format an RGB tuple as a CSS `rgb(r, g, b)` string. @unstable */
 declare function rgbCss([r, g, b]: RGB): string;
 /** Convert an RGB byte tuple to "#rrggbb". @unstable */
-declare function rgbToHex([r, g, b]: RGB): string;
+declare function rgbToHex(rgb: RGB): string;
 /** A label's color: a user override if set, else a deterministic color from its name. @unstable */
 declare function labelColor(name: string, overrides: Record<string, string>): string;
 

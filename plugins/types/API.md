@@ -8056,7 +8056,7 @@ Convert "#rrggbb" to HSL.
 hexToRgb(hex: string): RGB
 ```
 
-Parse "#rrggbb" to an [r, g, b] byte tuple.
+Parse "#rrggbb" or "#rgb" to an [r, g, b] byte tuple; black when it is not hex.
 
 ### hslToHex
 
@@ -8114,7 +8114,7 @@ Format an RGB tuple as a CSS `rgb(r, g, b)` string.
 `unstable` · since v0.10.3
 
 ```ts
-rgbToHex(props: RGB): string
+rgbToHex(rgb: RGB): string
 ```
 
 Convert an RGB byte tuple to "#rrggbb".
