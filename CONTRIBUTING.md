@@ -4,7 +4,7 @@
 
 You need:
 
-- Node 24 (see `.nvmrc`)
+- Node 26 (see `.nvmrc`)
 - A stable Rust toolchain (`rustup`)
 - Tauri CLI: `cargo install tauri-cli`
 - Platform deps for Tauri:

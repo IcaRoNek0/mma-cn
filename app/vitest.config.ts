@@ -18,5 +18,7 @@ export default defineConfig({
 		// A lazy `import()` inside a test pays the module graph transform against the
 		// test timeout, which a saturated pool blows through at the 5 s default.
 		testTimeout: 30_000,
+		// Node's own Web Storage holds nothing without a backing file and warns on every read.
+		execArgv: ["--no-webstorage"],
 	},
 });

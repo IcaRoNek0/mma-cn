@@ -157,7 +157,9 @@ export default defineConfig([
 			// method of our own with the same name. projectService costs ~4s over the suite.
 			parser: tseslint.parser,
 			parserOptions: {
-				projectService: { allowDefaultProject: ["wdio.conf.ts", "wdio.web.conf.ts"] },
+				projectService: {
+					allowDefaultProject: ["wdio.conf.ts", "wdio.web.conf.ts", "vitest.config.ts"],
+				},
 				tsconfigRootDir: import.meta.dirname,
 			},
 		},

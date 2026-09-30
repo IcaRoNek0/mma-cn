@@ -38,7 +38,7 @@ git clone --recurse-submodules https://github.com/ccmdi/mma
 cd mma/app && npm install && npx tauri build
 ```
 
-Requires Node 24 and a Rust toolchain.
+Requires Node 26 and a Rust toolchain.
 
 ### Run in a browser
 
