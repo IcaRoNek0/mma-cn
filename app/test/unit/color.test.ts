@@ -113,7 +113,33 @@ describe("rgbCss", () => {
 	});
 });
 
+describe("hexToRgb", () => {
+	it("parses six hex digits, with or without the hash", () => {
+		expect(hexToRgb("#ff8000")).toEqual([255, 128, 0]);
+		expect(hexToRgb("0a0B0c")).toEqual([10, 11, 12]);
+	});
+
+	it("expands three-digit shorthand the way CSS does", () => {
+		expect(hexToRgb("#abc")).toEqual([0xaa, 0xbb, 0xcc]);
+		expect(hexToRgb("#fff")).toEqual([255, 255, 255]);
+	});
+
+	it("ignores an alpha byte", () => {
+		expect(hexToRgb("#11223380")).toEqual([0x11, 0x22, 0x33]);
+	});
+
+	it("falls back to black for anything that is not a hex color", () => {
+		for (const bad of ["", "#12", "#abcd", "red", "#gggggg", "#12345"]) {
+			expect(hexToRgb(bad)).toEqual([0, 0, 0]);
+		}
+	});
+});
+
 describe("rgbToHex", () => {
+	it("rounds fractional channels", () => {
+		expect(rgbToHex([254.6, 0.4, 16])).toBe("#ff0010");
+	});
+
 	it("formats an rgb tuple as a hex string", () => {
 		expect(rgbToHex([255, 128, 0])).toBe("#ff8000");
 		expect(rgbToHex([0, 0, 0])).toBe("#000000");

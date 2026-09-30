@@ -5,14 +5,16 @@ export type RGBA = [...RGB, number];
 /** Hue in degrees, saturation and lightness in percent. */
 export type HSL = { h: number; s: number; l: number };
 
-/** Parse "#rrggbb" to an [r, g, b] byte tuple. */
+/** Parse "#rrggbb" or "#rgb" to an [r, g, b] byte tuple; black when it is not hex. */
 export function hexToRgb(hex: string): RGB {
 	const h = hex.replace("#", "");
-	return [
-		parseInt(h.substring(0, 2), 16),
-		parseInt(h.substring(2, 4), 16),
-		parseInt(h.substring(4, 6), 16),
-	];
+	try {
+		const [r, g, b] = Uint8Array.fromHex(h.length === 3 ? h.replace(/./g, "$&$&") : h);
+		if (b !== undefined) return [r, g, b];
+	} catch {
+		// Not hex: stored colors are never validated, so this falls back rather than throws.
+	}
+	return [0, 0, 0];
 }
 
 /** Return "#000" or "#fff" for readable text on the given hex background. */
@@ -64,9 +66,7 @@ export function hexToHsl(hex: string): HSL {
 
 /** Convert HSL to "#rrggbb". */
 export function hslToHex({ h, s, l }: HSL): string {
-	const [r, g, b] = hslToRgb(h, s / 100, l / 100);
-	const hex = (n: number) => n.toString(16).padStart(2, "0");
-	return `#${hex(r)}${hex(g)}${hex(b)}`;
+	return rgbToHex(hslToRgb(h, s / 100, l / 100));
 }
 
 /** Convert HSL (h in degrees, s and l in 0-1) to an RGB byte tuple. */
@@ -89,9 +89,7 @@ export function colorForName(name: string): string {
 	}
 	h = (Math.imul(h, 214013) + 2531011) | 0;
 	const hue = Math.abs(h) % 360;
-	const [r, g, b] = hslToRgb(hue, 0.5, 0.5);
-	const hex = (n: number) => n.toString(16).padStart(2, "0");
-	return `#${hex(r)}${hex(g)}${hex(b)}`;
+	return rgbToHex(hslToRgb(hue, 0.5, 0.5));
 }
 
 /** Format an RGB tuple as a CSS `rgb(r, g, b)` string. */
@@ -100,9 +98,8 @@ export function rgbCss([r, g, b]: RGB): string {
 }
 
 /** Convert an RGB byte tuple to "#rrggbb". */
-export function rgbToHex([r, g, b]: RGB): string {
-	const h = (n: number) => Math.round(n).toString(16).padStart(2, "0");
-	return `#${h(r)}${h(g)}${h(b)}`;
+export function rgbToHex(rgb: RGB): string {
+	return `#${Uint8Array.from(rgb, Math.round).toHex()}`;
 }
 
 /** A label's color: a user override if set, else a deterministic color from its name. */

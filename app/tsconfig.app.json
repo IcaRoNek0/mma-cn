@@ -4,9 +4,8 @@
 		"target": "es2023",
 		/* Runtime support is enforced by the `local/no-unsupported-builtins` ESLint rule
 		   (MDN compat data vs the FLOOR in eslint-rules/no-unsupported-builtins.js), not
-		   by this list. ES2025 rather than ESNext only because ESNext adds Uint8Array's
-		   base64/hex codecs, which clear the browser floor but need node 25+ to test. */
-		"lib": ["ES2025", "DOM"],
+		   by this list. */
+		"lib": ["ESNext", "DOM"],
 		"module": "esnext",
 		"types": ["vite/client", "google.maps"],
 		"skipLibCheck": true,
