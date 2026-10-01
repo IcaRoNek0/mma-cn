@@ -1,9 +1,8 @@
 //! QuickJS procedure host. Loads a plugin-authored ES module bundle and drives it
 //! through the `Procedure` shapes. No provider logic lives here.
 //!
-//! The module's named exports are the entry points: `request`+`map` (RequestMap),
-//! `map` (MapOnly) or `run` (Run). `query` is a second optional export outside the
-//! shapes. Each entry point receives its run configuration as a trailing argument.
+//! The module's named exports are the entry points: `map` (Map) or `run` (Run).
+//! `query` is a second optional export outside the shapes. Each entry point receives its run configuration as a trailing argument.
 //! The boundary is JSON: a batch arrives as `JSON.parse`d rows and every entry point
 //! answers with plain JS values.
 //!
@@ -11,8 +10,7 @@
 //! `sidecar`, `log`, `progress`, `fail`, `aborted`. They are synchronous -- the guest
 //! blocks while the host works, which is how a procedure gets request width out of
 //! `fetchMany`. `fetch`, `fetchMany` and `sidecar` reach outside the process, so they
-//! are limited to `run` and `query`; the rest are open to `map` as well. `request`
-//! runs against no host at all: it is pure by construction.
+//! are limited to `run` and `query`; the rest are open to `map` as well.
 //!
 //! The `mma` natives have to be `'static` while the host is only borrowed for one
 //! call, so the guest runs on a scoped thread and the natives reach the host over a
@@ -314,34 +312,6 @@ fn service(host: &mut dyn ProcHost, stream: &mut Option<SidecarStream>, req: Hos
             HostRep::Unit
         }
         HostReq::Aborted => HostRep::Aborted(host.aborted()),
-    }
-}
-
-/// Stand-in host for the call that gets none: `request`.
-struct NoHost;
-
-impl ProcHost for NoHost {
-    fn fetch(&mut self, _req: &HttpRequestSpec) -> AppResult<HttpResponse> {
-        Err(AppError("procedure has no host attached".into()))
-    }
-    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
-        vec![PanoAnswer::Failed; queries.len()]
-    }
-    fn classify(&mut self, _dataset: &str, _lat: f64, _lng: f64) -> AppResult<Option<String>> {
-        Err(AppError("procedure has no host attached".into()))
-    }
-    fn sidecar(
-        &mut self,
-        _plugin_id: &str,
-        _command: &str,
-        _payload_json: &str,
-    ) -> AppResult<SidecarStream> {
-        Err(AppError("procedure has no host attached".into()))
-    }
-    fn progress(&mut self, _units: u32) {}
-    fn fail(&mut self, _id: u32) {}
-    fn aborted(&self) -> bool {
-        false
     }
 }
 
@@ -840,19 +810,17 @@ fn detect_shape(e: &Exports, origin: &str) -> AppResult<ProcShape> {
         )));
     }
     if e.request {
-        if !e.map {
-            return Err(AppError(format!(
-                "{origin}: module exports `request` without `map`"
-            )));
-        }
-        Ok(ProcShape::RequestMap)
-    } else if e.run {
+        return Err(AppError(format!(
+            "{origin}: module exports `request`; a procedure that fetches exports `run` and calls `mma.fetch`"
+        )));
+    }
+    if e.run {
         Ok(ProcShape::Run)
     } else if e.map {
-        Ok(ProcShape::MapOnly)
+        Ok(ProcShape::Map)
     } else {
         Err(AppError(format!(
-            "{origin}: module exports no procedure entry point (`request`+`map`, `map` or `run`)"
+            "{origin}: module exports no procedure entry point (`map` or `run`)"
         )))
     }
 }
@@ -1055,34 +1023,19 @@ impl Procedure for JsProcedure {
         self.shape
     }
 
-    fn request(&mut self, batch: &[u8], config: &str) -> AppResult<HttpRequestSpec> {
-        if self.shape != ProcShape::RequestMap {
-            return Err(self.err("procedure shape does not implement request"));
-        }
-        let mut no_host = NoHost;
-        self.call(&mut no_host, false, |ctx| {
-            let rows = self.rows(&ctx, batch)?;
-            let cfg = self.config_val(&ctx, config)?;
-            let out = self.invoke(&ctx, "request", vec![rows, cfg])?;
-            read_request(&out).map_err(|e| self.err(e.0))
-        })
-    }
-
     fn map(
         &mut self,
         batch: &[u8],
-        response: &HttpResponse,
         host: &mut dyn ProcHost,
         config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
-        if !matches!(self.shape, ProcShape::RequestMap | ProcShape::MapOnly) {
+        if self.shape != ProcShape::Map {
             return Err(self.err("procedure shape does not implement map"));
         }
         self.call(host, false, |ctx| {
             let rows = self.rows(&ctx, batch)?;
-            let resp = response_to_js(&ctx, response).map_err(|e| self.err(e))?;
             let cfg = self.config_val(&ctx, config)?;
-            let out = self.invoke(&ctx, "map", vec![rows, resp, cfg])?;
+            let out = self.invoke(&ctx, "map", vec![rows, cfg])?;
             read_patches(&ctx, out).map_err(|e| self.err(e.0))
         })
     }
@@ -1218,18 +1171,13 @@ impl Procedure for PooledProcedure {
         self.proc.as_ref().expect("held until drop").shape()
     }
 
-    fn request(&mut self, batch: &[u8], config: &str) -> AppResult<HttpRequestSpec> {
-        self.inner().request(batch, config)
-    }
-
     fn map(
         &mut self,
         batch: &[u8],
-        response: &HttpResponse,
         host: &mut dyn ProcHost,
         config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
-        self.inner().map(batch, response, host, config)
+        self.inner().map(batch, host, config)
     }
 
     fn run(

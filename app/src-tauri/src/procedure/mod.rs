@@ -21,10 +21,8 @@ pub struct PatchEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcShape {
-    /// Engine drives HTTP: `request(batch)` then `map(batch, response)`.
-    RequestMap,
-    /// Pure compute: `map(batch, empty response)` only.
-    MapOnly,
+    /// Pure compute: `map(batch)`, with no effectful host calls.
+    Map,
     /// Procedure drives its own calls through the host: `run(batch, host)`.
     Run,
 }
@@ -85,16 +83,9 @@ pub trait ProcHost {
 pub trait Procedure: Send {
     fn shape(&self) -> ProcShape;
 
-    fn request(&mut self, _batch: &[u8], _config: &str) -> AppResult<HttpRequestSpec> {
-        Err(AppError(
-            "procedure shape does not implement request".into(),
-        ))
-    }
-
     fn map(
         &mut self,
         _batch: &[u8],
-        _response: &HttpResponse,
         _host: &mut dyn ProcHost,
         _config: &str,
     ) -> AppResult<Vec<PatchEntry>> {

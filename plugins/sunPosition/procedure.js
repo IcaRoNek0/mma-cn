@@ -24,9 +24,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// sunPosition/node_modules/suncalc/suncalc.js
+// ../../map-making-app/plugins/sunPosition/node_modules/suncalc/suncalc.js
 var require_suncalc = __commonJS({
-  "sunPosition/node_modules/suncalc/suncalc.js"(exports, module) {
+  "../../map-making-app/plugins/sunPosition/node_modules/suncalc/suncalc.js"(exports, module) {
     (function() {
       "use strict";
       var PI = Math.PI, sin = Math.sin, cos = Math.cos, tan = Math.tan, asin = Math.asin, atan = Math.atan2, acos = Math.acos, rad = PI / 180;
@@ -210,7 +210,7 @@ var import_suncalc = __toESM(require_suncalc());
 var DEG = 180 / Math.PI;
 var MAX_TIME_MS = 864e13;
 var round2 = (v) => Math.round(v * 100) / 100;
-function map(rows, _response, cfg) {
+function map(rows, cfg) {
   const fields = cfg.fields.length > 0 ? new Set(cfg.fields) : null;
   const enabled = (key) => fields === null || fields.has(key);
   const wantAz = enabled("sunAzimuth");

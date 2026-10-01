@@ -1,12 +1,21 @@
-// Drives the built bundle directly: the URL `request` builds and the patches `map`
+// Drives the built bundle directly: the URL `run` asks `mma.fetch` for and the patches it
 // derives from an Open-Meteo archive response.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const failed = [];
-globalThis.mma = { fail: (id) => failed.push(id), log: () => {} };
+let answer = () => ({ status: 500, body: new Uint8Array() });
+const fetched = [];
+globalThis.mma = {
+	fail: (id) => failed.push(id),
+	log: () => {},
+	fetch: (req) => {
+		fetched.push(req);
+		return answer(req);
+	},
+};
 
-const { request, map } = await import(new URL("../procedure.js", import.meta.url).href);
+const { run } = await import(new URL("../procedure.js", import.meta.url).href);
 
 // --- the JS builder, kept verbatim as the URL parity reference -----------------
 
@@ -69,12 +78,15 @@ function toRows(locs) {
 const cfg = (fields) => ({ fields: fields ?? [], force: false, config: null });
 
 function runRequest(locs, fields = null) {
-	return request(toRows(locs), cfg(fields));
+	fetched.length = 0;
+	run(toRows(locs), cfg(fields));
+	return fetched[0];
 }
 
 function runMap(locs, status, body, fields = null) {
 	failed.length = 0;
-	const patches = map(toRows(locs), { status, body: new TextEncoder().encode(body) }, cfg(fields));
+	answer = () => ({ status, body: new TextEncoder().encode(body) });
+	const patches = run(toRows(locs), cfg(fields));
 	for (const p of patches) {
 		assert.deepEqual(Object.keys(p.patch), ["extra"], "patches must be LocationPatch-shaped");
 	}

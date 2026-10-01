@@ -1057,14 +1057,14 @@ fn apply_pages(ctx: &RunCtx, decl: &ProviderDecl, rx: mpsc::Receiver<Produced>) 
     Ok(())
 }
 
-/// A chunk only carries meaning when it becomes one request. For a MapOnly procedure
+/// A chunk only carries meaning when it becomes one request. For a map procedure
 /// the declared size is just a ceiling, so a page is cut finely enough to occupy
 /// every instance instead of handing one instance the whole page.
 fn effective_batch_mode(ctx: &RunCtx, decl: &ProviderDecl) -> AppResult<BatchMode> {
     let BatchMode::Chunk { size } = &decl.batch else {
         return Ok(decl.batch.clone());
     };
-    if (ctx.deps.factory)(&decl.procedure.entry)?.shape() != ProcShape::MapOnly {
+    if (ctx.deps.factory)(&decl.procedure.entry)?.shape() != ProcShape::Map {
         return Ok(decl.batch.clone());
     }
     Ok(BatchMode::Chunk {
@@ -1266,20 +1266,7 @@ fn run_batch(
     let blob = serde_json::to_vec(&batch.rows)
         .map_err(|e| AppError(format!("batch could not be serialized: {e}")))?;
     match proc.shape() {
-        ProcShape::MapOnly => proc.map(
-            &blob,
-            &HttpResponse {
-                status: 0,
-                body: Vec::new(),
-            },
-            host,
-            config,
-        ),
-        ProcShape::RequestMap => {
-            let req = proc.request(&blob, config)?;
-            let resp = host.fetch(&req)?;
-            proc.map(&blob, &resp, host, config)
-        }
+        ProcShape::Map => proc.map(&blob, host, config),
         ProcShape::Run => proc.run(&blob, host, config),
     }
 }

@@ -28,7 +28,7 @@ function usableSeconds(row) {
   if (!isFinite(ms) || Math.abs(ms) > MAX_TIME_MS) return null;
   return secs;
 }
-function request(rows, cfg) {
+function archiveRequest(rows, cfg) {
   const lat = [];
   const lng = [];
   const dates = [];
@@ -51,7 +51,10 @@ function parseResults(body) {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 var decoder = new TextDecoder();
-function map(rows, response, cfg) {
+function run(rows, cfg) {
+  return patches(rows, mma.fetch(archiveRequest(rows, cfg)), cfg);
+}
+function patches(rows, response, cfg) {
   const hourlyWanted = wanted(cfg);
   if (response.status !== 200) {
     for (const row of rows) mma.fail(row.id);
@@ -89,6 +92,5 @@ function map(rows, response, cfg) {
   return out;
 }
 export {
-  map,
-  request
+  run
 };

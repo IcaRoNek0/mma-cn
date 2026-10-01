@@ -20,13 +20,6 @@ fn loaded(src: &str) -> JsProcedure {
     load(src).expect("fixture loads")
 }
 
-fn empty_response() -> HttpResponse {
-    HttpResponse {
-        status: 0,
-        body: Vec::new(),
-    }
-}
-
 /// The single patch a fixture answered with, parsed.
 fn only_patch(patches: &[PatchEntry]) -> Json {
     assert_eq!(patches.len(), 1, "expected one patch, got {patches:?}");
@@ -131,7 +124,7 @@ impl ProcHost for MockProcHost {
 /// Answers one patch per row, carrying `payload` as the patch's `extra`.
 fn echo_map(payload: &str) -> String {
     format!(
-        "export function map(rows, response) {{
+        "export function map(rows) {{
            return rows.map(r => ({{ id: r.id, patch: {{ extra: {payload} }} }}));
          }}"
     )
@@ -142,8 +135,8 @@ fn echo_map(payload: &str) -> String {
 // -----------------------------------------------------------------------
 
 #[test]
-fn a_lone_map_export_is_map_only() {
-    assert_eq!(loaded(&echo_map("null")).shape(), ProcShape::MapOnly);
+fn a_lone_map_export_is_the_map_shape() {
+    assert_eq!(loaded(&echo_map("null")).shape(), ProcShape::Map);
 }
 
 #[test]
@@ -153,12 +146,13 @@ fn a_run_export_is_the_run_shape() {
 }
 
 #[test]
-fn request_beside_map_is_the_request_map_shape() {
-    let proc = loaded(&format!(
+fn a_request_export_is_rejected_with_a_pointer_to_run() {
+    let err = load(&format!(
         "export function request(rows) {{ return {{ method: 'GET', url: 'https://x.test/' }}; }}\n{}",
         echo_map("null")
-    ));
-    assert_eq!(proc.shape(), ProcShape::RequestMap);
+    ))
+    .expect_err("request export");
+    assert!(err.0.contains("`mma.fetch`"), "unexpected error: {}", err.0);
 }
 
 #[test]
@@ -175,16 +169,6 @@ fn a_module_with_no_entry_point_is_rejected() {
     let err = load("export function helper() { return 1; }").expect_err("no entry point");
     assert!(
         err.0.contains("no procedure entry point"),
-        "unexpected error: {}",
-        err.0
-    );
-}
-
-#[test]
-fn request_without_map_is_rejected() {
-    let err = load("export function request(rows) { return {}; }").expect_err("request alone");
-    assert!(
-        err.0.contains("`request` without `map`"),
         "unexpected error: {}",
         err.0
     );
@@ -227,7 +211,7 @@ fn rows_arrive_as_parsed_objects() {
     ));
     let mut host = MockProcHost::default();
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(patches[0].id, 7);
     assert_eq!(
@@ -264,62 +248,20 @@ fn run_answers_with_patches() {
 }
 
 #[test]
-fn map_sees_the_response_status_and_body() {
-    let mut proc = loaded(&echo_map(
-        "{ status: response.status, body: new TextDecoder().decode(response.body),
-           len: response.body.length, kind: response.body.constructor.name }",
-    ));
-    let mut host = MockProcHost::default();
-    let patches = proc
-        .map(
-            &rows(),
-            &HttpResponse {
-                status: 207,
-                body: br#"{"echo":1}"#.to_vec(),
-            },
-            &mut host,
-            NULL_CONFIG,
-        )
-        .expect("map succeeds");
-    assert_eq!(
-        extra(&patches),
-        serde_json::json!({
-            "status": 207, "body": "{\"echo\":1}", "len": 10, "kind": "Uint8Array",
-        })
+fn a_fetch_body_may_be_bytes_and_headers_may_be_absent() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           mma.fetch({ method: 'POST', url: 'https://x.test/' + rows[0].id,
+                       body: new Uint8Array([1, 2, 3]) });
+           return [];
+         }",
     );
-}
-
-#[test]
-fn request_becomes_an_http_request_spec() {
-    let mut proc = loaded(&format!(
-        "export function request(rows) {{
-           return {{ method: 'POST', url: 'https://x.test/' + rows[0].id,
-                    headers: {{ 'X-A': '1' }}, body: new Uint8Array([1, 2, 3]) }};
-         }}\n{}",
-        echo_map("null")
-    ));
-    let spec = proc
-        .request(&rows(), NULL_CONFIG)
-        .expect("request succeeds");
-    assert_eq!(spec.method, "POST");
-    assert_eq!(spec.url, "https://x.test/7");
-    assert_eq!(spec.headers, vec![("X-A".to_string(), "1".to_string())]);
-    assert_eq!(spec.body, Some(vec![1, 2, 3]));
-}
-
-#[test]
-fn a_request_body_may_be_a_string_and_headers_may_be_absent() {
-    let mut proc = loaded(&format!(
-        "export function request(rows) {{
-           return {{ method: 'GET', url: 'https://x.test/', body: 'hi' }};
-         }}\n{}",
-        echo_map("null")
-    ));
-    let spec = proc
-        .request(&rows(), NULL_CONFIG)
-        .expect("request succeeds");
-    assert!(spec.headers.is_empty());
-    assert_eq!(spec.body, Some(b"hi".to_vec()));
+    let mut host = MockProcHost::default();
+    proc.run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(host.requests[0].url, "https://x.test/7");
+    assert!(host.requests[0].headers.is_empty());
+    assert_eq!(host.requests[0].body, Some(vec![1, 2, 3]));
 }
 
 #[test]
@@ -353,7 +295,6 @@ fn a_shape_only_answers_its_own_entry_points() {
     let mut proc = loaded(&echo_map("null"));
     let mut host = MockProcHost::default();
     assert!(proc.run(&rows(), &mut host, NULL_CONFIG).is_err());
-    assert!(proc.request(&rows(), NULL_CONFIG).is_err());
 }
 
 #[test]
@@ -376,7 +317,7 @@ fn an_async_entry_point_settles_before_it_answers() {
 // -----------------------------------------------------------------------
 
 const CONFIGURABLE: &str = "
-  export function map(rows, response, cfg) {
+  export function map(rows, cfg) {
     return [{ id: rows[0].id, patch: { extra: cfg } }];
   }";
 
@@ -387,9 +328,7 @@ fn config_reaches_the_entry_point_as_a_parameter() {
     let mut proc = loaded(CONFIGURABLE);
     let mut host = MockProcHost::default();
     let config = r#"{"fields":["a"],"force":true,"config":{"k":1}}"#;
-    let patches = proc
-        .map(&rows(), &empty_response(), &mut host, config)
-        .expect("map succeeds");
+    let patches = proc.map(&rows(), &mut host, config).expect("map succeeds");
     assert_eq!(
         extra(&patches),
         serde_json::json!({ "fields": ["a"], "force": true, "config": { "k": 1 } })
@@ -400,9 +339,7 @@ fn config_reaches_the_entry_point_as_a_parameter() {
 fn a_module_that_ignores_config_still_works() {
     let mut proc = loaded(&echo_map("1"));
     let mut host = MockProcHost::default();
-    assert!(proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
-        .is_ok());
+    assert!(proc.map(&rows(), &mut host, NULL_CONFIG).is_ok());
 }
 
 // -----------------------------------------------------------------------
@@ -484,7 +421,7 @@ fn classify_reaches_the_host_from_map() {
         ..Default::default()
     };
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(host.classified, vec![("borders".to_string(), 1.5, 2.5)]);
     assert_eq!(extra(&patches), serde_json::json!({ "name": "FR" }));
@@ -528,7 +465,7 @@ fn classify_answers_null_outside_every_feature() {
     let mut proc = loaded(&echo_map("{ name: mma.classify('borders', 0, 0) }"));
     let mut host = MockProcHost::default();
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(extra(&patches), serde_json::json!({ "name": null }));
 }
@@ -538,7 +475,7 @@ fn tz_answers_null_outside_the_grid() {
     let mut proc = loaded(&echo_map("{ zone: mma.tz(91, 0) }"));
     let mut host = MockProcHost::default();
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(extra(&patches), serde_json::json!({ "zone": null }));
 }
@@ -555,7 +492,7 @@ fn neighbors_reaches_the_host_with_the_asked_for_fields() {
         ..Default::default()
     };
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(
         host.neighbor_calls,
@@ -576,7 +513,7 @@ fn a_neighbor_arrives_as_an_object_carrying_its_fields() {
         ..Default::default()
     };
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(
         extra(&patches),
@@ -593,7 +530,7 @@ fn neighbors_may_be_asked_for_no_fields_at_all() {
     ));
     let mut host = MockProcHost::default();
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(host.neighbor_calls, vec![(1.5, 2.5, 25.0, Vec::new())]);
     assert_eq!(extra(&patches), serde_json::json!({ "near": 0 }));
@@ -604,7 +541,7 @@ fn neighbors_refuses_a_field_list_that_is_not_strings() {
     let mut proc = loaded(&echo_map("{ near: mma.neighbors(r.lat, r.lng, 25, [7]) }"));
     let mut host = MockProcHost::default();
     let err = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect_err("map fails");
     assert!(
         err.0.contains("field names must be strings"),
@@ -780,45 +717,11 @@ fn map_cannot_reach_the_effectful_host_calls() {
         let mut proc = loaded(&echo_map(&format!("{{ v: {call} }}")));
         let mut host = MockProcHost::default();
         let err = proc
-            .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+            .map(&rows(), &mut host, NULL_CONFIG)
             .expect_err("gate rejects the call");
         assert_gated(name, &err);
         assert!(host.requests.is_empty());
     }
-}
-
-#[test]
-fn request_cannot_reach_the_effectful_host_calls() {
-    for (name, call) in EFFECTS {
-        let mut proc = loaded(&format!(
-            "export function request(rows) {{ {call}; return {{ method: 'GET', url: '/' }}; }}\n{}",
-            echo_map("null")
-        ));
-        let err = proc
-            .request(&rows(), NULL_CONFIG)
-            .expect_err("gate rejects the call");
-        assert_gated(name, &err);
-    }
-}
-
-/// `request` is pure by construction: even the calls open to `map` have no host.
-#[test]
-fn request_has_no_host_for_the_calls_that_are_otherwise_open() {
-    let mut proc = loaded(&format!(
-        "export function request(rows) {{
-           mma.classify('borders', 0, 0);
-           return {{ method: 'GET', url: '/' }};
-         }}\n{}",
-        echo_map("null")
-    ));
-    let err = proc
-        .request(&rows(), NULL_CONFIG)
-        .expect_err("no host attached");
-    assert!(
-        err.0.contains("no host attached"),
-        "unexpected error: {}",
-        err.0
-    );
 }
 
 #[test]
@@ -845,10 +748,10 @@ fn query_reaches_the_effectful_host_calls() {
 
 #[test]
 fn a_throwing_guest_is_an_error_not_a_panic() {
-    let mut proc = loaded("export function map(rows, response) { throw new Error('boom'); }");
+    let mut proc = loaded("export function map(rows) { throw new Error('boom'); }");
     let mut host = MockProcHost::default();
     let err = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect_err("guest threw");
     assert!(err.0.contains("boom"), "unexpected error: {}", err.0);
 }
@@ -865,10 +768,10 @@ fn a_rejected_async_entry_point_is_an_error() {
 
 #[test]
 fn a_non_array_answer_is_rejected() {
-    let mut proc = loaded("export function map(rows, response) { return 5; }");
+    let mut proc = loaded("export function map(rows) { return 5; }");
     let mut host = MockProcHost::default();
     let err = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect_err("not an array");
     assert!(
         err.0.contains("array of patches"),
@@ -989,7 +892,7 @@ fn the_prelude_carries_the_globals_bundled_code_expects() {
     ));
     let mut host = MockProcHost::default();
     let patches = proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
+        .map(&rows(), &mut host, NULL_CONFIG)
         .expect("map succeeds");
     assert_eq!(
         extra(&patches),
@@ -1013,9 +916,7 @@ fn console_output_does_not_fault_at_module_scope() {
         echo_map("null")
     ));
     let mut host = MockProcHost::default();
-    assert!(proc
-        .map(&rows(), &empty_response(), &mut host, NULL_CONFIG)
-        .is_ok());
+    assert!(proc.map(&rows(), &mut host, NULL_CONFIG).is_ok());
 }
 
 // -----------------------------------------------------------------------
@@ -1031,10 +932,10 @@ fn loads(body: impl FnOnce()) -> u32 {
 
 /// Distinguishable module bodies: same exports, different sizes, so a rewrite
 /// changes both halves of the stamp.
-const SMALL: &str = "export function map(rows, response) { return []; }";
+const SMALL: &str = "export function map(rows) { return []; }";
 const LARGE: &str = "
   const padding = 'padding that makes the file a different length';
-  export function map(rows, response) { return padding.length ? [] : []; }";
+  export function map(rows) { return padding.length ? [] : []; }";
 
 fn write_module(path: &Path, src: &str) {
     fs::write(path, src).expect("write module");
@@ -1100,11 +1001,7 @@ fn a_pooled_procedure_sees_each_calls_own_config() {
     let mut first = checkout(&path).expect("first");
     let cfg_a = r#"{"fields":["a"],"force":true,"config":{"k":1}}"#;
     assert_eq!(
-        extra(
-            &first
-                .map(&rows(), &empty_response(), &mut host, cfg_a)
-                .expect("map")
-        ),
+        extra(&first.map(&rows(), &mut host, cfg_a).expect("map")),
         serde_json::json!({ "fields": ["a"], "force": true, "config": { "k": 1 } })
     );
     drop(first);
@@ -1112,11 +1009,7 @@ fn a_pooled_procedure_sees_each_calls_own_config() {
     let mut second = checkout(&path).expect("second");
     let cfg_b = r#"{"fields":[],"force":false,"config":null}"#;
     assert_eq!(
-        extra(
-            &second
-                .map(&rows(), &empty_response(), &mut host, cfg_b)
-                .expect("map")
-        ),
+        extra(&second.map(&rows(), &mut host, cfg_b).expect("map")),
         serde_json::json!({ "fields": [], "force": false, "config": null })
     );
 }
@@ -1137,7 +1030,7 @@ fn load_from_path_matches_load_source() {
     write_module(&path, SMALL);
     assert_eq!(
         JsProcedure::load(&path).expect("loads from path").shape(),
-        ProcShape::MapOnly
+        ProcShape::Map
     );
 }
 

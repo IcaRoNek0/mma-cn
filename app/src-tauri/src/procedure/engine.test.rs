@@ -97,6 +97,8 @@ type MapFn = Arc<dyn Fn(&[Location]) -> AppResult<Vec<PatchEntry>> + Send + Sync
 
 struct MockProc {
     shape: ProcShape,
+    /// A `run` that issues one request before answering, as a fetching procedure does.
+    fetches: bool,
     seen: Arc<Mutex<Vec<Vec<u32>>>>,
     on_map: MapFn,
     /// Reported to the host from `map`, proving `map` reaches the real host.
@@ -118,18 +120,9 @@ impl Procedure for MockProc {
     fn shape(&self) -> ProcShape {
         self.shape
     }
-    fn request(&mut self, _batch: &[u8], _config: &str) -> AppResult<HttpRequestSpec> {
-        Ok(HttpRequestSpec {
-            method: "GET".into(),
-            url: "https://example.invalid/".into(),
-            headers: Vec::new(),
-            body: None,
-        })
-    }
     fn map(
         &mut self,
         batch: &[u8],
-        _response: &HttpResponse,
         host: &mut dyn ProcHost,
         _config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
@@ -141,9 +134,17 @@ impl Procedure for MockProc {
     fn run(
         &mut self,
         batch: &[u8],
-        _host: &mut dyn ProcHost,
+        host: &mut dyn ProcHost,
         _config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
+        if self.fetches {
+            host.fetch(&HttpRequestSpec {
+                method: "GET".into(),
+                url: "https://example.invalid/".into(),
+                headers: Vec::new(),
+                body: None,
+            })?;
+        }
         self.handle(batch)
     }
 }
@@ -168,10 +169,25 @@ fn recording_sink() -> (Arc<ProgressSink>, Arc<Mutex<Vec<ProcedureProgress>>>) {
 
 impl Harness {
     fn new(shape: ProcShape, on_map: MapFn, fetch: SendFn) -> Self {
-        Harness::with_fail(shape, on_map, fetch, None)
+        Harness::build(shape, false, on_map, fetch, None)
+    }
+
+    /// A `run` procedure that makes one request per batch through the host.
+    fn fetching(on_map: MapFn, fetch: SendFn) -> Self {
+        Harness::build(ProcShape::Run, true, on_map, fetch, None)
     }
 
     fn with_fail(shape: ProcShape, on_map: MapFn, fetch: SendFn, fail_id: Option<u32>) -> Self {
+        Harness::build(shape, false, on_map, fetch, fail_id)
+    }
+
+    fn build(
+        shape: ProcShape,
+        fetches: bool,
+        on_map: MapFn,
+        fetch: SendFn,
+        fail_id: Option<u32>,
+    ) -> Self {
         let seen: Arc<Mutex<Vec<Vec<u32>>>> = Arc::new(Mutex::new(Vec::new()));
         let seen_f = seen.clone();
         Harness {
@@ -179,6 +195,7 @@ impl Harness {
                 factory: Box::new(move |_| {
                     Ok(Box::new(MockProc {
                         shape,
+                        fetches,
                         seen: seen_f.clone(),
                         on_map: on_map.clone(),
                         fail_id,
@@ -194,7 +211,7 @@ impl Harness {
 
     fn map_only(on_map: MapFn) -> Self {
         Harness::new(
-            ProcShape::MapOnly,
+            ProcShape::Map,
             on_map,
             sync_fetch(|_| Err(AppError("no fetch expected".into()))),
         )
@@ -614,7 +631,7 @@ fn run_retry(retry: RetrySpec, statuses: Vec<u16>) -> u32 {
     let mut d = decl("retrier", BatchMode::PerRow);
     d.procedure.policy.retry = Some(retry);
     let (fetch, calls) = status_sequence(statuses);
-    let h = Harness::new(ProcShape::RequestMap, Arc::new(|_| Ok(Vec::new())), fetch);
+    let h = Harness::fetching(Arc::new(|_| Ok(Vec::new())), fetch);
     run_provider(&h.ctx(&state, &map_id), &d).unwrap();
     calls.load(Ordering::Relaxed)
 }
@@ -671,7 +688,7 @@ fn run_without_retry_spec(statuses: Vec<u16>) -> u32 {
     let (state, map_id) = setup(&[loc(1, 0.0, 0.0)]);
     let d = decl("defaulted", BatchMode::PerRow);
     let (fetch, calls) = status_sequence(statuses);
-    let h = Harness::new(ProcShape::RequestMap, Arc::new(|_| Ok(Vec::new())), fetch);
+    let h = Harness::fetching(Arc::new(|_| Ok(Vec::new())), fetch);
     run_provider(&h.ctx(&state, &map_id), &d).unwrap();
     calls.load(Ordering::Relaxed)
 }
@@ -698,7 +715,7 @@ fn no_retry_spec_leaves_a_settled_status_alone() {
 // Rate limiting
 // -----------------------------------------------------------------------
 
-/// Runs `rows` locations as chunks of `chunk` through a RequestMap provider at the
+/// Runs `rows` locations as chunks of `chunk` through a fetching provider at the
 /// given rate spec and returns how long the whole provider took.
 fn timed_chunk_run(rows: u32, chunk: u32, rate: RateSpec) -> u128 {
     let locs: Vec<Location> = (1..=rows).map(|i| loc(i, i as f64 * 0.001, 0.0)).collect();
@@ -706,7 +723,7 @@ fn timed_chunk_run(rows: u32, chunk: u32, rate: RateSpec) -> u128 {
     let mut d = decl("rated", BatchMode::Chunk { size: chunk });
     d.procedure.policy.rate = Some(rate);
     let (fetch, _) = status_sequence(vec![200]);
-    let h = Harness::new(ProcShape::RequestMap, Arc::new(|_| Ok(Vec::new())), fetch);
+    let h = Harness::fetching(Arc::new(|_| Ok(Vec::new())), fetch);
     let t = Instant::now();
     run_provider(&h.ctx(&state, &map_id), &d).unwrap();
     t.elapsed().as_millis()
@@ -1215,7 +1232,7 @@ fn a_deduped_failure_is_every_sharers_failure() {
     );
     // The procedure fails the representative of the shared pano, whichever row that is.
     let h = Harness::with_fail(
-        ProcShape::MapOnly,
+        ProcShape::Map,
         Arc::new(|_rows: &[Location]| Ok(Vec::new())),
         sync_fetch(|_| Err(AppError("no fetch expected".into()))),
         Some(1),
@@ -1246,7 +1263,7 @@ fn a_row_the_procedure_fails_is_delivered_by_id() {
     let (state, map_id) = setup(&locs);
     let d = decl("partial", BatchMode::Chunk { size: 10 });
     let h = Harness::with_fail(
-        ProcShape::MapOnly,
+        ProcShape::Map,
         patch_extra_all(r#"{"a":1}"#),
         sync_fetch(|_| Err(AppError("no fetch expected".into()))),
         Some(2),
@@ -1332,7 +1349,7 @@ fn a_map_only_procedure_reaches_the_real_host() {
     let d = decl("maponly-failer", BatchMode::PerRow);
     let (sink, events) = recording_sink();
     let h = Harness::with_fail(
-        ProcShape::MapOnly,
+        ProcShape::Map,
         Arc::new(|_| Ok(Vec::new())),
         sync_fetch(|_| Err(AppError("no fetch expected".into()))),
         Some(1),
@@ -1392,12 +1409,11 @@ struct CfgProc {
 
 impl Procedure for CfgProc {
     fn shape(&self) -> ProcShape {
-        ProcShape::MapOnly
+        ProcShape::Map
     }
     fn map(
         &mut self,
         _batch: &[u8],
-        _response: &HttpResponse,
         _host: &mut dyn ProcHost,
         config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
@@ -1469,7 +1485,8 @@ fn a_partly_started_provider_runs_on_the_instances_that_did_start() {
             return Err(AppError("first instance dies".into()));
         }
         Ok(Box::new(MockProc {
-            shape: ProcShape::MapOnly,
+            shape: ProcShape::Map,
+            fetches: false,
             seen: seen.clone(),
             on_map: patch_all("{}"),
             fail_id: None,
@@ -1654,13 +1671,12 @@ fn map_only_chunks_are_cut_to_keep_every_worker_busy() {
 }
 
 #[test]
-fn request_map_chunks_keep_the_declared_size() {
+fn fetching_chunks_keep_the_declared_size() {
     let locs: Vec<Location> = (0..PAGE_SIZE as u32)
         .map(|i| loc(i + 1, 1.0, 2.0))
         .collect();
     let (state, map_id) = setup(&locs);
-    let h = Harness::new(
-        ProcShape::RequestMap,
+    let h = Harness::fetching(
         patch_extra_all(r#"{"a":1}"#),
         sync_fetch(|_| {
             Ok(HttpResponse {
@@ -2023,6 +2039,7 @@ fn run_query_surfaces_a_module_without_the_export() {
         factory: Box::new(|_| {
             Ok(Box::new(MockProc {
                 shape: ProcShape::Run,
+                fetches: false,
                 seen: Arc::new(Mutex::new(Vec::new())),
                 on_map: patch_all("{}"),
                 fail_id: None,
@@ -2473,8 +2490,7 @@ fn eight_rows() -> Vec<Location> {
 fn a_working_provider_reports_its_requests_in_flight() {
     let peak = Arc::new(AtomicU32::new(0));
     let (state, map_id) = setup(&eight_rows());
-    let h = Harness::new(
-        ProcShape::RequestMap,
+    let h = Harness::fetching(
         patch_all("{}"),
         barrier_fetch(u32::MAX, Duration::from_millis(800), peak.clone()),
     );
@@ -2553,8 +2569,7 @@ fn a_query_in_flight_is_reported_under_its_entry() {
 fn a_cancelled_run_leaves_nothing_reported() {
     let peak = Arc::new(AtomicU32::new(0));
     let (state, map_id) = setup(&eight_rows());
-    let h = Harness::new(
-        ProcShape::RequestMap,
+    let h = Harness::fetching(
         patch_all("{}"),
         barrier_fetch(u32::MAX, Duration::from_millis(800), peak),
     );

@@ -1,4 +1,4 @@
-// Historical weather, RequestMap shape.
+// Historical weather: one Open-Meteo archive request per batch.
 //
 // Open-Meteo accepts comma-joined coordinates with per-coordinate dates, so one batch of
 // 100 covers 100 arbitrary days. `timezone=GMT` makes the hourly stamps UTC, which is the
@@ -44,7 +44,7 @@ function utcParts(secs: number): { date: string; hourKey: string } {
 }
 
 /** A row is usable only with a numeric `extra.datetime` inside the JS Date range.
- *  Unusable rows are dropped from the request, so `request` and `map` must agree. */
+ *  Unusable rows are dropped from the request, so the request and the patches must agree. */
 function usableSeconds(row: Location): number | null {
 	const secs = row.extra?.datetime;
 	if (typeof secs !== "number") return null;
@@ -53,7 +53,7 @@ function usableSeconds(row: Location): number | null {
 	return secs;
 }
 
-export function request(rows: Location[], cfg: ProcedureConfig<unknown>): ProcedureRequest {
+function archiveRequest(rows: Location[], cfg: ProcedureConfig<unknown>): ProcedureRequest {
 	const lat: string[] = [];
 	const lng: string[] = [];
 	const dates: string[] = [];
@@ -90,7 +90,11 @@ function parseResults(body: string): { hourly?: Hourly }[] {
 
 const decoder = new TextDecoder();
 
-export function map(
+export function run(rows: Location[], cfg: ProcedureConfig<unknown>): Update<LocationPatch>[] {
+	return patches(rows, mma.fetch(archiveRequest(rows, cfg)), cfg);
+}
+
+function patches(
 	rows: Location[],
 	response: ProcedureResponse,
 	cfg: ProcedureConfig<unknown>,

@@ -1,4 +1,4 @@
-// Sun position, MapOnly: pure compute over lat/lng and `extra.datetime`.
+// Sun position, map shape: pure compute over lat/lng and `extra.datetime`.
 
 import SunCalc from "suncalc";
 import type {
@@ -15,7 +15,6 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 
 export function map(
 	rows: Location[],
-	_response: unknown,
 	cfg: ProcedureConfig<unknown>,
 ): Update<LocationPatch>[] {
 	const fields = cfg.fields.length > 0 ? new Set(cfg.fields) : null;
