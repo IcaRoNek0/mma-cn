@@ -239,7 +239,7 @@ DEFAULT_DUPLICATE_SCORE: "tagCount + has(panoId) + loadAsPanoId + (heading != 0)
 `unstable` · since v0.10.7
 
 ```ts
-EFFECT_CALLS: readonly ["fetch", "fetchMany", "panos", "sidecar"]
+EFFECT_CALLS: readonly ["fetch", "panos", "sidecar"]
 ```
 
 ### ERROR_CODES

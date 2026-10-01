@@ -37,7 +37,6 @@ function runProc(rows, names, { abort = false } = {}) {
 		aborted: () => abort,
 		log: () => {},
 		fetch: () => assert.fail("subdivision must not fetch"),
-		fetchMany: () => assert.fail("subdivision must not fetch"),
 		sidecar: () => assert.fail("subdivision must not call a sidecar"),
 	};
 	const patches = bundle.run(rows);

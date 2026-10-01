@@ -33,7 +33,7 @@ fn extra(patches: &[PatchEntry]) -> Json {
 #[derive(Default)]
 struct MockProcHost {
     requests: Vec<HttpRequestSpec>,
-    /// Requests per `fetch_many` call, so a test can tell one batched call from many.
+    /// Requests per `fetch` call, so a test can tell one batched call from many.
     many: Vec<usize>,
     /// Canned answer; without one the mock echoes the request URL back as the body.
     response: Option<HttpResponse>,
@@ -55,19 +55,20 @@ struct MockProcHost {
 }
 
 impl ProcHost for MockProcHost {
-    fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse> {
-        self.requests.push(req.clone());
-        if self.refuse.contains(&req.url) {
-            return Err(AppError(format!("mock refused {}", req.url)));
-        }
-        Ok(self.response.clone().unwrap_or(HttpResponse {
-            status: 200,
-            body: req.url.clone().into_bytes(),
-        }))
-    }
-    fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
+    fn fetch(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
         self.many.push(reqs.len());
-        reqs.iter().map(|r| self.fetch(r)).collect()
+        reqs.iter()
+            .map(|req| {
+                self.requests.push(req.clone());
+                if self.refuse.contains(&req.url) {
+                    return Err(AppError(format!("mock refused {}", req.url)));
+                }
+                Ok(self.response.clone().unwrap_or(HttpResponse {
+                    status: 200,
+                    body: req.url.clone().into_bytes(),
+                }))
+            })
+            .collect()
     }
     fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
         vec![PanoAnswer::Failed; queries.len()]
@@ -381,11 +382,11 @@ fn a_run_shape_reaches_fetch() {
 }
 
 #[test]
-fn fetch_many_answers_in_order_and_reports_a_failure_as_status_zero() {
+fn a_list_fetch_answers_in_order_and_reports_a_failure_as_status_zero() {
     let mut proc = loaded(
         "export function run(rows) {
            const d = new TextDecoder();
-           const rs = mma.fetchMany([
+           const rs = mma.fetch([
              { method: 'GET', url: 'https://example.test/a' },
              { method: 'GET', url: 'https://example.test/b' },
              { method: 'GET', url: 'https://example.test/c' },
@@ -402,7 +403,7 @@ fn fetch_many_answers_in_order_and_reports_a_failure_as_status_zero() {
     let patches = proc
         .run(&rows(), &mut host, NULL_CONFIG)
         .expect("run succeeds");
-    // One batched call, not three serial ones: that is the whole point of fetchMany.
+    // One batched call, not three serial ones: that is the whole point of a list.
     assert_eq!(host.many, vec![3]);
     assert_eq!(
         extra(&patches),
@@ -698,7 +699,7 @@ const EFFECTS: [(&str, &str); 3] = [
         "fetch",
         "mma.fetch({ method: 'GET', url: 'https://x.test/' })",
     ),
-    ("fetchMany", "mma.fetchMany([])"),
+    ("panos", "mma.panos([])"),
     ("sidecar", "mma.sidecar('p', 'c', '{}')"),
 ];
 

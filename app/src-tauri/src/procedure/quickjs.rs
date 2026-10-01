@@ -2,15 +2,15 @@
 //! through the `Procedure` shapes. No provider logic lives here.
 //!
 //! The module's named exports are the entry points: `map` (Map) or `run` (Run).
-//! `query` is a second optional export outside the shapes. Each entry point receives its run configuration as a trailing argument.
-//! The boundary is JSON: a batch arrives as `JSON.parse`d rows and every entry point
-//! answers with plain JS values.
+//! `query` is a second optional export outside the shapes. Each entry point receives its
+//! run configuration as a trailing argument. The boundary is JSON: a batch arrives as
+//! `JSON.parse`d rows and every entry point answers with plain JS values.
 //!
-//! Host services live on a global `mma` object: `fetch`, `fetchMany`, `classify`,
-//! `sidecar`, `log`, `progress`, `fail`, `aborted`. They are synchronous -- the guest
-//! blocks while the host works, which is how a procedure gets request width out of
-//! `fetchMany`. `fetch`, `fetchMany` and `sidecar` reach outside the process, so they
-//! are limited to `run` and `query`; the rest are open to `map` as well.
+//! Host services live on a global `mma` object: `fetch`, `panos`, `classify`, `sidecar`,
+//! `log`, `progress`, `fail`, `aborted`. They are synchronous -- the guest blocks while
+//! the host works, which is how a procedure gets request width out of handing `fetch` a
+//! list. `fetch`, `panos` and `sidecar` reach outside the process, so they are limited to
+//! `run` and `query`; the rest are open to `map` as well.
 //!
 //! The `mma` natives have to be `'static` while the host is only borrowed for one
 //! call, so the guest runs on a scoped thread and the natives reach the host over a
@@ -188,8 +188,7 @@ const PRELUDE: &str = r#"
 // ---------------------------------------------------------------------------
 
 enum HostReq {
-    Fetch(HttpRequestSpec),
-    FetchMany(Vec<HttpRequestSpec>),
+    Fetch(Vec<HttpRequestSpec>),
     /// Pano lookups, by id over GetMetadata and by search over SingleImageSearch; the
     /// host owns the requests end to end.
     Panos(Vec<PanoQuery>),
@@ -223,8 +222,7 @@ enum HostReq {
 }
 
 enum HostRep {
-    Fetch(AppResult<HttpResponse>),
-    FetchMany(Vec<AppResult<HttpResponse>>),
+    Fetch(Vec<AppResult<HttpResponse>>),
     Panos(Vec<PanoAnswer>),
     Classify(AppResult<Option<String>>),
     Neighbors(AppResult<String>),
@@ -260,8 +258,7 @@ impl Bridge {
 
 fn service(host: &mut dyn ProcHost, stream: &mut Option<SidecarStream>, req: HostReq) -> HostRep {
     match req {
-        HostReq::Fetch(spec) => HostRep::Fetch(host.fetch(&spec)),
-        HostReq::FetchMany(specs) => HostRep::FetchMany(host.fetch_many(&specs)),
+        HostReq::Fetch(specs) => HostRep::Fetch(host.fetch(&specs)),
         HostReq::Panos(queries) => HostRep::Panos(host.panos(&queries)),
         HostReq::Classify { dataset, lat, lng } => {
             HostRep::Classify(host.classify(&dataset, lat, lng))
@@ -569,7 +566,7 @@ fn install_mma<'js>(
 }
 
 /// The host calls only `run`-shaped procedures may use.
-pub(crate) const EFFECT_CALLS: &[&str] = &["fetch", "fetchMany", "panos", "sidecar"];
+pub(crate) const EFFECT_CALLS: &[&str] = &["fetch", "panos", "sidecar"];
 /// The host calls every procedure shape gets. Together with [`EFFECT_CALLS`] this is
 /// the whole `mma` host surface; `mma_surface_is_identical_with_and_without_a_host`
 /// pins both lists to what [`install_host_calls`] actually sets.
@@ -594,40 +591,33 @@ fn install_host_calls<'js>(
             "fetch",
             Function::new(
                 ctx.clone(),
-                value_fn(move |ctx: Ctx<'_>, req: Value<'_>| {
-                    let spec = read_request(&req).map_err(|e| throw(&ctx, e))?;
-                    match b.call(HostReq::Fetch(spec)) {
-                        Ok(HostRep::Fetch(Ok(r))) => response_to_js(&ctx, &r),
-                        Ok(HostRep::Fetch(Err(e))) | Err(e) => Err(throw(&ctx, e)),
-                        Ok(_) => Err(throw(&ctx, "host answered the wrong call")),
-                    }
-                }),
-            )?,
-        )?;
-        let b = bridge.clone();
-        obj.set(
-            "fetchMany",
-            Function::new(
-                ctx.clone(),
-                value_fn(move |ctx: Ctx<'_>, reqs: Value<'_>| {
-                    let arr = Array::from_value(reqs)
-                        .map_err(|_| throw(&ctx, "mma.fetchMany expects an array of requests"))?;
-                    let mut specs = Vec::with_capacity(arr.len());
-                    for item in arr.iter::<Value>() {
-                        specs.push(read_request(&item?).map_err(|e| throw(&ctx, e))?);
-                    }
-                    let results = match b.call(HostReq::FetchMany(specs)) {
-                        Ok(HostRep::FetchMany(r)) => r,
+                value_fn(move |ctx: Ctx<'_>, arg: Value<'_>| {
+                    let list = arg.as_array().cloned();
+                    let specs = match &list {
+                        Some(arr) => arr
+                            .iter::<Value>()
+                            .map(|item| read_request(&item?).map_err(|e| throw(&ctx, e)))
+                            .collect::<rquickjs::Result<Vec<_>>>()?,
+                        None => vec![read_request(&arg).map_err(|e| throw(&ctx, e))?],
+                    };
+                    let mut results = match b.call(HostReq::Fetch(specs)) {
+                        Ok(HostRep::Fetch(r)) => r,
                         Ok(_) => return Err(throw(&ctx, "host answered the wrong call")),
                         Err(e) => return Err(throw(&ctx, e)),
                     };
+                    if list.is_none() {
+                        return match results.pop().expect("one request answers once") {
+                            Ok(r) => response_to_js(&ctx, &r),
+                            Err(e) => Err(throw(&ctx, e)),
+                        };
+                    }
                     let out = Array::new(ctx.clone())?;
                     for (i, r) in results.iter().enumerate() {
                         let resp = match r {
                             Ok(resp) => response_to_js(&ctx, resp)?,
                             Err(e) => {
                                 if e.0 != fetch::CANCELLED {
-                                    log::debug!("[procedure] fetchMany: {e}");
+                                    log::debug!("[procedure] fetch: {e}");
                                 }
                                 response_to_js(&ctx, &failed_response())?
                             }

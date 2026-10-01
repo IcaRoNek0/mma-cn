@@ -91,10 +91,10 @@ fn bodies(res: Vec<AppResult<HttpResponse>>) -> Vec<String> {
 }
 
 #[test]
-fn fetch_many_puts_every_request_in_flight_at_once() {
+fn fetch_puts_every_request_in_flight_at_once() {
     let peak = Arc::new(AtomicU32::new(0));
     let s = session(barrier_send(8, Duration::from_secs(5), peak.clone()));
-    let out = s.fetch_many(&endpoint("e", Policy::default()), 1, &gets(8));
+    let out = s.fetch(&endpoint("e", Policy::default()), 1, &gets(8));
     assert_eq!(peak.load(Ordering::SeqCst), 8);
     // Answers come back in request order, not completion order.
     assert_eq!(
@@ -106,7 +106,7 @@ fn fetch_many_puts_every_request_in_flight_at_once() {
 }
 
 #[test]
-fn fetch_many_holds_the_declared_inflight_ceiling() {
+fn fetch_holds_the_declared_inflight_ceiling() {
     let peak = Arc::new(AtomicU32::new(0));
     // Nothing releases the barrier, so every request waits out the same short window:
     // whatever runs together is what the lane allows.
@@ -115,7 +115,7 @@ fn fetch_many_holds_the_declared_inflight_ceiling() {
         Duration::from_millis(150),
         peak.clone(),
     ));
-    let out = s.fetch_many(&endpoint("e", wide(8)), 1, &gets(20));
+    let out = s.fetch(&endpoint("e", wide(8)), 1, &gets(20));
     assert_eq!(out.len(), 20);
     assert_eq!(peak.load(Ordering::SeqCst), 8);
 }
@@ -129,7 +129,7 @@ fn an_endpoint_declaring_no_inflight_takes_the_default_width() {
         peak.clone(),
     ));
     let n = DEFAULT_INFLIGHT as usize + 12;
-    let out = s.fetch_many(&endpoint("e", Policy::default()), 1, &gets(n));
+    let out = s.fetch(&endpoint("e", Policy::default()), 1, &gets(n));
     assert_eq!(out.len(), n);
     assert_eq!(peak.load(Ordering::SeqCst), DEFAULT_INFLIGHT);
 }
@@ -149,7 +149,7 @@ fn threads_sharing_a_session_do_not_widen_its_lane() {
     thread::scope(|scope| {
         for _ in 0..2 {
             let (s, ep, reqs) = (&s, &ep, &reqs);
-            scope.spawn(move || assert_eq!(s.fetch_many(ep, 1, reqs).len(), 10));
+            scope.spawn(move || assert_eq!(s.fetch(ep, 1, reqs).len(), 10));
         }
     });
     assert_eq!(peak.load(Ordering::SeqCst), 6);
@@ -169,7 +169,7 @@ fn two_endpoints_in_one_session_do_not_share_a_lane() {
     thread::scope(|scope| {
         for ep in [&a, &b] {
             let (s, reqs) = (&s, &reqs);
-            scope.spawn(move || assert_eq!(s.fetch_many(ep, 1, reqs).len(), 8));
+            scope.spawn(move || assert_eq!(s.fetch(ep, 1, reqs).len(), 8));
         }
     });
     assert_eq!(peak.load(Ordering::SeqCst), 8);
@@ -195,14 +195,14 @@ fn a_second_session_is_not_held_up_by_a_full_first_one() {
     thread::scope(|scope| {
         for s in [&first, &second] {
             let (ep, reqs) = (&ep, &reqs);
-            scope.spawn(move || assert_eq!(s.fetch_many(ep, 1, reqs).len(), 4));
+            scope.spawn(move || assert_eq!(s.fetch(ep, 1, reqs).len(), 4));
         }
     });
     assert_eq!(peak.load(Ordering::SeqCst), 8);
 }
 
 #[test]
-fn fetch_many_retries_a_declared_status_per_request() {
+fn fetch_retries_a_declared_status_per_request() {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
     let s = session(sync_send(move |req: HttpRequestSpec| {
@@ -226,7 +226,7 @@ fn fetch_many_retries_a_declared_status_per_request() {
             ..Policy::default()
         },
     );
-    let out = s.fetch_many(&ep, 1, &gets(2));
+    let out = s.fetch(&ep, 1, &gets(2));
 
     assert_eq!(
         bodies(out),
@@ -240,7 +240,7 @@ fn fetch_many_retries_a_declared_status_per_request() {
 }
 
 #[test]
-fn fetch_many_pays_the_rate_limiter_per_request() {
+fn fetch_pays_the_rate_limiter_per_request() {
     // Two tokens up front, then one every 2ms: eight requests cannot beat 12ms.
     let ep = endpoint(
         "e",
@@ -254,7 +254,7 @@ fn fetch_many_pays_the_rate_limiter_per_request() {
         },
     );
     let start = Instant::now();
-    let out = session(ok_send()).fetch_many(&ep, 1, &gets(8));
+    let out = session(ok_send()).fetch(&ep, 1, &gets(8));
     assert_eq!(out.len(), 8);
     assert!(
         start.elapsed() >= Duration::from_millis(10),
@@ -279,7 +279,7 @@ fn a_cancelled_session_declines_every_request() {
         cancel,
     );
     for n in [1, 4] {
-        let out = s.fetch_many(&endpoint("e", Policy::default()), 1, &gets(n));
+        let out = s.fetch(&endpoint("e", Policy::default()), 1, &gets(n));
         assert_eq!(out.len(), n);
         assert!(
             out.iter().all(|r| matches!(r, Err(e) if e.0 == CANCELLED)),

@@ -19,7 +19,6 @@ use std::mem;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
-use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::sync::PoisonError;
@@ -1408,14 +1407,8 @@ struct EngineHost<'a> {
 }
 
 impl ProcHost for EngineHost<'_> {
-    fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse> {
-        self.fetch_many(slice::from_ref(req))
-            .pop()
-            .expect("one request answers once")
-    }
-
-    fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        self.session.fetch_many(self.endpoint, self.rate_cost, reqs)
+    fn fetch(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
+        self.session.fetch(self.endpoint, self.rate_cost, reqs)
     }
 
     fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
@@ -1470,14 +1463,8 @@ struct QueryHost {
 }
 
 impl ProcHost for QueryHost {
-    fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse> {
-        self.fetch_many(slice::from_ref(req))
-            .pop()
-            .expect("one request answers once")
-    }
-
-    fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        self.session.fetch_many(&self.endpoint, 1, reqs)
+    fn fetch(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
+        self.session.fetch(&self.endpoint, 1, reqs)
     }
 
     /// Search answers stream out the moment each lands, under its query index.

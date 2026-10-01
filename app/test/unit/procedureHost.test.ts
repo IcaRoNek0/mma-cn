@@ -8,7 +8,6 @@ import type { ProcedureHost } from "@/lib/data/procedureHost";
 // If either side drifts, one of the two suites goes red.
 const surface = {
 	fetch: 0,
-	fetchMany: 0,
 	panos: 0,
 	sidecar: 0,
 	classify: 0,

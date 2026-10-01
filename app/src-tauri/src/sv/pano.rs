@@ -640,7 +640,7 @@ fn fetch_round(
         .iter()
         .map(|s| metadata_request(&panos[s.start..s.start + s.len]))
         .collect();
-    let answers = session.fetch_many(&GET_METADATA, 1, &reqs);
+    let answers = session.fetch(&GET_METADATA, 1, &reqs);
     let mut retry = Vec::new();
     for (span, answer) in spans.iter().zip(answers) {
         let ok = answer.ok().filter(|r| (200..300).contains(&r.status));

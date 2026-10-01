@@ -228,7 +228,7 @@ export const OFFICIAL_ID_PATTERN = "^[-_A-Za-z0-9]{21}[AQgw]$" as const;
 export const CLEARABLE_BUILTINS = ["panoId"] as const;
 
 /** @unstable */
-export const EFFECT_CALLS = ["fetch","fetchMany","panos","sidecar"] as const;
+export const EFFECT_CALLS = ["fetch","panos","sidecar"] as const;
 
 /** @unstable */
 export const PLAIN_CALLS = ["classify","neighbors","progress","fail","emit","aborted"] as const;

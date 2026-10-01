@@ -419,7 +419,7 @@ impl Session {
     }
 
     /// [`Session::fetch_stream`], answered in request order once everything is done.
-    pub fn fetch_many(
+    pub fn fetch(
         &self,
         endpoint: &Endpoint,
         cost: u32,

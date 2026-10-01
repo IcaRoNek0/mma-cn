@@ -138,12 +138,7 @@ impl Procedure for MockProc {
         _config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
         if self.fetches {
-            host.fetch(&HttpRequestSpec {
-                method: "GET".into(),
-                url: "https://example.invalid/".into(),
-                headers: Vec::new(),
-                body: None,
-            })?;
+            fetch_one(host, "https://example.invalid/")?;
         }
         self.handle(batch)
     }
@@ -1153,12 +1148,7 @@ impl Procedure for RunProc {
         _config: &str,
     ) -> AppResult<Vec<PatchEntry>> {
         let rows = batch_rows(batch)?;
-        host.fetch(&HttpRequestSpec {
-            method: "GET".into(),
-            url: "https://example.invalid/".into(),
-            headers: Vec::new(),
-            body: None,
-        })?;
+        fetch_one(host, "https://example.invalid/")?;
         self.hits.fetch_add(1, Ordering::Relaxed);
         host.progress(rows.len() as u32);
         Ok(rows
@@ -1846,12 +1836,7 @@ impl Procedure for QueryProc {
         ProcShape::Run
     }
     fn query(&mut self, input: &[u8], host: &mut dyn ProcHost, config: &str) -> AppResult<Vec<u8>> {
-        let fetched = host.fetch(&HttpRequestSpec {
-            method: "GET".into(),
-            url: "https://example.invalid/q".into(),
-            headers: Vec::new(),
-            body: None,
-        })?;
+        let fetched = fetch_one(host, "https://example.invalid/q")?;
         // Progress and failures are no-ops here; calling them proves they do not panic.
         host.progress(1);
         host.fail(1);
@@ -1975,11 +1960,7 @@ impl Procedure for WideQueryProc {
         host: &mut dyn ProcHost,
         _config: &str,
     ) -> AppResult<Vec<u8>> {
-        Ok(host
-            .fetch_many(&gets(self.0))
-            .len()
-            .to_string()
-            .into_bytes())
+        Ok(host.fetch(&gets(self.0)).len().to_string().into_bytes())
     }
 }
 
@@ -2154,8 +2135,15 @@ fn an_untokened_query_answers_with_nothing_streamed() {
 }
 
 // -----------------------------------------------------------------------
-// fetch_many
+// Requests
 // -----------------------------------------------------------------------
+
+/// One request through the host, the way a procedure's single `mma.fetch` goes.
+fn fetch_one(host: &mut dyn ProcHost, url: &str) -> AppResult<HttpResponse> {
+    host.fetch(&[get(url)])
+        .pop()
+        .expect("one request answers once")
+}
 
 fn get(url: &str) -> HttpRequestSpec {
     HttpRequestSpec {

@@ -311,7 +311,7 @@ declare const OFFICIAL_ID_PATTERN: "^[-_A-Za-z0-9]{21}[AQgw]$";
 /** @unstable */
 declare const CLEARABLE_BUILTINS: readonly ["panoId"];
 /** @unstable */
-declare const EFFECT_CALLS: readonly ["fetch", "fetchMany", "panos", "sidecar"];
+declare const EFFECT_CALLS: readonly ["fetch", "panos", "sidecar"];
 /** @unstable */
 declare const PLAIN_CALLS: readonly ["classify", "neighbors", "progress", "fail", "emit", "aborted"];
 /** @unstable */
@@ -2926,8 +2926,8 @@ type VirtualTag = {
 /**
  * The surface a procedure module runs against: the global `mma` object and the values
  * that cross the boundary. Every host call is synchronous -- the guest blocks while the
- * host works, which is how `fetchMany` (never a loop over `fetch`) buys a procedure its
- * request concurrency.
+ * host works, which is how handing `fetch` a list (never a loop of single fetches) buys a
+ * procedure its request concurrency.
  *
  * A procedure is an ES module bundled to one file. Its named exports are the entry
  * points: `map` (pure compute, no effectful calls) or `run`, plus the optional `query`.
@@ -2959,8 +2959,11 @@ export interface ProcedureNeighbor {
 }
 /** @unstable */
 interface ProcedureHost {
+    /** One request, or every request of a list at once, answered in order. A single
+     *  request that cannot be issued throws; inside a list it answers `status: 0`, so the
+     *  rest survive. */
     fetch(req: ProcedureRequest): ProcedureResponse;
-    fetchMany(reqs: ProcedureRequest[]): ProcedureResponse[];
+    fetch(reqs: ProcedureRequest[]): ProcedureResponse[];
     /** Every query resolved to its pano, aligned to `queries`: an id query over
      *  GetMetadata (deduped, batched, bisection-retried), a search query over
      *  SingleImageSearch. `skipped` is a query the host never answered: an aborted run,
@@ -2993,8 +2996,8 @@ interface ProcedureHost {
     aborted(): boolean;
 }
 declare global {
-    /** Reachable inside a procedure module only. `fetch`, `fetchMany`, `panos` and
-     *  `sidecar` are detached outside `run` and `query`; calling one elsewhere throws. */
+    /** Reachable inside a procedure module only. `fetch`, `panos` and `sidecar` are
+     *  detached outside `run` and `query`; calling one elsewhere throws. */
     const mma: ProcedureHost;
 }
 

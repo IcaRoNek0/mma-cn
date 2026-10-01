@@ -28,16 +28,13 @@ pub enum ProcShape {
 }
 
 /// Host services exposed to a procedure. `map` and `run` both get one; only `run`
-/// may reach the effectful ones (`fetch`, `sidecar`). Rate limiting and abort are
+/// may reach the effectful ones (`fetch`, `panos`, `sidecar`). Rate limiting and abort are
 /// enforced by the implementation, not the procedure.
 pub trait ProcHost {
-    fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse>;
     /// Every request at once, answered in order. The host decides how many are in
-    /// flight; a procedure that has several calls to make issues them here instead
-    /// of serializing them itself. One request failing does not fail the rest.
-    fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        reqs.iter().map(|r| self.fetch(r)).collect()
-    }
+    /// flight; a procedure that has several calls to make issues them here together
+    /// instead of serializing them itself. One request failing does not fail the rest.
+    fn fetch(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>>;
     /// Every pano lookup, answered aligned to `queries`.
     fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer>;
     /// Where this host delivers partial results, when its caller listens for them.
