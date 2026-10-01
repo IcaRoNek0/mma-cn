@@ -853,7 +853,7 @@ declare const commands$1: {
     storeListMaps: () => Promise<MapMeta[]>;
     /**  Fetch a single map's metadata by ID. Returns `null` if not found. @unstable */
     storeGetMap: (id: string) => Promise<MapMeta | null>;
-    /**  Create a new empty map with default settings. Returns the full metadata. @unstable */
+    /**  Create a new empty map with the preferences new maps start from. Returns the full metadata. @unstable */
     storeCreateMap: (name: string, folder: string | null) => Promise<MapMeta>;
     /**
      *  Open the scratch map, creating it if this is its first use. Ordinary in every way
@@ -877,6 +877,14 @@ declare const commands$1: {
     storeDeleteFolder: (name: string) => Promise<null>;
     /**  Return aggregate database statistics: counts, file size, and configuration. @unstable */
     storeDbStats: () => Promise<DbStats>;
+    /**  The preferences new maps start from, or `null` when they start from the factory defaults. @unstable */
+    storeGetMapDefaults: () => Promise<MapPreferences | null>;
+    /**
+     *  Set the preferences new maps start from; `null` restores the factory defaults. Maps
+     *  that already exist keep their own.
+     *  @unstable
+     */
+    storeSetMapDefaults: (preferences: MapPreferences | null) => Promise<null>;
     /**
      *  Parse a file (JSON or ZIP of JSONs) and return a preview of each map found,
      *  without persisting anything. Call `bulkImportConfirm` to import the maps.

@@ -302,7 +302,7 @@ export const commands = {
 	storeListMaps: () => __TAURI_INVOKE<MapMeta[]>("store_list_maps"),
 	/**  Fetch a single map's metadata by ID. Returns `null` if not found. */
 	storeGetMap: (id: string) => __TAURI_INVOKE<MapMeta | null>("store_get_map", { id }),
-	/**  Create a new empty map with default settings. Returns the full metadata. */
+	/**  Create a new empty map with the preferences new maps start from. Returns the full metadata. */
 	storeCreateMap: (name: string, folder: string | null) => __TAURI_INVOKE<MapMeta>("store_create_map", { name, folder }),
 	/**
 	 *  Open the scratch map, creating it if this is its first use. Ordinary in every way
@@ -324,6 +324,13 @@ export const commands = {
 	storeDeleteFolder: (name: string) => __TAURI_INVOKE<null>("store_delete_folder", { name }),
 	/**  Return aggregate database statistics: counts, file size, and configuration. */
 	storeDbStats: () => __TAURI_INVOKE<DbStats>("store_db_stats"),
+	/**  The preferences new maps start from, or `null` when they start from the factory defaults. */
+	storeGetMapDefaults: () => __TAURI_INVOKE<MapPreferences | null>("store_get_map_defaults"),
+	/**
+	 *  Set the preferences new maps start from; `null` restores the factory defaults. Maps
+	 *  that already exist keep their own.
+	 */
+	storeSetMapDefaults: (preferences: MapPreferences | null) => __TAURI_INVOKE<null>("store_set_map_defaults", { preferences }),
 	/**
 	 *  Parse a file (JSON or ZIP of JSONs) and return a preview of each map found,
 	 *  without persisting anything. Call `bulkImportConfirm` to import the maps.

@@ -443,4 +443,11 @@ pub(super) const MIGRATIONS: &[(u32, &str)] = &[
           );
           CREATE INDEX IF NOT EXISTS idx_sync_log_map ON sync_log(map_id, provider, started_at);",
     ),
+    (
+        24,
+        "CREATE TABLE IF NOT EXISTS map_defaults (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            preferences TEXT NOT NULL
+          );",
+    ),
 ];

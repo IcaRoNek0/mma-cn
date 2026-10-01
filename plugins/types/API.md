@@ -5683,7 +5683,7 @@ columns a row can lack.
 cmd.storeCreateMap(name: string, folder: string | null): Promise<MapMeta>
 ```
 
-Create a new empty map with default settings. Returns the full metadata.
+Create a new empty map with the preferences new maps start from. Returns the full metadata.
 
 #### cmd.storeDbStats
 
@@ -5847,6 +5847,16 @@ cmd.storeGetMap(id: string): Promise<MapMeta | null>
 ```
 
 Fetch a single map's metadata by ID. Returns `null` if not found.
+
+#### cmd.storeGetMapDefaults
+
+`unstable` · unreleased
+
+```ts
+cmd.storeGetMapDefaults(): Promise<MapPreferences | null>
+```
+
+The preferences new maps start from, or `null` when they start from the factory defaults.
 
 #### cmd.storeGetSavedSelections
 
@@ -6288,6 +6298,17 @@ cmd.storeSetActive(id: number | null): Promise<null>
 ```
 
 Set (or clear) the active location.
+
+#### cmd.storeSetMapDefaults
+
+`unstable` · unreleased
+
+```ts
+cmd.storeSetMapDefaults(preferences: MapPreferences | null): Promise<null>
+```
+
+Set the preferences new maps start from; `null` restores the factory defaults. Maps
+that already exist keep their own.
 
 #### cmd.storeSetMarkerColor
 

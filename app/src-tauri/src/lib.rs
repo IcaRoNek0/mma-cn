@@ -207,6 +207,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             store::maps::store_rename_folder,
             store::maps::store_delete_folder,
             store::maps::store_db_stats,
+            store::map_defaults::store_get_map_defaults,
+            store::map_defaults::store_set_map_defaults,
             io::import::bulk_import_preview,
             io::import::bulk_import_confirm,
             io::import::bulk_import_cancel,

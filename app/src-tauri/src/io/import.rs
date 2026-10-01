@@ -21,10 +21,11 @@ use rusqlite::Connection;
 use uuid::Uuid;
 
 use crate::store::arrow;
+use crate::store::map_defaults;
 use crate::store::maps;
-use crate::store::maps::MapSettings;
 use crate::store::storage;
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 use tokio::task;
 
 /// Every file `bulk_import_preview` parsed, keyed by path, so `bulk_import_confirm`
@@ -95,16 +96,20 @@ fn map_extra_json(map: &mut ParsedMap) -> AppResult<String> {
     })
 }
 
-fn write_map_to_db(conn: &Connection, mut map: ParsedMap) -> AppResult<ImportedMapInfo> {
+fn write_map_to_db(
+    conn: &Connection,
+    mut map: ParsedMap,
+    map_id: &str,
+    arrow_path: &Path,
+) -> AppResult<ImportedMapInfo> {
     renumber_ordered_tags(&mut map.tags);
-    let map_id = Uuid::new_v4().to_string();
     let now = now_iso();
     let loc_count = map.locations.len() as u32;
     let tag_count = map.tags.len() as u32;
 
     let extra_json = map_extra_json(&mut map)?;
 
-    let settings = merge_settings(MapSettings::default(), &map.settings);
+    let settings = merge_settings(map_defaults::new_map_settings(conn)?, &map.settings);
     let settings_json =
         serde_json::to_string(&settings).unwrap_or_else(|_| maps::default_settings_json());
 
@@ -114,8 +119,7 @@ fn write_map_to_db(conn: &Connection, mut map: ParsedMap) -> AppResult<ImportedM
     }
 
     let batch = arrow::locations_to_batch(&map.locations);
-    let arrow_path = storage::arrow_path(&map_id)?;
-    arrow::write_arrow_ipc(&arrow_path, &batch)?;
+    arrow::write_arrow_ipc(arrow_path, &batch)?;
 
     let tx = conn.unchecked_transaction()?;
 
@@ -130,7 +134,7 @@ fn write_map_to_db(conn: &Connection, mut map: ParsedMap) -> AppResult<ImportedM
     tx.commit()?;
 
     Ok(ImportedMapInfo {
-        id: map_id,
+        id: map_id.to_string(),
         name: map.name,
         location_count: loc_count,
         tag_count,
@@ -216,7 +220,8 @@ pub async fn bulk_import_confirm(
         let mut results = Vec::with_capacity(parsed_maps.len());
         for (i, map) in parsed_maps.into_iter().enumerate() {
             let map_name = map.name.clone();
-            let info = write_map_to_db(&conn, map)?;
+            let map_id = Uuid::new_v4().to_string();
+            let info = write_map_to_db(&conn, map, &map_id, &storage::arrow_path(&map_id)?)?;
             crate::emit_event(ImportProgress {
                 current: (i + 1) as u32,
                 total,

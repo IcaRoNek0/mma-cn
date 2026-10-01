@@ -46,7 +46,7 @@ import { formatBytes } from "@/lib/util/format";
 import { Icon } from "@/components/primitives/Icon";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import type { DeviceCodeInfo, GhUser } from "@/bindings.gen";
+import type { DeviceCodeInfo, GhUser, MapPreferences } from "@/bindings.gen";
 import { collectDiagnostics } from "@/lib/diagnostics";
 import { appVersion } from "@/lib/version";
 import { refreshStoredReports } from "@/lib/feedback/submit";
@@ -95,6 +95,7 @@ import {
 	resetSettings,
 } from "@/store/settings";
 import { getMapBadgeSources } from "@/store/mapList";
+import { useMapState } from "@/store/useMapStore";
 import { formatBinding, buildComboString } from "@/lib/hooks/useHotkey";
 import { cmd } from "@/lib/commands";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -546,10 +547,47 @@ function StreetViewBody() {
 	);
 }
 
+function NewMapDefaultsRow() {
+	const map = useMapState((state) => state.map);
+	const [saved, setSaved] = useState<boolean | null>(null);
+	useEffect(() => {
+		void cmd.storeGetMapDefaults().then((defaults) => setSaved(defaults !== null));
+	}, []);
+	const save = (preferences: MapPreferences | null) =>
+		cmd.storeSetMapDefaults(preferences).then(
+			() => setSaved(preferences !== null),
+			(e) => toast(t("Could not save the new map defaults: {error}", { error: errText(e) })),
+		);
+	return (
+		<SettingRow
+			label={t("New maps")}
+			description={
+				saved
+					? t("New maps start from the saved preferences. Existing maps keep their own.")
+					: t("New maps start from the factory preferences.")
+			}
+			control={
+				<span style={{ display: "flex", gap: "0.5rem" }}>
+					<Button disabled={!map} onClick={() => map && void save(map.settings)}>
+						{t("Use current map")}
+					</Button>
+					<Button disabled={!saved} onClick={() => void save(null)}>
+						{t("Reset")}
+					</Button>
+				</span>
+			}
+		/>
+	);
+}
+
 function MapBody() {
 	const s = useSettings();
 	return (
 		<>
+			<SettingsGroup title={t("Defaults")}>
+				<NewMapDefaultsRow />
+			</SettingsGroup>
+
 			<SettingsGroup title={t("Navigation")}>
 				<SettingRow
 					label={t("Pan speed")}

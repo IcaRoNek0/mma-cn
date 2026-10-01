@@ -5,6 +5,8 @@ import { mountAsync } from "./fixtures/harness";
 import { initLocale } from "@/lib/i18n";
 import { setLocal } from "@/lib/hooks/useLocalStorage";
 import type { SubmittedReport } from "@/store/feedback";
+import type { MapMeta, MapPreferences } from "@/bindings.gen";
+import { cmd } from "@/lib/commands";
 
 vi.stubGlobal("__APP_VERSION__", "0.0.0-test");
 
@@ -27,8 +29,19 @@ vi.mock("@/lib/commands", () => ({
 		// Unreachable on purpose: a report keeps the state it was last told, rather than losing
 		// its status the moment a refresh fails.
 		githubIssueThread: vi.fn().mockRejectedValue(new Error("offline")),
+		storeGetMapDefaults: vi.fn().mockResolvedValue(null),
+		storeSetMapDefaults: vi.fn().mockResolvedValue(null),
 	},
 }));
+let openMap: MapMeta | null = null;
+vi.mock("@/store/useMapStore", async (importOriginal) => {
+	const store = await importOriginal<typeof import("@/store/useMapStore")>();
+	return {
+		...store,
+		useMapState: <T,>(select: (state: ReturnType<typeof store.getMapState>) => T) =>
+			select({ ...store.getMapState(), map: openMap }),
+	};
+});
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: vi.fn() }));
 // The log plugin invokes Tauri, which is absent here.
 vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
@@ -225,5 +238,51 @@ describe("unread replies", () => {
 		setLocal("feedbackReports", [report({ replies: 1, seenReplies: 1 })]);
 		await mount(<UnreadReplyDot />);
 		expect(q(".feedback-dot")).toBeNull();
+	});
+});
+
+// Saving defaults copies the open map's preferences; the rest of its settings refer to that map.
+describe("new map defaults", () => {
+	beforeAll(async () => {
+		await initLocale("en");
+	});
+
+	afterEach(() => {
+		openMap = null;
+		vi.mocked(cmd.storeGetMapDefaults).mockResolvedValue(null);
+		vi.mocked(cmd.storeSetMapDefaults).mockClear();
+	});
+
+	const button = (label: string) =>
+		qa(".setting-row button").find((b) => b.textContent === label) as HTMLButtonElement;
+	const description = () => q(".setting-row__desc")?.textContent;
+
+	it("saves the open map's settings as the defaults, then resets them", async () => {
+		openMap = { id: "m", settings: { pointAlongRoad: false } } as MapMeta;
+		await mount();
+		search("new maps");
+		expect(description()).toBe("New maps start from the factory preferences.");
+		expect(button("Reset").disabled).toBe(true);
+
+		await act(async () => button("Use current map").click());
+		expect(cmd.storeSetMapDefaults).toHaveBeenLastCalledWith({ pointAlongRoad: false });
+		expect(description()).toContain("saved preferences");
+
+		await act(async () => button("Reset").click());
+		expect(cmd.storeSetMapDefaults).toHaveBeenLastCalledWith(null);
+		expect(description()).toBe("New maps start from the factory preferences.");
+	});
+
+	it("has nothing to save from with no map open", async () => {
+		await mount();
+		search("new maps");
+		expect(button("Use current map").disabled).toBe(true);
+	});
+
+	it("offers a reset when defaults are already saved", async () => {
+		vi.mocked(cmd.storeGetMapDefaults).mockResolvedValue({} as MapPreferences);
+		await mount();
+		search("new maps");
+		expect(button("Reset").disabled).toBe(false);
 	});
 });

@@ -695,3 +695,23 @@ fn location_data_is_sized_down_through_the_commit_folders() {
     assert_eq!(dir_bytes(&dir), 224);
     assert_eq!(dir_bytes(&dir.join("absent")), 0);
 }
+
+#[test]
+fn new_maps_start_from_the_saved_defaults_and_existing_maps_keep_theirs() {
+    let conn = setup_real_db();
+    conn.execute(
+        "INSERT INTO map_defaults (id, preferences) VALUES (1, ?1)",
+        [r#"{"pointAlongRoad":false}"#],
+    )
+    .unwrap();
+
+    let created = create_map_row(&conn, "New", None).unwrap();
+    let scratch = scratch_map_row(&conn).unwrap();
+    let existing = conn
+        .query_row("SELECT * FROM maps WHERE id = 'm1'", [], row_to_map_meta)
+        .unwrap();
+
+    assert!(!created.settings.preferences.point_along_road);
+    assert!(!scratch.settings.preferences.point_along_road);
+    assert!(existing.settings.preferences.point_along_road);
+}

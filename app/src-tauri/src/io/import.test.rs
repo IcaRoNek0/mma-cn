@@ -356,6 +356,38 @@ fn merge_settings_overlays_present_keys_only() {
 }
 
 #[test]
+fn imported_maps_start_from_the_saved_defaults_under_the_files_own_settings() {
+    let conn = Connection::open_in_memory().unwrap();
+    storage::run_migrations_on(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO map_defaults (id, preferences) VALUES (1, ?1)",
+        [r#"{"pointAlongRoad":false,"exportZoom":true}"#],
+    )
+    .unwrap();
+    let json = br#"{"name":"Imported","customCoordinates":[{"lat":1,"lng":2}],"extra":{"settings":{"exportZoom":false}}}"#;
+    let mut buf = json.to_vec();
+    let parsed = parse_single_json_mut(&mut buf);
+    let dir = crate::test_util::TempDir::new("mma_test_import_defaults");
+
+    write_map_to_db(&conn, parsed, "imported", &dir.join("imported.arrow")).unwrap();
+
+    let settings: String = conn
+        .query_row("SELECT settings FROM maps WHERE id = 'imported'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let settings: MapSettings = serde_json::from_str(&settings).unwrap();
+    assert!(
+        !settings.preferences.point_along_road,
+        "saved default applied"
+    );
+    assert!(
+        !settings.preferences.export_zoom,
+        "the file's own setting wins"
+    );
+}
+
+#[test]
 fn merge_settings_empty_overlay_is_base() {
     let base = MapSettings::default();
     let merged = merge_settings(base, &serde_json::Map::new());

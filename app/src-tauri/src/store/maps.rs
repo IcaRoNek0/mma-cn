@@ -8,6 +8,7 @@
 use crate::store::engine;
 use crate::store::engine::StoreState;
 use crate::store::engine::ValueRecord;
+use crate::store::map_defaults;
 use crate::store::storage::{self, push_field};
 use crate::store::vcs::CommitDiff;
 use crate::sv::schema::PanoType;
@@ -626,18 +627,19 @@ fn list_map_rows(conn: &Connection) -> rusqlite::Result<Vec<MapMeta>> {
 /// row, so re-entering the map during a session keeps whatever is in it. It is created
 /// nameless: a reserved map is not the user's to name, and every surface that renders a
 /// map name already degrades when there isn't one.
-fn scratch_map_row(conn: &Connection) -> rusqlite::Result<MapMeta> {
+fn scratch_map_row(conn: &Connection) -> AppResult<MapMeta> {
     let now = now_iso();
+    let settings = serde_json::to_string(&map_defaults::new_map_settings(conn)?)?;
     conn.execute(
         "INSERT OR IGNORE INTO maps (id, name, folder, settings, created_at, updated_at)
          VALUES (?1, '', NULL, ?2, ?3, ?3)",
-        params![SCRATCH_MAP_ID, default_settings_json(), now],
+        params![SCRATCH_MAP_ID, settings, now],
     )?;
-    conn.query_row(
+    Ok(conn.query_row(
         "SELECT * FROM maps WHERE id = ?1",
         params![SCRATCH_MAP_ID],
         row_to_map_meta,
-    )
+    )?)
 }
 
 /// Open the scratch map, creating it if this is its first use. Ordinary in every way
@@ -645,7 +647,7 @@ fn scratch_map_row(conn: &Connection) -> rusqlite::Result<MapMeta> {
 #[tauri::command]
 #[specta::specta]
 pub async fn store_scratch_map() -> AppResult<MapMeta> {
-    storage::with_db(move |conn| Ok(scratch_map_row(conn)?)).await
+    storage::with_db(move |conn| scratch_map_row(conn)).await
 }
 
 /// Drop last session's scratch map. Startup-only: nothing is open yet, so there is no
@@ -672,24 +674,26 @@ pub async fn store_get_map(id: String) -> AppResult<Option<MapMeta>> {
     .await
 }
 
-/// Create a new empty map with default settings. Returns the full metadata.
+fn create_map_row(conn: &Connection, name: &str, folder: Option<&str>) -> AppResult<MapMeta> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = now_iso();
+    let settings = serde_json::to_string(&map_defaults::new_map_settings(conn)?)?;
+    conn.execute(
+        "INSERT INTO maps (id, name, folder, settings, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, name, folder, settings, now, now],
+    )?;
+    Ok(conn.query_row(
+        "SELECT * FROM maps WHERE id = ?1",
+        params![id],
+        row_to_map_meta,
+    )?)
+}
+
+/// Create a new empty map with the preferences new maps start from. Returns the full metadata.
 #[tauri::command]
 #[specta::specta]
 pub async fn store_create_map(name: String, folder: Option<String>) -> AppResult<MapMeta> {
-    storage::with_db(move |conn| {
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = now_iso();
-        conn.execute(
-            "INSERT INTO maps (id, name, folder, settings, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, name, folder, default_settings_json(), now, now],
-        )?;
-
-        conn.query_row("SELECT * FROM maps WHERE id = ?1", params![id], |row| {
-            row_to_map_meta(row)
-        })
-        .map_err(Into::into)
-    })
-    .await
+    storage::with_db(move |conn| create_map_row(conn, &name, folder.as_deref())).await
 }
 
 /// Drop a map's rows and its files on disk. Returns whether the map was there at all.
