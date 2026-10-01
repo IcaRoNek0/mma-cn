@@ -1,4 +1,7 @@
 use super::*;
+use crate::net::fetch::{HttpResponse, SendFn};
+use std::sync::Mutex;
+use std::time::Duration;
 
 fn parsed(input: &str) -> ParsedLocation {
     parse(input).expect("parses")
@@ -286,4 +289,73 @@ fn fov_to_zoom_is_monotonically_decreasing_and_near_one_at_ninety() {
         .collect();
     assert!(zooms.windows(2).all(|w| w[0] > w[1]));
     assert!((fov_to_zoom(90.0) - 1.0).abs() < 0.5);
+}
+
+const KOREA_PANO_ONLY: &str = "https://www.google.com/maps/@/data=!3m7!1e1!3m5!1sWp9HXFu9pYKjlNw6E6YR-w!2e0!6shttps:%2F%2Fstreetviewpixels-pa.googleapis.com%2Fv1%2Fthumbnail%3Fcb_client%3Dmaps_sv.tactile%26w%3D900%26h%3D600%26pitch%3D0%26panoid%3DWp9HXFu9pYKjlNw6E6YR-w%26yaw%3D260.07!7i13312!8i6656?entry=ttu&g_ep=EgoyMDI2MDkyOC4wIKXMDSoASAFQAw%3D%3D";
+const GETMETADATA_PB: &[u8] = include_bytes!("../sv/testdata/getmetadata.pb");
+
+/// A session whose GetMetadata answers with `body`, recording every pano id asked for.
+fn metadata_session(status: u16, body: &'static [u8]) -> (Session, Arc<Mutex<Vec<String>>>) {
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = asked.clone();
+    let send: SendFn = Box::new(move |req| {
+        let body_text = String::from_utf8_lossy(req.body.as_deref().unwrap_or_default());
+        if body_text.contains("Wp9HXFu9pYKjlNw6E6YR-w") {
+            log.lock().unwrap().push("Wp9HXFu9pYKjlNw6E6YR-w".into());
+        }
+        Box::pin(async move {
+            Ok(HttpResponse {
+                status,
+                body: body.to_vec(),
+            })
+        })
+    });
+    let transport = Arc::new(Transport {
+        send,
+        backoff: Duration::from_millis(1),
+    });
+    (Session::new(transport, Arc::default()), asked)
+}
+
+fn parsed_over(input: &str, session: &Session) -> Option<ParsedLocation> {
+    parse_expanded(&Url::parse(input).unwrap(), session)
+}
+
+#[test]
+fn a_link_naming_only_its_pano_stands_where_the_pano_does_and_looks_where_its_thumbnail_does() {
+    let (session, asked) = metadata_session(200, GETMETADATA_PB);
+    let p = parsed_over(KOREA_PANO_ONLY, &session).expect("parses");
+    let pano = pano::decode_response(GETMETADATA_PB)[0]
+        .clone()
+        .expect("fixture pano");
+    assert_eq!((p.lat, p.lng), (pano.lat, pano.lng));
+    assert_eq!(*asked.lock().unwrap(), ["Wp9HXFu9pYKjlNw6E6YR-w"]);
+    assert_eq!(p.pano_id.as_deref(), Some("Wp9HXFu9pYKjlNw6E6YR-w"));
+    assert_eq!(p.flags, LocationFlags::LOAD_AS_PANO_ID);
+    assert!((p.heading - 260.07).abs() < 1e-9);
+    assert!(p.pitch == 0.0 && p.pitch.is_sign_positive());
+    assert_eq!(p.zoom, 0.0);
+}
+
+#[test]
+fn a_pano_only_link_whose_pano_does_not_resolve_parses_to_nothing() {
+    let (session, _) = metadata_session(404, b"");
+    assert_eq!(parsed_over(KOREA_PANO_ONLY, &session), None);
+}
+
+#[test]
+fn a_thumbnail_carries_pitch_and_field_of_view_the_way_the_link_writer_puts_them() {
+    let (session, _) = metadata_session(200, GETMETADATA_PB);
+    let link = KOREA_PANO_ONLY.replace("pitch%3D0", "pitch%3D-12.5%26thumbfov%3D75");
+    let p = parsed_over(&link, &session).expect("parses");
+    assert!((p.pitch - 12.5).abs() < 1e-9);
+    assert!((p.zoom - fov_to_zoom(75.0)).abs() < 1e-12);
+}
+
+#[test]
+fn a_link_with_its_position_never_asks_for_the_pano() {
+    let (session, asked) = metadata_session(200, GETMETADATA_PB);
+    let p = parsed_over(KOREA_FIRST, &session).expect("parses");
+    assert!((p.lat - 37.48122598).abs() < 1e-10);
+    assert!(asked.lock().unwrap().is_empty());
 }

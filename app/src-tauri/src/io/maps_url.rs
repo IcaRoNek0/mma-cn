@@ -4,7 +4,8 @@
 //! `layer=c&cbll=` form, and Arts & Culture street views.
 
 use std::f64::consts::PI;
-use std::sync::OnceLock;
+use std::slice;
+use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,9 @@ use specta::Type;
 use url::form_urlencoded;
 use url::Url;
 
+use crate::net::fetch::{Session, Transport};
 use crate::net::proxy;
+use crate::sv::pano;
 use crate::sv::pano_id::from_image_key;
 use crate::types::LocationFlags;
 use crate::util::blocking;
@@ -54,16 +57,41 @@ fn number(v: Option<String>) -> Option<f64> {
     v?.trim().parse().ok()
 }
 
-/// The `@<lat>,<lng>|<plus code>,<alt>a,<fov>y[,<heading>h],<pitch>t[,<roll>r]/data=...!1s<key>!2e<frontend>`
-/// path form a Street View share link uses.
+/// The `@[<lat>,<lng>|<plus code>,<alt>a,<fov>y[,<heading>h],<pitch>t[,<roll>r]]/data=...!1s<key>!2e<frontend>`
+/// path form a Street View share link uses. A link that leaves the position out names only its pano.
 fn street_view_path() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"@(?:(?P<lat>-?\d+(?:\.\d+)?),(?P<lng>-?\d+(?:\.\d+)?)|(?P<code>(?i:[23456789CFGHJMPQRVWX]{8}(?:\+|%2b)[23456789CFGHJMPQRVWX]{2,7}))),(?:-?\d+(?:\.\d+)?)a,(?P<fov>-?\d+(?:\.\d+)?)y(?:,(?P<heading>-?\d+(?:\.\d+)?)h)?,(?P<tilt>-?\d+(?:\.\d+)?)t(?:,-?\d+(?:\.\d+)?r)?/data=(?:.*?)!1s(?P<key>[0-9a-zA-Z_-]+)!2e(?P<frontend>\d+)",
+            r"@(?:(?:(?P<lat>-?\d+(?:\.\d+)?),(?P<lng>-?\d+(?:\.\d+)?)|(?P<code>(?i:[23456789CFGHJMPQRVWX]{8}(?:\+|%2b)[23456789CFGHJMPQRVWX]{2,7}))),(?:-?\d+(?:\.\d+)?)a,(?P<fov>-?\d+(?:\.\d+)?)y(?:,(?P<heading>-?\d+(?:\.\d+)?)h)?,(?P<tilt>-?\d+(?:\.\d+)?)t(?:,-?\d+(?:\.\d+)?r)?)?/data=(?:.*?)!1s(?P<key>[0-9a-zA-Z_-]+)!2e(?P<frontend>\d+)",
         )
         .expect("street view path pattern")
     })
+}
+
+/// The heading, pitch and zoom the `!6s` thumbnail of a share link is aimed with, for a
+/// link whose path carries no camera.
+fn thumbnail_camera(path: &str) -> (f64, f64, f64) {
+    let thumb = path
+        .split('!')
+        .find_map(|t| t.strip_prefix("6s"))
+        .and_then(|t| percent_encoding::percent_decode_str(t).decode_utf8().ok())
+        .and_then(|t| Url::parse(&t).ok());
+    let param = |key: &str| {
+        thumb
+            .as_ref()?
+            .query_pairs()
+            .find(|(k, _)| k == key)?
+            .1
+            .parse::<f64>()
+            .ok()
+    };
+    (
+        param("yaw").unwrap_or(0.0),
+        // Subtracting from zero keeps a level thumbnail from reading as -0.
+        param("pitch").map_or(0.0, |p| 0.0 - p),
+        param("thumbfov").map_or(0.0, fov_to_zoom),
+    )
 }
 
 /// The center of a full, unpadded Plus Code's cell; a short code has no anchor and is rejected.
@@ -104,7 +132,7 @@ fn decode_full_plus_code(code: &str) -> Option<(f64, f64)> {
     ))
 }
 
-fn parse_expanded(url: &Url) -> Option<ParsedLocation> {
+fn parse_expanded(url: &Url, session: &Session) -> Option<ParsedLocation> {
     // The share dialog carries `extra[...]` params in the fragment; a fragment that is
     // present owns the tags, and `loadMode` falls back to the query.
     let frag: Vec<(String, String)> = url
@@ -135,22 +163,32 @@ fn parse_expanded(url: &Url) -> Option<ParsedLocation> {
     let host = url.host_str().unwrap_or_default();
     if host.starts_with("www.google.") && url.path().starts_with("/maps") {
         if let Some(m) = street_view_path().captures(url.path()) {
-            let (lat, lng) = match m.name("code") {
-                Some(code) => decode_full_plus_code(
+            let frontend: i32 = m["frontend"].parse().ok()?;
+            let pano_id = from_image_key(if frontend == 0 { 2 } else { frontend }, &m["key"]);
+            let (heading, pitch, zoom) = match m.name("tilt") {
+                Some(tilt) => (
+                    m.name("heading")
+                        .and_then(|h| h.as_str().parse().ok())
+                        .unwrap_or(0.0),
+                    tilt.as_str().parse::<f64>().map_or(0.0, |t| t - 90.0),
+                    m["fov"].parse().map_or(0.0, fov_to_zoom),
+                ),
+                None => thumbnail_camera(url.path()),
+            };
+            let (lat, lng) = if let Some(code) = m.name("code") {
+                decode_full_plus_code(
                     &percent_encoding::percent_decode_str(code.as_str())
                         .decode_utf8()
                         .ok()?,
-                )?,
-                None => (m["lat"].parse().ok()?, m["lng"].parse().ok()?),
+                )?
+            } else if let Some(lat) = m.name("lat") {
+                (lat.as_str().parse().ok()?, m["lng"].parse().ok()?)
+            } else {
+                let pano = pano::fetch_metadata(session, slice::from_ref(&pano_id))
+                    .metas
+                    .pop()??;
+                (pano.lat, pano.lng)
             };
-            let zoom = m["fov"].parse().map_or(0.0, fov_to_zoom);
-            let heading = m
-                .name("heading")
-                .and_then(|h| h.as_str().parse().ok())
-                .unwrap_or(0.0);
-            let pitch = m["tilt"].parse::<f64>().map_or(0.0, |t| t - 90.0);
-            let frontend: i32 = m["frontend"].parse().ok()?;
-            let pano_id = from_image_key(if frontend == 0 { 2 } else { frontend }, &m["key"]);
             let flags = if pano_id.is_empty() {
                 LocationFlags::empty()
             } else {
@@ -244,7 +282,7 @@ pub(crate) fn parse(input: &str) -> Option<ParsedLocation> {
             url = Url::parse(&target).ok()?;
         }
     }
-    parse_expanded(&url)
+    parse_expanded(&url, &Session::new(Transport::production(), Arc::default()))
 }
 
 /// The location a pasted Maps URL names, short links resolved.
