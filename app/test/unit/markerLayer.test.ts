@@ -86,6 +86,19 @@ describe("translucent marker groups", () => {
 		expect(base(cm, 0)).toEqual([]);
 	});
 
+	// The sheet covers the whole map: if it wrote depth, every marker drawn after it, the
+	// active marker included, would fail the depth test and vanish.
+	it("lays its sheet down without depth and with premultiplied blending", () => {
+		const sheet = base(seeded(), 0.5).at(-1)!;
+		expect(sheet.props.parameters).toMatchObject({
+			depthCompare: "always",
+			depthWriteEnabled: false,
+			blend: true,
+			blendColorSrcFactor: "one",
+			blendColorDstFactor: "one-minus-src-alpha",
+		});
+	});
+
 	it("draws nothing for a hidden group, whatever the other shows", () => {
 		const cm = seeded();
 		expect(selected(cm, 0)).toEqual([]);

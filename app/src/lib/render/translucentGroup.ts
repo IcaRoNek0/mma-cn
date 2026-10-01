@@ -74,6 +74,20 @@ void main() {
  *  through. Draws after every member of its group. */
 export class TranslucentGroupLayer extends Layer<{ group: string; opacity: number }> {
 	static layerName = "TranslucentGroupLayer";
+	// A layer's `parameters` replace its model's on every draw, so they can only live here.
+	static defaultProps = {
+		parameters: {
+			depthCompare: "always",
+			depthWriteEnabled: false,
+			blend: true,
+			blendColorOperation: "add",
+			blendColorSrcFactor: "one",
+			blendColorDstFactor: "one-minus-src-alpha",
+			blendAlphaOperation: "add",
+			blendAlphaSrcFactor: "one",
+			blendAlphaDstFactor: "one-minus-src-alpha",
+		},
+	};
 	declare state: { model?: ClipSpace };
 
 	initializeState() {
@@ -81,17 +95,6 @@ export class TranslucentGroupLayer extends Layer<{ group: string; opacity: numbe
 			id: this.props.id,
 			fs: compositeFs,
 			modules: [groupUniforms],
-			parameters: {
-				depthCompare: "always",
-				depthWriteEnabled: false,
-				blend: true,
-				blendColorOperation: "add",
-				blendColorSrcFactor: "one",
-				blendColorDstFactor: "one-minus-src-alpha",
-				blendAlphaOperation: "add",
-				blendAlphaSrcFactor: "one",
-				blendAlphaDstFactor: "one-minus-src-alpha",
-			},
 		});
 	}
 
