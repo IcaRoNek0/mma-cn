@@ -1,11 +1,12 @@
 use std::fs;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use std::slice;
-
 use super::*;
-use crate::procedure::HttpResponse;
+use crate::net::fetch::{HttpResponse, SendFn, Transport};
 use crate::types::{AppError, AppResult};
 
 const RESPONSE_PB: &[u8] = include_bytes!("testdata/getmetadata.pb");
@@ -437,24 +438,51 @@ fn a_search_answer_that_is_not_coverage_decodes_to_none() {
 
 /// Records every request it is handed and answers each from `reply`, which sees the pano
 /// ids that request carries.
-struct StubHost<F> {
-    reply: F,
-    rounds: Vec<Vec<Vec<String>>>,
-    abort_after: usize,
+/// A GetMetadata transport answering each request with `reply` for the ids it asks for,
+/// recording them. The session cancels itself once `cancel_after` requests have answered.
+struct Stub {
+    session: Session,
+    asked: Arc<Mutex<Vec<Vec<String>>>>,
 }
 
-impl<F: Fn(&[String]) -> AppResult<HttpResponse>> StubHost<F> {
-    fn new(reply: F) -> Self {
-        StubHost {
-            reply,
-            rounds: Vec::new(),
-            abort_after: usize::MAX,
+impl Stub {
+    fn new(reply: impl Fn(&[String]) -> AppResult<HttpResponse> + Send + Sync + 'static) -> Self {
+        Stub::cancelling_after(usize::MAX, reply)
+    }
+
+    fn cancelling_after(
+        cancel_after: usize,
+        reply: impl Fn(&[String]) -> AppResult<HttpResponse> + Send + Sync + 'static,
+    ) -> Self {
+        let asked: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
+        let cancel: Arc<AtomicBool> = Arc::default();
+        let (log, flag) = (asked.clone(), cancel.clone());
+        let send: SendFn = Box::new(move |req| {
+            let ids = asked_for(&req);
+            let answer = reply(&ids);
+            let mut log = log.lock().unwrap();
+            log.push(ids);
+            if log.len() >= cancel_after {
+                flag.store(true, Ordering::Relaxed);
+            }
+            Box::pin(async move { answer })
+        });
+        Stub {
+            session: Session::new(transport(send), cancel),
+            asked,
         }
     }
 
     fn requests(&self) -> Vec<Vec<String>> {
-        self.rounds.iter().flatten().cloned().collect()
+        self.asked.lock().unwrap().clone()
     }
+}
+
+fn transport(send: SendFn) -> Arc<Transport> {
+    Arc::new(Transport {
+        send,
+        backoff: Duration::from_millis(1),
+    })
 }
 
 fn asked_for(req: &HttpRequestSpec) -> Vec<String> {
@@ -466,27 +494,6 @@ fn asked_for(req: &HttpRequestSpec) -> Vec<String> {
             from_image_key(k.int(1) as i32, k.str(2))
         })
         .collect()
-}
-
-impl<F: Fn(&[String]) -> AppResult<HttpResponse>> ProcHost for StubHost<F> {
-    fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse> {
-        self.fetch_many(slice::from_ref(req))
-            .pop()
-            .expect("one request answers once")
-    }
-
-    fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        let asked: Vec<Vec<String>> = reqs.iter().map(asked_for).collect();
-        let out = asked.iter().map(|ids| (self.reply)(ids)).collect();
-        self.rounds.push(asked);
-        out
-    }
-
-    fn progress(&mut self, _units: u32) {}
-    fn fail(&mut self, _id: u32) {}
-    fn aborted(&self) -> bool {
-        self.rounds.len() >= self.abort_after
-    }
 }
 
 fn ok(body: Vec<u8>) -> AppResult<HttpResponse> {
@@ -519,13 +526,11 @@ fn ids(n: usize) -> Vec<String> {
 #[test]
 fn a_batch_is_split_at_the_per_request_cap() {
     let panos = ids(BATCH_SIZE + 5);
-    let mut host = StubHost::new(|asked: &[String]| ok(response_for(asked, |_| true)));
-    let out = fetch_metadata(&mut host, &panos);
-    assert_eq!(
-        host.requests().iter().map(Vec::len).collect::<Vec<_>>(),
-        vec![BATCH_SIZE, 5]
-    );
-    assert_eq!(host.rounds.len(), 1);
+    let stub = Stub::new(|asked: &[String]| ok(response_for(asked, |_| true)));
+    let out = fetch_metadata(&stub.session, &panos);
+    let mut sizes: Vec<usize> = stub.requests().iter().map(Vec::len).collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, vec![5, BATCH_SIZE]);
     assert!(out.done.iter().all(|d| *d));
     assert!(out.metas.iter().all(Option::is_some));
 }
@@ -533,10 +538,10 @@ fn a_batch_is_split_at_the_per_request_cap() {
 #[test]
 fn a_pano_asked_for_twice_is_fetched_once_and_answered_twice() {
     let panos = ["a", "b", "a", "", "b"].map(str::to_string).to_vec();
-    let mut host = StubHost::new(|asked: &[String]| ok(response_for(asked, |_| true)));
-    let out = fetch_metadata(&mut host, &panos);
+    let stub = Stub::new(|asked: &[String]| ok(response_for(asked, |_| true)));
+    let out = fetch_metadata(&stub.session, &panos);
     assert_eq!(
-        host.requests(),
+        stub.requests(),
         vec![vec!["a".to_string(), "b".to_string()]]
     );
     assert_eq!(out.done, vec![true, true, true, false, true]);
@@ -555,14 +560,14 @@ fn rejected() -> Vec<u8> {
 #[test]
 fn a_rejected_batch_is_bisected_until_the_malformed_pano_stands_alone() {
     let panos = ids(4);
-    let mut host = StubHost::new(|asked: &[String]| {
+    let stub = Stub::new(|asked: &[String]| {
         if asked.contains(&"pano-2".to_string()) {
             return ok(rejected());
         }
         ok(response_for(asked, |_| true))
     });
-    let out = fetch_metadata(&mut host, &panos);
-    assert_eq!(host.requests().last().unwrap().len(), 1);
+    let out = fetch_metadata(&stub.session, &panos);
+    assert_eq!(stub.requests().last().unwrap().len(), 1);
     assert_eq!(out.done, vec![true; 4]);
     assert_eq!(out.failed, vec![false; 4]);
     assert!(out.metas[2].is_none());
@@ -572,9 +577,9 @@ fn a_rejected_batch_is_bisected_until_the_malformed_pano_stands_alone() {
 #[test]
 fn a_batch_of_dead_panos_is_answered_in_one_request() {
     let panos = ids(200);
-    let mut host = StubHost::new(|asked: &[String]| ok(response_for(asked, |_| false)));
-    let out = fetch_metadata(&mut host, &panos);
-    assert_eq!(host.requests().len(), 1);
+    let stub = Stub::new(|asked: &[String]| ok(response_for(asked, |_| false)));
+    let out = fetch_metadata(&stub.session, &panos);
+    assert_eq!(stub.requests().len(), 1);
     assert_eq!(out.done, vec![true; 200]);
     assert_eq!(out.failed, vec![false; 200]);
     assert!(out.metas.iter().all(Option::is_none));
@@ -583,13 +588,13 @@ fn a_batch_of_dead_panos_is_answered_in_one_request() {
 #[test]
 fn only_a_pano_that_fails_alone_is_marked_failed() {
     let panos = ids(2);
-    let mut host = StubHost::new(|asked: &[String]| {
+    let stub = Stub::new(|asked: &[String]| {
         if asked.contains(&"pano-1".to_string()) {
             return Err(AppError("boom".into()));
         }
         ok(response_for(asked, |_| true))
     });
-    let out = fetch_metadata(&mut host, &panos);
+    let out = fetch_metadata(&stub.session, &panos);
     assert_eq!(out.done, vec![true, true]);
     assert_eq!(out.failed, vec![false, true]);
     assert!(out.metas[0].is_some());
@@ -597,21 +602,20 @@ fn only_a_pano_that_fails_alone_is_marked_failed() {
 
 #[test]
 fn a_non_2xx_answer_is_a_failure_like_any_other() {
-    let mut host = StubHost::new(|_: &[String]| {
+    let stub = Stub::new(|_: &[String]| {
         Ok(HttpResponse {
-            status: 500,
+            status: 404,
             body: Vec::new(),
         })
     });
-    let out = fetch_metadata(&mut host, &ids(1));
+    let out = fetch_metadata(&stub.session, &ids(1));
     assert_eq!(out.failed, vec![true]);
 }
 
 #[test]
-fn a_cancelling_run_leaves_its_rows_unfinished() {
-    let mut host = StubHost::new(|_: &[String]| Err(AppError("boom".into())));
-    host.abort_after = 1;
-    let out = fetch_metadata(&mut host, &ids(1));
+fn a_cancelled_session_leaves_its_rows_unfinished() {
+    let stub = Stub::cancelling_after(1, |_: &[String]| Err(AppError("boom".into())));
+    let out = fetch_metadata(&stub.session, &ids(1));
     assert_eq!(out.done, vec![false]);
     assert_eq!(out.failed, vec![false]);
 }
@@ -624,102 +628,71 @@ fn id_query(id: &str) -> PanoQuery {
 
 /// Routes by URL: searches answer a fixed found pano (or fail), metadata answers every
 /// asked-for id.
-struct SplitStub {
-    search_bodies: Vec<String>,
-    meta_rounds: usize,
+struct Split {
+    session: Session,
+    search_bodies: Arc<Mutex<Vec<String>>>,
+    meta_requests: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct SplitOpts {
     fail_searches: bool,
     no_coverage: bool,
-    abort: bool,
-    partials: Option<std::sync::Arc<crate::procedure::engine::Partials>>,
+    cancelled: bool,
 }
 
-impl SplitStub {
-    fn new() -> Self {
-        SplitStub {
-            search_bodies: Vec::new(),
-            meta_rounds: 0,
-            fail_searches: false,
-            no_coverage: false,
-            abort: false,
-            partials: None,
+impl Split {
+    fn new(opts: SplitOpts) -> Self {
+        let search_bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let meta_requests: Arc<AtomicUsize> = Arc::default();
+        let (bodies, metas) = (search_bodies.clone(), meta_requests.clone());
+        let send: SendFn = Box::new(move |req| {
+            let answer = if req.url == SINGLE_IMAGE_SEARCH_URL {
+                bodies.lock().unwrap().push(
+                    String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).into_owned(),
+                );
+                if opts.fail_searches {
+                    Err(AppError("boom".into()))
+                } else {
+                    let status = if opts.no_coverage { 2 } else { 1 };
+                    ok(reply(status, &json!([2, "20C-1_sANr4OMdhTDM2N-g"])).into_bytes())
+                }
+            } else {
+                metas.fetch_add(1, Ordering::Relaxed);
+                ok(response_for(&asked_for(&req), |_| true))
+            };
+            Box::pin(async move { answer })
+        });
+        Split {
+            session: Session::new(transport(send), Arc::new(AtomicBool::new(opts.cancelled))),
+            search_bodies,
+            meta_requests,
         }
     }
-}
 
-impl ProcHost for SplitStub {
-    fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse> {
-        self.fetch_many(slice::from_ref(req))
-            .pop()
-            .expect("one request answers once")
-    }
-
-    fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        reqs.iter()
-            .map(|req| {
-                if req.url == SINGLE_IMAGE_SEARCH_URL {
-                    self.search_bodies.push(
-                        String::from_utf8_lossy(req.body.as_deref().unwrap_or_default())
-                            .into_owned(),
-                    );
-                    if self.fail_searches {
-                        return Err(AppError("boom".into()));
-                    }
-                    let status = if self.no_coverage { 2 } else { 1 };
-                    ok(reply(status, &json!([2, "20C-1_sANr4OMdhTDM2N-g"])).into_bytes())
-                } else {
-                    self.meta_rounds += 1;
-                    ok(response_for(&asked_for(req), |_| true))
-                }
-            })
-            .collect()
-    }
-
-    fn progress(&mut self, _units: u32) {}
-    fn fail(&mut self, _id: u32) {}
-    fn emitter(&self) -> Option<std::sync::Arc<crate::procedure::engine::Partials>> {
-        self.partials.clone()
-    }
-    fn aborted(&self) -> bool {
-        self.abort
+    fn resolve(&self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+        resolve_panos(&self.session, queries, &mut |_, _| {})
     }
 }
 
 #[test]
-fn search_answers_stream_through_the_emitter_under_their_query_indices() {
-    use crate::procedure::engine::{Partials, ResultEntry};
-    use std::sync::{Arc, Mutex};
-
-    let pages = Arc::new(Mutex::new(Vec::new()));
-    let seen = pages.clone();
+fn search_answers_reach_the_caller_under_their_query_indices() {
     let queries = vec![
         id_query("pano-0"),
         PanoQuery::Search(search(1.0, 2.0, 50.0)),
         PanoQuery::Search(search(3.0, 4.0, 50.0)),
     ];
-    let mut host = SplitStub::new();
-    host.partials = Some(Arc::new(Partials::new(
-        9,
-        "p.js".into(),
-        Box::new(move |r| seen.lock().unwrap().push(r)),
-    )));
-    resolve_panos(&mut host, &queries);
-    host.partials.as_ref().unwrap().flush();
-
-    let entries: Vec<ResultEntry> = pages
-        .lock()
-        .unwrap()
-        .iter()
-        .flat_map(|p| p.entries.clone())
-        .collect();
-    let ids: Vec<u32> = entries.iter().map(|e| e.id).collect();
+    let split = Split::new(SplitOpts::default());
+    let mut seen: Vec<(usize, bool)> = Vec::new();
+    resolve_panos(&split.session, &queries, &mut |i, answer| {
+        seen.push((i, matches!(answer, PanoAnswer::Found { .. })));
+    });
+    seen.sort_unstable();
     assert_eq!(
-        ids,
-        vec![1, 2],
-        "searches stream under their query index; id lookups answer at the end"
+        seen,
+        vec![(1, true), (2, true)],
+        "searches report under their query index; id lookups answer at the end"
     );
-    assert!(entries
-        .iter()
-        .all(|e| e.json.contains(r#""state":"found""#)));
 }
 
 #[test]
@@ -730,8 +703,8 @@ fn queries_of_both_kinds_answer_aligned_to_the_input() {
         id_query(""),
         id_query("pano-1"),
     ];
-    let mut host = SplitStub::new();
-    let answers = resolve_panos(&mut host, &queries);
+    let split = Split::new(SplitOpts::default());
+    let answers = split.resolve(&queries);
     assert!(matches!(&answers[0], PanoAnswer::Found { pano } if pano.id == "pano-0"));
     assert!(
         matches!(&answers[1], PanoAnswer::Found { pano } if pano.id == "20C-1_sANr4OMdhTDM2N-g")
@@ -739,36 +712,36 @@ fn queries_of_both_kinds_answer_aligned_to_the_input() {
     assert_eq!(answers[2], PanoAnswer::Skipped);
     assert!(matches!(&answers[3], PanoAnswer::Found { pano } if pano.id == "pano-1"));
     assert_eq!(
-        host.search_bodies,
+        *split.search_bodies.lock().unwrap(),
         vec![encode_search(&search(1.0, 2.0, 50.0))]
     );
-    assert_eq!(host.meta_rounds, 1);
+    assert_eq!(split.meta_requests.load(Ordering::Relaxed), 1);
 }
 
 #[test]
 fn a_search_without_coverage_is_not_found_and_a_failed_one_is_failed() {
     let queries = vec![PanoQuery::Search(search(1.0, 2.0, 50.0))];
-    let mut host = SplitStub::new();
-    host.no_coverage = true;
-    assert_eq!(
-        resolve_panos(&mut host, &queries),
-        vec![PanoAnswer::NotFound]
-    );
-    let mut host = SplitStub::new();
-    host.fail_searches = true;
-    assert_eq!(resolve_panos(&mut host, &queries), vec![PanoAnswer::Failed]);
+    let split = Split::new(SplitOpts {
+        no_coverage: true,
+        ..SplitOpts::default()
+    });
+    assert_eq!(split.resolve(&queries), vec![PanoAnswer::NotFound]);
+    let split = Split::new(SplitOpts {
+        fail_searches: true,
+        ..SplitOpts::default()
+    });
+    assert_eq!(split.resolve(&queries), vec![PanoAnswer::Failed]);
 }
 
 #[test]
-fn a_search_declined_by_a_cancelling_run_is_skipped() {
+fn a_search_declined_by_a_cancelled_session_is_skipped() {
     let queries = vec![PanoQuery::Search(search(1.0, 2.0, 50.0))];
-    let mut host = SplitStub::new();
-    host.fail_searches = true;
-    host.abort = true;
-    assert_eq!(
-        resolve_panos(&mut host, &queries),
-        vec![PanoAnswer::Skipped]
-    );
+    let split = Split::new(SplitOpts {
+        cancelled: true,
+        ..SplitOpts::default()
+    });
+    assert_eq!(split.resolve(&queries), vec![PanoAnswer::Skipped]);
+    assert!(split.search_bodies.lock().unwrap().is_empty());
 }
 
 /// The guest sends plain objects; which variant one lands on is the wire contract.

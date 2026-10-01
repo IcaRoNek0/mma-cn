@@ -1,6 +1,7 @@
 //! A decoded Street View panorama: the flattened GetMetadata image plus the facts derived
 //! from it at decode time.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use specta::Type;
 
-use crate::procedure::{HttpRequestSpec, ProcHost};
+use crate::net::fetch::{Endpoint, HttpRequestSpec, Policy, Session};
 use crate::store::maps::CameraType;
 use crate::sv::pano_id::{from_image_key, to_image_key};
 use crate::sv::schema::owned::{ImageSize, PanoDate, Pov};
@@ -92,6 +93,16 @@ const DEFAULT_COMPONENTS: [u32; 6] = [1, 2, 3, 4, 8, 6];
 
 pub const GET_METADATA_URL: &str =
     "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/GetMetadata";
+
+/// Its width is tuned against the transport's connection pool, at [`BATCH_SIZE`] panos a request.
+pub static GET_METADATA: Endpoint = Endpoint {
+    name: Cow::Borrowed("GetMetadata"),
+    policy: Policy {
+        rate: None,
+        retry: None,
+        inflight: Some(192),
+    },
+};
 
 pub fn encode_request(pano_ids: &[String]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -375,6 +386,16 @@ pub fn detect_camera_type(m: &Pano) -> Option<CameraType> {
 pub const SINGLE_IMAGE_SEARCH_URL: &str =
     "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/SingleImageSearch";
 
+/// Its width is tuned against the transport's connection pool, at one pano a request.
+pub static SINGLE_IMAGE_SEARCH: Endpoint = Endpoint {
+    name: Cow::Borrowed("SingleImageSearch"),
+    policy: Policy {
+        rate: None,
+        retry: None,
+        inflight: Some(512),
+    },
+};
+
 /// Half the Earth's circumference: the radius clamp the Maps JS API applies.
 const MAX_RADIUS: f64 = 6378137.0 * PI;
 
@@ -414,7 +435,7 @@ pub struct IdQuery {
     pub pano_id: String,
 }
 
-/// What one query resolved to. `skipped` is a query the host never answered: an aborted
+/// What one query resolved to. `skipped` is a query that was never answered: a cancelled
 /// run, or an id query whose id is empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "state")]
@@ -610,7 +631,7 @@ fn metadata_request(pano_ids: &[String]) -> HttpRequestSpec {
 /// whole request with no per-pano answers. Only those spans, and failed requests, come
 /// back to be split and retried in the next round rather than being written off.
 fn fetch_round(
-    host: &mut dyn ProcHost,
+    session: &Session,
     panos: &[String],
     spans: &[Span],
     out: &mut FetchedMetadata,
@@ -619,14 +640,14 @@ fn fetch_round(
         .iter()
         .map(|s| metadata_request(&panos[s.start..s.start + s.len]))
         .collect();
-    let answers = host.fetch_many(&reqs);
+    let answers = session.fetch_many(&GET_METADATA, 1, &reqs);
     let mut retry = Vec::new();
     for (span, answer) in spans.iter().zip(answers) {
         let ok = answer.ok().filter(|r| (200..300).contains(&r.status));
         let Some(resp) = ok else {
-            // A cancelling run has its requests declined rather than answered; leaving those
-            // rows unfinished keeps a cancel from counting them as failures.
-            if host.aborted() {
+            // A cancelled session has its requests declined rather than answered; leaving
+            // those rows unfinished keeps a cancel from counting them as failures.
+            if session.aborted() {
                 continue;
             }
             // A failed request says nothing about which pano is at fault, so split it the
@@ -673,9 +694,8 @@ fn index_panos(panos: &[String]) -> (Vec<String>, Vec<Option<usize>>) {
 
 /// Metadata for every pano, aligned to `pano_ids`. Duplicates are fetched once and empty
 /// ids are never asked for; each request carries at most [`BATCH_SIZE`] panos, and every
-/// request a round needs goes out in one `fetch_many`, so the host decides how much of it
-/// runs at once.
-pub fn fetch_metadata(host: &mut dyn ProcHost, pano_ids: &[String]) -> FetchedMetadata {
+/// request a round needs goes out at once, as wide as [`GET_METADATA`] allows.
+pub fn fetch_metadata(session: &Session, pano_ids: &[String]) -> FetchedMetadata {
     let (unique, slot) = index_panos(pano_ids);
     let mut fetched = FetchedMetadata::blank(unique.len());
     let mut round: Vec<Span> = (0..unique.len())
@@ -685,8 +705,8 @@ pub fn fetch_metadata(host: &mut dyn ProcHost, pano_ids: &[String]) -> FetchedMe
             len: BATCH_SIZE.min(unique.len() - start),
         })
         .collect();
-    while !round.is_empty() && !host.aborted() {
-        round = fetch_round(host, &unique, &round, &mut fetched);
+    while !round.is_empty() && !session.aborted() {
+        round = fetch_round(session, &unique, &round, &mut fetched);
     }
 
     let mut out = FetchedMetadata::blank(pano_ids.len());
@@ -699,10 +719,14 @@ pub fn fetch_metadata(host: &mut dyn ProcHost, pano_ids: &[String]) -> FetchedMe
     out
 }
 
-/// Every query resolved to its pano, aligned to `queries`. Searches go out in one
-/// `fetch_many`; ids run through [`fetch_metadata`]'s dedupe, chunking and bisection.
-/// Both pay the host's inflight budget, rate limiter and retry policy.
-pub fn resolve_panos(host: &mut dyn ProcHost, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+/// Every query resolved to its pano, aligned to `queries`. Searches go out at once over
+/// [`SINGLE_IMAGE_SEARCH`], each handed to `on_search` under its query index the moment it
+/// lands; ids run through [`fetch_metadata`]'s dedupe, chunking and bisection.
+pub fn resolve_panos(
+    session: &Session,
+    queries: &[PanoQuery],
+    on_search: &mut dyn FnMut(usize, &PanoAnswer),
+) -> Vec<PanoAnswer> {
     let mut answers = vec![PanoAnswer::Skipped; queries.len()];
 
     let searches: Vec<(usize, &SearchQuery)> = queries
@@ -715,8 +739,7 @@ pub fn resolve_panos(host: &mut dyn ProcHost, queries: &[PanoQuery]) -> Vec<Pano
         .collect();
     if !searches.is_empty() {
         let reqs: Vec<HttpRequestSpec> = searches.iter().map(|(_, s)| search_request(s)).collect();
-        let emitter = host.emitter();
-        host.fetch_stream(&reqs, &mut |k, result| {
+        session.fetch_stream(&SINGLE_IMAGE_SEARCH, 1, &reqs, &mut |k, result| {
             let i = searches[k].0;
             let ok = result.ok().filter(|r| (200..300).contains(&r.status));
             let answer = match ok {
@@ -728,14 +751,10 @@ pub fn resolve_panos(host: &mut dyn ProcHost, queries: &[PanoQuery]) -> Vec<Pano
                 },
                 None => PanoAnswer::Failed,
             };
-            if let Some(e) = &emitter {
-                if let Ok(json) = serde_json::to_string(&answer) {
-                    e.emit(i as u32, json);
-                }
-            }
+            on_search(i, &answer);
             answers[i] = answer;
         });
-        if host.aborted() {
+        if session.aborted() {
             for (i, _) in &searches {
                 if matches!(answers[*i], PanoAnswer::Failed) {
                     answers[*i] = PanoAnswer::Skipped;
@@ -757,7 +776,7 @@ pub fn resolve_panos(host: &mut dyn ProcHost, queries: &[PanoQuery]) -> Vec<Pano
                 PanoQuery::Search(_) => unreachable!(),
             })
             .collect();
-        let mut fetched = fetch_metadata(host, &ids);
+        let mut fetched = fetch_metadata(session, &ids);
         for (k, &i) in id_slots.iter().enumerate() {
             answers[i] = if fetched.failed[k] {
                 PanoAnswer::Failed

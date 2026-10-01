@@ -76,6 +76,9 @@ impl ProcHost for MockProcHost {
         self.many.push(reqs.len());
         reqs.iter().map(|r| self.fetch(r)).collect()
     }
+    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+        vec![PanoAnswer::Failed; queries.len()]
+    }
     fn classify(&mut self, dataset: &str, lat: f64, lng: f64) -> AppResult<Option<String>> {
         self.classified.push((dataset.to_string(), lat, lng));
         Ok(self.classify_answer.clone())

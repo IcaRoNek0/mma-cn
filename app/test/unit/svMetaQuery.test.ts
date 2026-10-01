@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { IdQuery, Pano, PanoAnswer } from "@/bindings.gen";
-import { GET_METADATA_INFLIGHT, SVMETA_FIELDS } from "@/lib/sv/constants";
+import { SVMETA_FIELDS } from "@/lib/sv/constants";
 import { KNOWN_FIELDS } from "@/bindings.consts";
 import { CAR_PANO } from "./fixtures/pano";
 
@@ -107,10 +107,7 @@ describe("svMetadata", () => {
 
 		const [data] = await svMetadata(["pA"]);
 		expect(procedureQuery).toHaveBeenCalledWith(
-			expect.objectContaining({
-				entry: "res://procedures/svMeta.js",
-				inflight: GET_METADATA_INFLIGHT,
-			}),
+			expect.objectContaining({ entry: "res://procedures/svMeta.js" }),
 			JSON.stringify({ op: "metadata", panoIds: ["pA"] }),
 			null,
 		);

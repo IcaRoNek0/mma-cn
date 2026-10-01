@@ -99,7 +99,6 @@ describe("exactDateProvider", () => {
 		expect(exactDateProvider.procedure).toMatchObject({
 			entry: "res://procedures/exactDate.js",
 			batch: { mode: "chunk", size: 50 },
-			inflight: 512,
 		});
 	});
 

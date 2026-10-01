@@ -1,4 +1,5 @@
 pub(crate) mod feedback;
+pub(crate) mod fetch;
 pub(crate) mod gdoc;
 pub(crate) mod geocoder;
 pub(crate) mod geoguessr;

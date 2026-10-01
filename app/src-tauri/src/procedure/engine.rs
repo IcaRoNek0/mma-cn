@@ -2,36 +2,31 @@
 //! over paged location batches, applies the resulting patches, and reports
 //! progress. Nothing here knows what any provider actually computes.
 
-use super::{HttpRequestSpec, HttpResponse, PatchEntry, ProcHost, ProcShape, Procedure};
+use super::{PatchEntry, ProcHost, ProcShape, Procedure};
+use crate::net::fetch::{
+    self, Endpoint, HttpRequestSpec, HttpResponse, Policy, RateCost, Session, Transport,
+};
 use crate::selections::{self, neighborhood, Selector};
 use crate::store::engine::{
     apply_updates, ExternalMutation, LocationPatch, Store, StoreState, Update, WindowLabel,
 };
+use crate::sv::pano::{self, PanoAnswer, PanoQuery};
 use crate::types::wire_str_enum;
 use crate::types::{AppError, AppResult, Location};
-use futures::executor;
-use futures::stream::{FuturesUnordered, StreamExt};
 use serde_json::value::RawValue;
 use std::collections::HashMap;
-use std::future::Future;
 use std::mem;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tokio::runtime::Builder;
-use tokio::runtime::Runtime;
-use tokio::sync::Semaphore;
-use tokio::sync::SemaphorePermit;
 use tokio::task;
-use tokio::time;
 
 /// Locations materialized per lock acquisition. The engine never holds more than
 /// one page of rows in memory per provider.
@@ -39,13 +34,6 @@ const PAGE_SIZE: usize = 10_000;
 /// Procedure instances one provider may run at once. An instance costs a thread and an
 /// interpreter, so this bounds the machine; network width is `inflight`.
 const MAX_INSTANCES: u32 = 64;
-/// Requests one provider keeps in flight when it declares no `inflight`.
-const DEFAULT_INFLIGHT: u32 = 48;
-/// Ceiling on a provider's in-flight requests. These are futures, not threads, so it
-/// bounds what the remote endpoint sees rather than what the machine can hold.
-const MAX_INFLIGHT: u32 = 1024;
-/// Ceiling on a declared retry policy's total tries per request.
-const MAX_ATTEMPTS: u32 = 8;
 
 /// Procedure instances a provider gets. `instances` is for procedures that cannot run beside
 /// themselves -- one sidecar process, one large model in memory; everything else takes
@@ -55,7 +43,6 @@ fn instance_count(decl: &ProviderDecl) -> usize {
     decl.instances.unwrap_or(default).clamp(1, MAX_INSTANCES) as usize
 }
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
-const DEFAULT_BACKOFF: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
 // Declarations (from JS)
@@ -74,45 +61,6 @@ pub enum BatchMode {
     DedupeBy {
         key: String,
     },
-}
-
-wire_str_enum! {
-    /// What one attempt charges the bucket: the call itself, or one per row in its batch
-    /// (for APIs that bill multi-row requests per row).
-    derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Deserialize, specta::Type)
-    pub enum RateCost {
-        /// Each attempt charges the rate limit once, however many rows it carries.
-        #[default]
-        Request = "request",
-        /// Each attempt charges the rate limit once per row it carries; a query carries no rows and charges once.
-        Row = "row",
-    }
-}
-
-/// Rate limit: `units` calls per `perMs` milliseconds, refilled continuously.
-#[derive(Clone, Copy, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct RateSpec {
-    pub units: u32,
-    pub per_ms: u32,
-    #[serde(default)]
-    pub cost: RateCost,
-}
-
-/// The statuses a request is worth re-sending on: the endpoint is overloaded or wedged
-/// rather than answering the request it was given. Google's frontend sheds a burst with
-/// 502 as readily as with 429, so a list that omits it drops rows a second try would
-/// have resolved.
-pub const TRANSIENT_STATUSES: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
-/// Tries a request gets when the provider declares no policy of its own.
-const DEFAULT_ATTEMPTS: u32 = 3;
-
-/// Retry only the listed HTTP statuses, up to `attempts` total tries.
-#[derive(Clone, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct RetrySpec {
-    pub attempts: u32,
-    pub on: Vec<u16>,
 }
 
 wire_str_enum! {
@@ -167,18 +115,22 @@ pub struct ProviderDecl {
 pub struct ProcedureDecl {
     /// The procedure module: an absolute path, or `res://<rel>` for one bundled with the app.
     pub entry: String,
-    #[serde(default)]
-    pub rate: Option<RateSpec>,
-    #[serde(default)]
-    pub retry: Option<RetrySpec>,
-    /// Requests one run or one query of the procedure may have in flight at once. A run's
-    /// instances share the budget; a separate run or query gets its own.
-    #[serde(default)]
-    pub inflight: Option<u32>,
+    #[serde(flatten)]
+    pub policy: Policy,
     /// Procedure-specific configuration, a JSON value as text. Passed through verbatim
     /// inside the config object every entry point receives.
     #[serde(default)]
     pub config: Option<String>,
+}
+
+impl ProcedureDecl {
+    /// Where the procedure's own requests are charged: the module, under the policy it declares.
+    fn endpoint(&self) -> Endpoint {
+        Endpoint {
+            name: self.entry.clone().into(),
+            policy: self.policy.clone(),
+        }
+    }
 }
 
 /// What every entry point of a procedure receives as its last argument: the engine's view of
@@ -192,14 +144,6 @@ pub struct ProcedureConfig<T> {
     pub force: bool,
     /// The procedure's own configuration, or null when none was declared or it did not parse.
     pub config: Option<T>,
-}
-
-/// The declared retry policy, or the transient-status default when none is declared.
-fn retry_policy(retry: Option<&RetrySpec>) -> (u32, &[u16]) {
-    match retry {
-        Some(r) => (r.attempts, r.on.as_slice()),
-        None => (DEFAULT_ATTEMPTS, &TRANSIENT_STATUSES),
-    }
 }
 
 #[derive(serde::Serialize, Clone, specta::Type, tauri_specta::Event)]
@@ -246,10 +190,6 @@ pub struct ProcedureResult {
 
 pub type ProcedureFactory = Box<dyn Fn(&str) -> AppResult<Box<dyn Procedure>> + Send + Sync>;
 
-/// One request, in flight. Async because a provider's width is counted in requests and
-/// not in threads: hundreds of these can be pending on the http runtime at once.
-pub type FetchFuture = Pin<Box<dyn Future<Output = AppResult<HttpResponse>> + Send>>;
-pub type FetchFn = Box<dyn Fn(HttpRequestSpec) -> FetchFuture + Send + Sync>;
 pub type ProgressSink = Box<dyn Fn(ProcedureProgress) + Send + Sync>;
 /// Where a `Collect` provider's pages go. Production emits them; tests record them.
 pub type ResultSink = Box<dyn Fn(ProcedureResult) + Send + Sync>;
@@ -321,12 +261,10 @@ impl Partials {
 }
 
 /// Everything the engine reaches outside the store. Production wires the QuickJS host
-/// and an async reqwest client; tests inject mocks.
+/// and the app's transport; tests inject mocks.
 pub struct EngineDeps {
     pub factory: ProcedureFactory,
-    pub fetch: FetchFn,
-    /// First retry delay; doubles per attempt. Tests shrink it to keep runs fast.
-    pub backoff: Duration,
+    pub transport: Arc<Transport>,
 }
 
 impl EngineDeps {
@@ -336,8 +274,7 @@ impl EngineDeps {
                 let proc = super::quickjs::checkout(&resolve_entry(entry)?)?;
                 Ok(Box::new(proc) as Box<dyn Procedure>)
             }),
-            fetch: Box::new(|req| Box::pin(http_fetch(req))),
-            backoff: DEFAULT_BACKOFF,
+            transport: Transport::production(),
         }
     }
 }
@@ -358,81 +295,6 @@ fn resolve_entry(spec: &str) -> AppResult<PathBuf> {
         .resource_dir()
         .map_err(|e| AppError(format!("procedure: resource dir unavailable: {e}")))?;
     Ok(dir.join(rel))
-}
-
-/// Connections the client spreads requests over. Google caps concurrent streams per
-/// HTTP/2 connection (~100), so one connection silently throttles a wide provider's
-/// `inflight`; each client holds its own connection and requests deal round-robin.
-const HTTP_CONNECTIONS: usize = 8;
-
-fn http_client() -> &'static reqwest::Client {
-    static POOL: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let pool = POOL.get_or_init(|| {
-        (0..HTTP_CONNECTIONS)
-            .map(|_| {
-                reqwest::Client::builder()
-                    .use_rustls_tls()
-                    .timeout(Duration::from_secs(30))
-                    .build()
-                    .expect("failed to build the procedure http client")
-            })
-            .collect()
-    });
-    &pool[NEXT.fetch_add(1, Ordering::Relaxed) % pool.len()]
-}
-
-/// Test-only: swap the origin of an outgoing URL for the local e2e Street View stub,
-/// keeping path and query.
-#[cfg(feature = "e2e")]
-fn rewrite_origin(url: &str, origin: &str) -> String {
-    let path = url
-        .find("://")
-        .map(|i| i + 3)
-        .and_then(|start| url[start..].find('/').map(|j| &url[start + j..]))
-        .unwrap_or("/");
-    format!("{}{}", origin.trim_end_matches('/'), path)
-}
-
-#[cfg(feature = "e2e")]
-fn e2e_origin() -> Option<&'static str> {
-    static O: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    O.get_or_init(|| {
-        std::env::var("MMA_E2E_SV_ORIGIN")
-            .ok()
-            .filter(|s| !s.is_empty())
-    })
-    .as_deref()
-}
-
-async fn http_fetch(req: HttpRequestSpec) -> AppResult<HttpResponse> {
-    let method = reqwest::Method::from_bytes(req.method.as_bytes())
-        .map_err(|e| AppError(format!("procedure: bad method '{}': {e}", req.method)))?;
-    #[cfg(feature = "e2e")]
-    let url = match e2e_origin() {
-        Some(o) => rewrite_origin(&req.url, o),
-        None => req.url.clone(),
-    };
-    #[cfg(not(feature = "e2e"))]
-    let url = &req.url;
-    let mut rb = http_client().request(method, url.as_str());
-    for (k, v) in &req.headers {
-        rb = rb.header(k.as_str(), v.as_str());
-    }
-    if let Some(body) = &req.body {
-        rb = rb.body(body.clone());
-    }
-    let resp = rb
-        .send()
-        .await
-        .map_err(|e| AppError(format!("procedure: request failed: {e}")))?;
-    let status = resp.status().as_u16();
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError(format!("procedure: body read failed: {e}")))?
-        .to_vec();
-    Ok(HttpResponse { status, body })
 }
 
 // ---------------------------------------------------------------------------
@@ -481,258 +343,6 @@ pub(crate) fn producers(list: &[ProviderDecl]) -> Vec<Vec<usize>> {
                 })
                 .collect()
         })
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Rate limiting
-// ---------------------------------------------------------------------------
-
-const ABORT_POLL: Duration = Duration::from_millis(50);
-
-struct RateLimiter {
-    capacity: f64,
-    /// Tokens regained per millisecond.
-    per_ms: f64,
-    state: Mutex<(f64, Instant)>,
-}
-
-impl RateLimiter {
-    fn new(spec: RateSpec) -> Option<Self> {
-        if spec.units == 0 || spec.per_ms == 0 {
-            return None;
-        }
-        Some(RateLimiter {
-            capacity: spec.units as f64,
-            per_ms: spec.units as f64 / spec.per_ms as f64,
-            state: Mutex::new((spec.units as f64, Instant::now())),
-        })
-    }
-
-    /// Waits until `cost` tokens are available, or returns false once `aborted`. Sleeps
-    /// outside the lock so waiters queue, in steps short enough that a cancel lands fast.
-    /// A cost above capacity is clamped, otherwise it could never be paid.
-    async fn acquire(&self, cost: u32, aborted: &(dyn Fn() -> bool + Sync)) -> bool {
-        let want = (cost.max(1) as f64).min(self.capacity);
-        loop {
-            if aborted() {
-                return false;
-            }
-            let wait = {
-                let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                let now = Instant::now();
-                let elapsed_ms = now.duration_since(st.1).as_secs_f64() * 1000.0;
-                st.0 = (st.0 + elapsed_ms * self.per_ms).min(self.capacity);
-                st.1 = now;
-                if st.0 >= want {
-                    st.0 -= want;
-                    return true;
-                }
-                Duration::from_secs_f64((want - st.0) / self.per_ms / 1000.0)
-            };
-            time::sleep(wait.clamp(Duration::from_micros(200), ABORT_POLL)).await;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fetching
-// ---------------------------------------------------------------------------
-
-/// What a request declined by a cancelling run answers with.
-pub(super) const CANCELLED: &str = "procedure: run cancelled";
-
-/// A provider's share of the network for the length of its run: how many requests may be
-/// in flight at once, and how fast they may be issued. Every instance of the provider
-/// draws on the same budget, so throughput is a property of the provider rather than of
-/// how many instances happen to be running.
-struct FetchBudget {
-    slots: Semaphore,
-    limiter: Option<RateLimiter>,
-    state: Arc<BudgetState>,
-}
-
-/// What a budget is passing at this instant, shared with the activity snapshot. Atomics
-/// only: a reader must cost the request path nothing.
-struct BudgetState {
-    width: u32,
-    outstanding: AtomicU32,
-    rate_waiting: AtomicU32,
-    retries: AtomicU32,
-}
-
-/// A slot held for the length of one request. Dropping it frees the slot and clears the
-/// request from the outstanding count together, so an early return cannot leak either.
-struct Admitted<'a> {
-    _slot: SemaphorePermit<'a>,
-    state: &'a BudgetState,
-}
-
-impl Drop for Admitted<'_> {
-    fn drop(&mut self) {
-        self.state.outstanding.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl FetchBudget {
-    fn new(inflight: Option<u32>, rate: Option<RateSpec>) -> Self {
-        let width = inflight.unwrap_or(DEFAULT_INFLIGHT).clamp(1, MAX_INFLIGHT);
-        FetchBudget {
-            slots: Semaphore::new(width as usize),
-            limiter: rate.and_then(RateLimiter::new),
-            state: Arc::new(BudgetState {
-                width,
-                outstanding: AtomicU32::new(0),
-                rate_waiting: AtomicU32::new(0),
-                retries: AtomicU32::new(0),
-            }),
-        }
-    }
-
-    /// Waits for the rate bucket, then for a slot, or answers `None` once `aborted`. The
-    /// slot is held until the response lands, so `inflight` counts requests actually
-    /// outstanding.
-    async fn admit(&self, cost: u32, aborted: &(dyn Fn() -> bool + Sync)) -> Option<Admitted<'_>> {
-        if let Some(l) = &self.limiter {
-            self.state.rate_waiting.fetch_add(1, Ordering::Relaxed);
-            let paid = l.acquire(cost, aborted).await;
-            self.state.rate_waiting.fetch_sub(1, Ordering::Relaxed);
-            if !paid {
-                return None;
-            }
-        }
-        let slot = self
-            .slots
-            .acquire()
-            .await
-            .expect("the budget semaphore is never closed");
-        self.state.outstanding.fetch_add(1, Ordering::Relaxed);
-        Some(Admitted {
-            _slot: slot,
-            state: &self.state,
-        })
-    }
-}
-
-/// The runtime every procedure request runs on. Requests are futures here, not threads,
-/// which is what lets `inflight` be hundreds while `instances` stays near the core count.
-fn http_runtime() -> &'static Runtime {
-    static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| {
-        Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .thread_name("procedure-http")
-            .build()
-            .expect("failed to build the procedure http runtime")
-    })
-}
-
-/// Drive `f` on the calling thread with the http runtime entered, so the requests and
-/// timers inside it reach that runtime's driver. Entering rather than `Runtime::block_on`
-/// keeps this callable from a thread that is already inside a runtime.
-fn drive<T>(f: impl Future<Output = T>) -> T {
-    let _entered = http_runtime().enter();
-    executor::block_on(f)
-}
-
-/// One request under a retry policy: `attempts` total tries, sleeping `backoff` and
-/// doubling between the statuses `retry_on` names. Budget is paid per attempt.
-async fn fetch_one(
-    deps: &EngineDeps,
-    budget: &FetchBudget,
-    cost: u32,
-    attempts: u32,
-    retry_on: &[u16],
-    aborted: &(dyn Fn() -> bool + Sync),
-    req: &HttpRequestSpec,
-) -> AppResult<HttpResponse> {
-    let attempts = attempts.clamp(1, MAX_ATTEMPTS);
-    let mut delay = deps.backoff;
-    for attempt in 0..attempts {
-        let resp = {
-            let Some(_slot) = budget.admit(cost, aborted).await else {
-                return Err(AppError(CANCELLED.into()));
-            };
-            // Checked holding the slot: a request that waited behind a long backlog must
-            // not be sent once the run is cancelling.
-            if aborted() {
-                return Err(AppError(CANCELLED.into()));
-            }
-            let answered = (deps.fetch)(req.clone()).await;
-            record_fetch();
-            answered?
-        };
-        if !retry_on.contains(&resp.status) || attempt + 1 == attempts {
-            return Ok(resp);
-        }
-        log::debug!(
-            "[procedure] status {} on attempt {}, backing off {:?}",
-            resp.status,
-            attempt + 1,
-            delay
-        );
-        budget.state.retries.fetch_add(1, Ordering::Relaxed);
-        time::sleep(delay).await;
-        delay = delay.saturating_mul(2);
-    }
-    unreachable!("attempts is at least 1")
-}
-
-/// Answer every request as wide as the budget allows, handing each answer over the
-/// moment it lands, in completion order. A request that fails answers with its own
-/// error: one bad request does not lose the others.
-#[allow(clippy::too_many_arguments)]
-fn fetch_streamed(
-    deps: &EngineDeps,
-    budget: &FetchBudget,
-    cost: u32,
-    attempts: u32,
-    retry_on: &[u16],
-    aborted: &(dyn Fn() -> bool + Sync),
-    reqs: &[HttpRequestSpec],
-    on_each: &mut dyn FnMut(usize, AppResult<HttpResponse>),
-) {
-    drive(async {
-        let mut pending: FuturesUnordered<_> = reqs
-            .iter()
-            .enumerate()
-            .map(|(i, req)| async move {
-                (
-                    i,
-                    fetch_one(deps, budget, cost, attempts, retry_on, aborted, req).await,
-                )
-            })
-            .collect();
-        while let Some((i, result)) = pending.next().await {
-            on_each(i, result);
-        }
-    })
-}
-
-/// [`fetch_streamed`], answered in request order once everything is done.
-fn fetch_all(
-    deps: &EngineDeps,
-    budget: &FetchBudget,
-    cost: u32,
-    attempts: u32,
-    retry_on: &[u16],
-    aborted: &(dyn Fn() -> bool + Sync),
-    reqs: &[HttpRequestSpec],
-) -> Vec<AppResult<HttpResponse>> {
-    let mut out: Vec<Option<AppResult<HttpResponse>>> = reqs.iter().map(|_| None).collect();
-    fetch_streamed(
-        deps,
-        budget,
-        cost,
-        attempts,
-        retry_on,
-        aborted,
-        reqs,
-        &mut |i, r| out[i] = Some(r),
-    );
-    out.into_iter()
-        .map(|r| r.expect("every request answers exactly once"))
         .collect()
 }
 
@@ -896,11 +506,11 @@ static LIVE_PROVIDERS: Live<ProviderRun> = Live::new();
 static LIVE_QUERIES: Live<QueryRun> = Live::new();
 
 /// One provider working its share of a run. Counts come from the progress it already
-/// keeps; network state comes from the budget every one of its instances draws on.
+/// keeps; network state comes from the session every one of its instances draws on.
 struct ProviderRun {
     label: Option<String>,
     progress: Arc<ProviderProgress>,
-    budget: Arc<BudgetState>,
+    session: Arc<Session>,
     instances: AtomicU32,
 }
 
@@ -923,61 +533,7 @@ impl Drop for InstanceGuard<'_> {
 /// One procedure answering a query.
 struct QueryRun {
     entry: String,
-    budget: Arc<BudgetState>,
-}
-
-/// Seconds of answered requests the engine-wide rate averages over.
-const RATE_WINDOW_SECS: u64 = 5;
-
-/// One second of answered requests, stamped with the second it counts, so a bucket the
-/// ring has lapped reads as empty instead of as old traffic.
-struct RateBucket {
-    second: AtomicU64,
-    hits: AtomicU32,
-}
-
-impl RateBucket {
-    const fn new() -> Self {
-        RateBucket {
-            second: AtomicU64::new(u64::MAX),
-            hits: AtomicU32::new(0),
-        }
-    }
-}
-
-/// A bucket wider than the window, so the second still filling never evicts the oldest
-/// second the average still wants.
-static RATE: [RateBucket; RATE_WINDOW_SECS as usize + 1] =
-    [const { RateBucket::new() }; RATE_WINDOW_SECS as usize + 1];
-
-fn engine_second() -> u64 {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    EPOCH.get_or_init(Instant::now).elapsed().as_secs()
-}
-
-fn record_fetch() {
-    let second = engine_second();
-    let bucket = &RATE[(second % RATE.len() as u64) as usize];
-    if bucket.second.swap(second, Ordering::Relaxed) == second {
-        bucket.hits.fetch_add(1, Ordering::Relaxed);
-    } else {
-        bucket.hits.store(1, Ordering::Relaxed);
-    }
-}
-
-/// Requests answered per second across the window. The second still filling is left out,
-/// so the figure does not dip at whatever moment it is read.
-fn fetch_rate() -> f64 {
-    let now = engine_second();
-    let hits: u32 = RATE
-        .iter()
-        .filter(|b| {
-            let second = b.second.load(Ordering::Relaxed);
-            second < now && now - second <= RATE_WINDOW_SECS
-        })
-        .map(|b| b.hits.load(Ordering::Relaxed))
-        .sum();
-    hits as f64 / RATE_WINDOW_SECS as f64
+    session: Arc<Session>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,12 +754,13 @@ pub(crate) fn run_provider(ctx: &RunCtx, decl: &ProviderDecl) -> AppResult<()> {
     prog.start();
     let force = decl.force.unwrap_or(ctx.force);
     let batch_mode = effective_batch_mode(ctx, decl)?;
-    // One budget for the provider, not one per page or per instance.
-    let budget = FetchBudget::new(decl.procedure.inflight, decl.procedure.rate);
+    // One session for the provider, not one per page or per instance.
+    let session = Arc::new(Session::new(ctx.deps.transport.clone(), ctx.cancel.clone()));
+    let endpoint = decl.procedure.endpoint();
     let live = LIVE_PROVIDERS.add(ProviderRun {
         label: decl.label.clone(),
         progress: prog.clone(),
-        budget: budget.state.clone(),
+        session: session.clone(),
         instances: AtomicU32::new(0),
     });
     let config = config_json(&decl.fields, force, decl.procedure.config.as_deref());
@@ -1241,12 +798,18 @@ pub(crate) fn run_provider(ctx: &RunCtx, decl: &ProviderDecl) -> AppResult<()> {
     let outcome = thread::scope(|s| {
         for mut proc in procs {
             let out_tx = out_tx.clone();
-            let (batch_rx, budget, prog, live, config) =
-                (&batch_rx, &budget, &prog, &live, config.as_str());
+            let (batch_rx, session, endpoint, prog, live, config) = (
+                &batch_rx,
+                &*session,
+                &endpoint,
+                &prog,
+                &live,
+                config.as_str(),
+            );
             s.spawn(move || {
                 let _alive = live.instance();
                 run_instance(
-                    ctx, decl, budget, prog, &mut *proc, batch_rx, &out_tx, config,
+                    ctx, decl, session, endpoint, prog, &mut *proc, batch_rx, &out_tx, config,
                 )
             });
         }
@@ -1616,10 +1179,12 @@ struct PageOutput {
 }
 
 /// One procedure instance, working the queue until it closes or the run is cancelled.
+#[allow(clippy::too_many_arguments)]
 fn run_instance(
     ctx: &RunCtx,
     decl: &ProviderDecl,
-    budget: &FetchBudget,
+    session: &Session,
+    endpoint: &Endpoint,
     prog: &ProviderProgress,
     proc: &mut dyn Procedure,
     batches: &Mutex<mpsc::Receiver<Tagged>>,
@@ -1641,10 +1206,10 @@ fn run_instance(
         }
         let mut host = EngineHost {
             ctx,
-            decl,
             fanout: batch.fanout.as_ref(),
-            budget,
-            rate_cost: match decl.procedure.rate.map(|r| r.cost) {
+            session,
+            endpoint,
+            rate_cost: match decl.procedure.policy.rate.map(|r| r.cost) {
                 Some(RateCost::Row) => batch.rows.len() as u32,
                 _ => 1,
             },
@@ -1840,12 +1405,12 @@ fn invalidate_derived(
 
 struct EngineHost<'a> {
     ctx: &'a RunCtx<'a>,
-    decl: &'a ProviderDecl,
     /// Under `DedupeBy`, representative id -> every id sharing its key; a failure of the
     /// representative is every sharer's failure, as its answer would have been theirs.
     fanout: Option<&'a HashMap<u32, Vec<u32>>>,
-    /// The provider's, not this instance's: every instance shares one budget.
-    budget: &'a FetchBudget,
+    /// The provider's, not this instance's: every instance shares one session.
+    session: &'a Session,
+    endpoint: &'a Endpoint,
     /// Tokens one fetch attempt charges, per the declared `RateCost`.
     rate_cost: u32,
     prog: &'a ProviderProgress,
@@ -1863,36 +1428,11 @@ impl ProcHost for EngineHost<'_> {
     }
 
     fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        let (attempts, on) = retry_policy(self.decl.procedure.retry.as_ref());
-        let ctx = self.ctx;
-        fetch_all(
-            ctx.deps,
-            self.budget,
-            self.rate_cost,
-            attempts,
-            on,
-            &|| ctx.aborted(),
-            reqs,
-        )
+        self.session.fetch_many(self.endpoint, self.rate_cost, reqs)
     }
 
-    fn fetch_stream(
-        &mut self,
-        reqs: &[HttpRequestSpec],
-        on_each: &mut dyn FnMut(usize, AppResult<HttpResponse>),
-    ) {
-        let (attempts, on) = retry_policy(self.decl.procedure.retry.as_ref());
-        let ctx = self.ctx;
-        fetch_streamed(
-            ctx.deps,
-            self.budget,
-            self.rate_cost,
-            attempts,
-            on,
-            &|| ctx.aborted(),
-            reqs,
-            on_each,
-        )
+    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+        pano::resolve_panos(self.session, queries, &mut |_, _| {})
     }
 
     fn neighbors(
@@ -1936,15 +1476,13 @@ impl ProcHost for EngineHost<'_> {
 /// Host for `query`. Effects are allowed (a query exists to reach a remote API), but
 /// there is no run to report into: progress and failures go nowhere. A cancelled query
 /// has its requests declined, the same way a cancelled run does.
-struct QueryHost<'a> {
-    deps: &'a EngineDeps,
-    decl: &'a ProcedureDecl,
-    budget: FetchBudget,
-    aborted: &'a (dyn Fn() -> bool + Sync),
+struct QueryHost {
+    session: Arc<Session>,
+    endpoint: Endpoint,
     partials: Option<Arc<Partials>>,
 }
 
-impl ProcHost for QueryHost<'_> {
+impl ProcHost for QueryHost {
     fn fetch(&mut self, req: &HttpRequestSpec) -> AppResult<HttpResponse> {
         self.fetch_many(slice::from_ref(req))
             .pop()
@@ -1952,26 +1490,17 @@ impl ProcHost for QueryHost<'_> {
     }
 
     fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
-        let (attempts, on) = retry_policy(self.decl.retry.as_ref());
-        fetch_all(self.deps, &self.budget, 1, attempts, on, self.aborted, reqs)
+        self.session.fetch_many(&self.endpoint, 1, reqs)
     }
 
-    fn fetch_stream(
-        &mut self,
-        reqs: &[HttpRequestSpec],
-        on_each: &mut dyn FnMut(usize, AppResult<HttpResponse>),
-    ) {
-        let (attempts, on) = retry_policy(self.decl.retry.as_ref());
-        fetch_streamed(
-            self.deps,
-            &self.budget,
-            1,
-            attempts,
-            on,
-            self.aborted,
-            reqs,
-            on_each,
-        )
+    /// Search answers stream out the moment each lands, under its query index.
+    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+        let partials = self.partials.as_deref();
+        pano::resolve_panos(&self.session, queries, &mut |i, answer| {
+            if let (Some(p), Ok(json)) = (partials, serde_json::to_string(answer)) {
+                p.emit(i as u32, json);
+            }
+        })
     }
 
     fn emitter(&self) -> Option<Arc<Partials>> {
@@ -1981,7 +1510,7 @@ impl ProcHost for QueryHost<'_> {
     fn progress(&mut self, _units: u32) {}
     fn fail(&mut self, _id: u32) {}
     fn aborted(&self) -> bool {
-        (self.aborted)()
+        self.session.aborted()
     }
 }
 
@@ -1992,21 +1521,19 @@ pub fn run_query(
     deps: &EngineDeps,
     decl: &ProcedureDecl,
     input: &str,
-    aborted: &(dyn Fn() -> bool + Sync),
+    cancel: Arc<AtomicBool>,
     partials: Option<Arc<Partials>>,
 ) -> AppResult<String> {
     let mut proc = (deps.factory)(&decl.entry)?;
     let config = config_json(&[], false, decl.config.as_deref());
-    let budget = FetchBudget::new(decl.inflight, decl.rate);
+    let session = Arc::new(Session::new(deps.transport.clone(), cancel));
     let _live = LIVE_QUERIES.add(QueryRun {
         entry: decl.entry.clone(),
-        budget: budget.state.clone(),
+        session: session.clone(),
     });
     let mut host = QueryHost {
-        deps,
-        decl,
-        budget,
-        aborted,
+        session,
+        endpoint: decl.endpoint(),
         partials: partials.clone(),
     };
     let out = proc.query(input.as_bytes(), &mut host, &config);
@@ -2176,13 +1703,7 @@ pub async fn procedure_query(
                 }),
             ))
         });
-        run_query(
-            &deps,
-            &procedure,
-            &input,
-            &|| flag.load(Ordering::Relaxed),
-            partials,
-        )
+        run_query(&deps, &procedure, &input, flag, partials)
     })
     .await;
     if let Some(id) = run_id {
@@ -2254,43 +1775,45 @@ pub fn procedure_activity() -> ProcedureActivity {
     let runs = LIVE_PROVIDERS
         .snapshot()
         .iter()
-        .map(|r| ProviderActivity {
-            run_id: r.progress.run_id,
-            provider_id: r.progress.provider_id.clone(),
-            label: r.label.clone(),
-            total: r.progress.total,
-            done: r.progress.done.load(Ordering::Relaxed),
-            failed: r.progress.failed.load(Ordering::Relaxed),
-            skipped: r.progress.skipped.load(Ordering::Relaxed),
-            instances: r.instances.load(Ordering::Relaxed),
-            inflight: r.budget.outstanding.load(Ordering::Relaxed),
-            inflight_limit: r.budget.width,
-            rate_waiting: r.budget.rate_waiting.load(Ordering::Relaxed),
-            retries: r.budget.retries.load(Ordering::Relaxed),
+        .map(|r| {
+            let net = r.session.usage();
+            ProviderActivity {
+                run_id: r.progress.run_id,
+                provider_id: r.progress.provider_id.clone(),
+                label: r.label.clone(),
+                total: r.progress.total,
+                done: r.progress.done.load(Ordering::Relaxed),
+                failed: r.progress.failed.load(Ordering::Relaxed),
+                skipped: r.progress.skipped.load(Ordering::Relaxed),
+                instances: r.instances.load(Ordering::Relaxed),
+                inflight: net.inflight,
+                inflight_limit: net.inflight_limit,
+                rate_waiting: net.rate_waiting,
+                retries: net.retries,
+            }
         })
         .collect();
     let mut queries: Vec<QueryActivity> = Vec::new();
     for q in LIVE_QUERIES.snapshot() {
-        let inflight = q.budget.outstanding.load(Ordering::Relaxed);
-        let retries = q.budget.retries.load(Ordering::Relaxed);
+        let net = q.session.usage();
         match queries.iter_mut().find(|a| a.entry == q.entry) {
             Some(a) => {
-                a.inflight += inflight;
-                a.inflight_limit += q.budget.width;
-                a.retries += retries;
+                a.inflight += net.inflight;
+                a.inflight_limit += net.inflight_limit;
+                a.retries += net.retries;
             }
             None => queries.push(QueryActivity {
                 entry: q.entry.clone(),
-                inflight,
-                inflight_limit: q.budget.width,
-                retries,
+                inflight: net.inflight,
+                inflight_limit: net.inflight_limit,
+                retries: net.retries,
             }),
         }
     }
     ProcedureActivity {
         runs,
         queries,
-        requests_per_second: fetch_rate(),
+        requests_per_second: fetch::requests_per_second(),
     }
 }
 

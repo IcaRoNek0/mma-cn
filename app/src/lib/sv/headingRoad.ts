@@ -7,7 +7,6 @@ import {
 	type BulkOpts,
 } from "@/lib/data/procedures";
 import { panoResolveProvider } from "@/lib/sv/providers";
-import { GET_METADATA_INFLIGHT } from "@/lib/sv/constants";
 import { registerProvider, type Provider } from "@/lib/data/fieldDefs";
 import { msg } from "@/lib/i18n";
 
@@ -26,7 +25,6 @@ export const headingRoadProvider: Provider<unknown, HeadingRoadConfig> = {
 	procedure: {
 		entry: procedureEntry("headingRoad"),
 		batch: { mode: "dedupeBy", key: "panoId" },
-		inflight: GET_METADATA_INFLIGHT,
 	},
 };
 

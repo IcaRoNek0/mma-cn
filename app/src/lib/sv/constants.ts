@@ -3,12 +3,6 @@ import { range } from "@/types/util";
 
 export const SV_SEARCH_RADIUS = 50;
 export const SV_OFFICIAL_FALLBACK_RADIUS = 25;
-/** GetMetadata requests a procedure may keep in flight, at up to 200 panos each. Tuned
- *  against the engine's connection pool: wider stopped helping at 50k rows. */
-export const GET_METADATA_INFLIGHT = 192;
-/** SingleImageSearch location lookups a procedure may keep in flight, one pano each.
- *  Tuned with the connection pool; 1024 measured slower. */
-export const LOCATION_SEARCH_INFLIGHT = 512;
 export const SV_JUMP_RADIUS = 100;
 
 /** The `extra` fields the svMeta provider produces. Keys of the Rust field table, so

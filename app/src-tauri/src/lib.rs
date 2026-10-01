@@ -342,7 +342,7 @@ fn wire_string_enums() -> [(&'static str, TsConst); 12] {
         ("IssueState", net::github::IssueState::ts_const().unstable()),
         ("MapShape", types::shape::MapShape::ts_const()),
         ("MergeWinner", store::engine::MergeWinner::ts_const()),
-        ("RateCost", procedure::engine::RateCost::ts_const()),
+        ("RateCost", net::fetch::RateCost::ts_const()),
         (
             "ResolutionSide",
             sync::engine::ResolutionSide::ts_const().unstable(),

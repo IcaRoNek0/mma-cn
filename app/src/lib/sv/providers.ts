@@ -9,12 +9,7 @@ import {
 	type Provider,
 } from "@/lib/data/fieldDefs";
 import { procedureEntry, type ProviderRun } from "@/lib/data/procedures";
-import {
-	GET_METADATA_INFLIGHT,
-	LOCATION_SEARCH_INFLIGHT,
-	SVMETA_FIELDS,
-	SV_SEARCH_RADIUS,
-} from "@/lib/sv/constants";
+import { SVMETA_FIELDS, SV_SEARCH_RADIUS } from "@/lib/sv/constants";
 import { cmd } from "@/lib/commands";
 import { toast } from "@/lib/util/toast";
 import { msg, t } from "@/lib/i18n";
@@ -52,7 +47,6 @@ export const panoResolveProvider: Provider<{ panoId: string }, PanoResolveConfig
 	procedure: {
 		entry: procedureEntry("panoResolve"),
 		batch: { mode: "chunk", size: 200 },
-		inflight: LOCATION_SEARCH_INFLIGHT,
 		config: { radius: SV_SEARCH_RADIUS },
 	},
 };
@@ -66,8 +60,6 @@ export const exactDateProvider: Provider = {
 	procedure: {
 		entry: procedureEntry("exactDate"),
 		batch: { mode: "chunk", size: 50 },
-		// A batch bisects every row's month in lockstep, four probes per row per round.
-		inflight: 512,
 	},
 };
 
@@ -125,7 +117,6 @@ export const svMetaProvider: Provider = {
 	procedure: {
 		entry: procedureEntry("svMeta"),
 		batch: { mode: "chunk", size: 1000 },
-		inflight: GET_METADATA_INFLIGHT,
 	},
 };
 

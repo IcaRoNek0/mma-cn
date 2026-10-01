@@ -1316,7 +1316,7 @@ export type Pano = {
 };
 
 /**
- *  What one query resolved to. `skipped` is a query the host never answered: an aborted
+ *  What one query resolved to. `skipped` is a query that was never answered: a cancelled
  *  run, or an id query whose id is empty.
  */
 export type PanoAnswer = { state: "found"; pano: Pano } | { state: "notFound" } | { state: "failed" } | { state: "skipped" };
@@ -1437,6 +1437,17 @@ export type PluginSidecar = {
 	sha256?: string | null,
 };
 
+/**  How hard one caller may push an endpoint. */
+export type Policy = {
+	rate?: RateSpec | null,
+	retry?: RetrySpec | null,
+	/**
+	 *  Requests one run or one query may have in flight at once. A run's instances share
+	 *  the budget; a separate run or query gets its own.
+	 */
+	inflight?: number | null,
+};
+
 /**
  *  GeoJSON-like polygon geometry. `coordinates` is the primary polygon (outer ring and
  *  optional holes); `extraPolygons` holds any further polygons of a multipolygon.
@@ -1494,19 +1505,12 @@ export type ProcedureConfig<T> = {
 export type ProcedureDecl = {
 	/**  The procedure module: an absolute path, or `res://<rel>` for one bundled with the app. */
 	entry: string,
-	rate?: RateSpec | null,
-	retry?: RetrySpec | null,
-	/**
-	 *  Requests one run or one query of the procedure may have in flight at once. A run's
-	 *  instances share the budget; a separate run or query gets its own.
-	 */
-	inflight?: number | null,
 	/**
 	 *  Procedure-specific configuration, a JSON value as text. Passed through verbatim
 	 *  inside the config object every entry point receives.
 	 */
 	config?: string | null,
-};
+} & Policy;
 
 export type ProcedureProgress = {
 	runId: number,

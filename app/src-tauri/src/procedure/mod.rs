@@ -4,24 +4,12 @@
 pub mod engine;
 pub mod quickjs;
 
+use crate::net::fetch::{HttpRequestSpec, HttpResponse};
 use crate::plugins::borders;
 use crate::plugins::sidecar;
 use crate::plugins::sidecar::SidecarStream;
+use crate::sv::pano::{PanoAnswer, PanoQuery};
 use crate::types::{AppError, AppResult};
-
-#[derive(Debug, Clone)]
-pub struct HttpRequestSpec {
-    pub method: String,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-    pub body: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: Vec<u8>,
-}
 
 /// One location's result: a `LocationPatch` as JSON. Held as text until
 /// `engine::to_updates` parses it, so the host stays free of store types.
@@ -52,17 +40,8 @@ pub trait ProcHost {
     fn fetch_many(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
         reqs.iter().map(|r| self.fetch(r)).collect()
     }
-    /// Every request at once, each answer handed over the moment it lands, in
-    /// completion order. The default answers in request order once everything is done.
-    fn fetch_stream(
-        &mut self,
-        reqs: &[HttpRequestSpec],
-        on_each: &mut dyn FnMut(usize, AppResult<HttpResponse>),
-    ) {
-        for (i, r) in self.fetch_many(reqs).into_iter().enumerate() {
-            on_each(i, r);
-        }
-    }
+    /// Every pano lookup, answered aligned to `queries`.
+    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer>;
     /// Where this host delivers partial results, when its caller listens for them.
     fn emitter(&self) -> Option<std::sync::Arc<engine::Partials>> {
         None

@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::fetch::{RateSpec, RetrySpec, SendFn, DEFAULT_INFLIGHT, TRANSIENT_STATUSES};
 use crate::procedure::quickjs::JsProcedure;
 use crate::store::arrow;
 use crate::store::engine::{render_cell_idx, Store, StoreManager};
@@ -69,11 +70,18 @@ fn decl(id: &str, batch: BatchMode) -> ProviderDecl {
     }
 }
 
+fn transport(send: SendFn) -> Arc<Transport> {
+    Arc::new(Transport {
+        send,
+        backoff: Duration::from_millis(1),
+    })
+}
+
 /// Wraps a synchronous answer in the async fetch seam. A test that observes how many
 /// requests run together writes its own async closure instead.
 fn sync_fetch(
     f: impl Fn(HttpRequestSpec) -> AppResult<HttpResponse> + Send + Sync + 'static,
-) -> FetchFn {
+) -> SendFn {
     Box::new(move |req| {
         let answer = f(req);
         Box::pin(async move { answer })
@@ -159,11 +167,11 @@ fn recording_sink() -> (Arc<ProgressSink>, Arc<Mutex<Vec<ProcedureProgress>>>) {
 }
 
 impl Harness {
-    fn new(shape: ProcShape, on_map: MapFn, fetch: FetchFn) -> Self {
+    fn new(shape: ProcShape, on_map: MapFn, fetch: SendFn) -> Self {
         Harness::with_fail(shape, on_map, fetch, None)
     }
 
-    fn with_fail(shape: ProcShape, on_map: MapFn, fetch: FetchFn, fail_id: Option<u32>) -> Self {
+    fn with_fail(shape: ProcShape, on_map: MapFn, fetch: SendFn, fail_id: Option<u32>) -> Self {
         let seen: Arc<Mutex<Vec<Vec<u32>>>> = Arc::new(Mutex::new(Vec::new()));
         let seen_f = seen.clone();
         Harness {
@@ -176,8 +184,7 @@ impl Harness {
                         fail_id,
                     }) as Box<dyn Procedure>)
                 }),
-                fetch,
-                backoff: Duration::from_millis(1),
+                transport: transport(fetch),
             },
             seen,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -589,10 +596,10 @@ fn dedupe_by_rejects_unsupported_keys() {
 // Retry
 // -----------------------------------------------------------------------
 
-fn status_sequence(statuses: Vec<u16>) -> (FetchFn, Arc<AtomicU32>) {
+fn status_sequence(statuses: Vec<u16>) -> (SendFn, Arc<AtomicU32>) {
     let calls = Arc::new(AtomicU32::new(0));
     let c = calls.clone();
-    let fetch: FetchFn = sync_fetch(move |_| {
+    let fetch: SendFn = sync_fetch(move |_| {
         let i = c.fetch_add(1, Ordering::Relaxed) as usize;
         Ok(HttpResponse {
             status: *statuses.get(i).unwrap_or(statuses.last().unwrap()),
@@ -605,7 +612,7 @@ fn status_sequence(statuses: Vec<u16>) -> (FetchFn, Arc<AtomicU32>) {
 fn run_retry(retry: RetrySpec, statuses: Vec<u16>) -> u32 {
     let (state, map_id) = setup(&[loc(1, 0.0, 0.0)]);
     let mut d = decl("retrier", BatchMode::PerRow);
-    d.procedure.retry = Some(retry);
+    d.procedure.policy.retry = Some(retry);
     let (fetch, calls) = status_sequence(statuses);
     let h = Harness::new(ProcShape::RequestMap, Arc::new(|_| Ok(Vec::new())), fetch);
     run_provider(&h.ctx(&state, &map_id), &d).unwrap();
@@ -691,69 +698,13 @@ fn no_retry_spec_leaves_a_settled_status_alone() {
 // Rate limiting
 // -----------------------------------------------------------------------
 
-#[test]
-fn rate_limiter_holds_the_declared_floor() {
-    // Bucket starts full (2), so 6 acquires wait for 4 refills at 2 per 100ms = 200ms.
-    let l = RateLimiter::new(RateSpec {
-        units: 2,
-        per_ms: 100,
-        cost: RateCost::Request,
-    })
-    .unwrap();
-    let t = Instant::now();
-    drive(async {
-        for _ in 0..6 {
-            assert!(l.acquire(1, &|| false).await);
-        }
-    });
-    let ms = t.elapsed().as_millis();
-    assert!(ms >= 180, "6 acquires took only {ms}ms");
-}
-
-#[test]
-fn a_cancel_frees_a_request_waiting_on_the_rate_limiter() {
-    let l = RateLimiter::new(RateSpec {
-        units: 1,
-        per_ms: 10_000,
-        cost: RateCost::Request,
-    })
-    .unwrap();
-    let t = Instant::now();
-    let cancelled = || t.elapsed() > Duration::from_millis(30);
-    let paid = drive(async {
-        assert!(l.acquire(1, &cancelled).await);
-        l.acquire(1, &cancelled).await
-    });
-    assert!(!paid);
-    let ms = t.elapsed().as_millis();
-    assert!(ms < 500, "the cancelled acquire took {ms}ms");
-}
-
-#[test]
-fn rate_limiter_rejects_a_degenerate_spec() {
-    assert!(RateLimiter::new(RateSpec {
-        units: 0,
-        per_ms: 100,
-        cost: RateCost::Request,
-    })
-    .is_none());
-}
-
-#[test]
-fn rate_cost_defaults_to_request() {
-    let spec: RateSpec = serde_json::from_str(r#"{"units":10,"perMs":100}"#).unwrap();
-    assert_eq!(spec.cost, RateCost::Request);
-    let spec: RateSpec = serde_json::from_str(r#"{"units":10,"perMs":100,"cost":"row"}"#).unwrap();
-    assert_eq!(spec.cost, RateCost::Row);
-}
-
 /// Runs `rows` locations as chunks of `chunk` through a RequestMap provider at the
 /// given rate spec and returns how long the whole provider took.
 fn timed_chunk_run(rows: u32, chunk: u32, rate: RateSpec) -> u128 {
     let locs: Vec<Location> = (1..=rows).map(|i| loc(i, i as f64 * 0.001, 0.0)).collect();
     let (state, map_id) = setup(&locs);
     let mut d = decl("rated", BatchMode::Chunk { size: chunk });
-    d.procedure.rate = Some(rate);
+    d.procedure.policy.rate = Some(rate);
     let (fetch, _) = status_sequence(vec![200]);
     let h = Harness::new(ProcShape::RequestMap, Arc::new(|_| Ok(Vec::new())), fetch);
     let t = Instant::now();
@@ -1146,8 +1097,7 @@ fn run_shape_reaches_the_host_fetch() {
             let hits = hits.clone();
             Box::new(move |_| Ok(Box::new(RunProc { hits: hits.clone() }) as Box<dyn Procedure>))
         },
-        fetch,
-        backoff: Duration::from_millis(1),
+        transport: transport(fetch),
     };
     let ctx = RunCtx {
         rows: Arc::new(RunRows::Map {
@@ -1467,8 +1417,7 @@ fn every_procedure_call_receives_its_config() {
             let seen = seen.clone();
             Box::new(move |_| Ok(Box::new(CfgProc { seen: seen.clone() }) as Box<dyn Procedure>))
         },
-        fetch: sync_fetch(|_| Err(AppError("no fetch expected".into()))),
-        backoff: Duration::from_millis(1),
+        transport: transport(sync_fetch(|_| Err(AppError("no fetch expected".into())))),
     };
     let ctx = RunCtx {
         rows: Arc::new(RunRows::Map {
@@ -1561,8 +1510,7 @@ fn a_real_js_procedure_reads_the_batch_as_json_rows() {
             let p = JsProcedure::load_source(SRC, "fixture.js")?;
             Ok(Box::new(p) as Box<dyn Procedure>)
         }),
-        fetch: sync_fetch(|_| Err(AppError("no fetch expected".into()))),
-        backoff: Duration::from_millis(1),
+        transport: transport(sync_fetch(|_| Err(AppError("no fetch expected".into())))),
     };
     let ctx = RunCtx {
         rows: Arc::new(RunRows::Map {
@@ -1622,8 +1570,7 @@ fn neighbor_deps() -> EngineDeps {
                     as Box<dyn Procedure>,
             )
         }),
-        fetch: sync_fetch(|_| Err(AppError("no fetch expected".into()))),
-        backoff: Duration::from_millis(1),
+        transport: transport(sync_fetch(|_| Err(AppError("no fetch expected".into())))),
     }
 }
 
@@ -1797,8 +1744,7 @@ fn engine_throughput_probe() {
                 let p = JsProcedure::load_source(SRC, "probe.js")?;
                 Ok(Box::new(p) as Box<dyn Procedure>)
             }),
-            fetch: sync_fetch(|_| Err(AppError("no fetch".into()))),
-            backoff: Duration::from_millis(1),
+            transport: transport(sync_fetch(|_| Err(AppError("no fetch".into())))),
         };
         let ctx = RunCtx {
             rows: Arc::new(RunRows::Map {
@@ -1908,22 +1854,19 @@ impl Procedure for QueryProc {
 fn procedure_decl(entry: &str) -> ProcedureDecl {
     ProcedureDecl {
         entry: entry.into(),
-        rate: None,
-        retry: None,
-        inflight: None,
+        policy: Policy::default(),
         config: None,
     }
 }
 
-fn query_deps(fetch: FetchFn) -> EngineDeps {
+fn query_deps(fetch: SendFn) -> EngineDeps {
     EngineDeps {
         factory: Box::new(|entry| {
             Ok(Box::new(QueryProc {
                 entry: entry.to_string(),
             }) as Box<dyn Procedure>)
         }),
-        fetch,
-        backoff: Duration::from_millis(1),
+        transport: transport(fetch),
     }
 }
 
@@ -1943,7 +1886,7 @@ fn run_query_returns_the_module_output_and_reaches_fetch() {
         &deps,
         &decl,
         r#"{"op":"metadata","panoIds":["a"]}"#,
-        &|| false,
+        Arc::default(),
         None,
     )
     .expect("query succeeds");
@@ -1972,8 +1915,8 @@ fn run_query_retries_a_throttled_fetch() {
             body: b"pong".to_vec(),
         })
     }));
-    let out =
-        run_query(&deps, &procedure_decl("q.js"), "{}", &|| false, None).expect("query succeeds");
+    let out = run_query(&deps, &procedure_decl("q.js"), "{}", Arc::default(), None)
+        .expect("query succeeds");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["fetched"], serde_json::json!("pong"));
     assert_eq!(calls.load(Ordering::Relaxed), 2);
@@ -1991,13 +1934,16 @@ fn a_query_follows_its_declared_retry_policy() {
         })
     }));
     let decl = ProcedureDecl {
-        retry: Some(RetrySpec {
-            attempts: 1,
-            on: vec![429],
-        }),
+        policy: Policy {
+            retry: Some(RetrySpec {
+                attempts: 1,
+                on: vec![429],
+            }),
+            ..Policy::default()
+        },
         ..procedure_decl("q.js")
     };
-    let _ = run_query(&deps, &decl, "{}", &|| false, None);
+    let _ = run_query(&deps, &decl, "{}", Arc::default(), None);
     assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
@@ -2026,14 +1972,20 @@ fn a_query_holds_its_declared_inflight_ceiling() {
     let peak = Arc::new(AtomicU32::new(0));
     let deps = EngineDeps {
         factory: Box::new(|_| Ok(Box::new(WideQueryProc(20)) as Box<dyn Procedure>)),
-        fetch: barrier_fetch(u32::MAX, Duration::from_millis(150), peak.clone()),
-        backoff: Duration::from_millis(1),
+        transport: transport(barrier_fetch(
+            u32::MAX,
+            Duration::from_millis(150),
+            peak.clone(),
+        )),
     };
     let decl = ProcedureDecl {
-        inflight: Some(8),
+        policy: Policy {
+            inflight: Some(8),
+            ..Policy::default()
+        },
         ..procedure_decl("wide.js")
     };
-    let out = run_query(&deps, &decl, "{}", &|| false, None).expect("query succeeds");
+    let out = run_query(&deps, &decl, "{}", Arc::default(), None).expect("query succeeds");
     assert_eq!(out, "20");
     assert_eq!(peak.load(Ordering::SeqCst), 8);
 }
@@ -2049,7 +2001,14 @@ fn a_cancelled_query_has_its_requests_declined() {
             body: b"never".to_vec(),
         })
     }));
-    let err = run_query(&deps, &procedure_decl("q.js"), "{}", &|| true, None).unwrap_err();
+    let err = run_query(
+        &deps,
+        &procedure_decl("q.js"),
+        "{}",
+        Arc::new(AtomicBool::new(true)),
+        None,
+    )
+    .unwrap_err();
     assert!(err.0.contains("cancelled"), "{}", err.0);
     assert_eq!(
         calls.load(Ordering::Relaxed),
@@ -2069,11 +2028,16 @@ fn run_query_surfaces_a_module_without_the_export() {
                 fail_id: None,
             }) as Box<dyn Procedure>)
         }),
-        fetch: sync_fetch(|_| Err(AppError("no fetch expected".into()))),
-        backoff: Duration::from_millis(1),
+        transport: transport(sync_fetch(|_| Err(AppError("no fetch expected".into())))),
     };
-    let err =
-        run_query(&deps, &procedure_decl("plain.js"), "{}", &|| false, None).expect_err("rejected");
+    let err = run_query(
+        &deps,
+        &procedure_decl("plain.js"),
+        "{}",
+        Arc::default(),
+        None,
+    )
+    .expect_err("rejected");
     assert!(err.0.contains("does not implement query"), "{}", err.0);
 }
 
@@ -2108,8 +2072,7 @@ impl Procedure for EmittingQueryProc {
 fn emitting_deps(count: u32) -> EngineDeps {
     EngineDeps {
         factory: Box::new(move |_| Ok(Box::new(EmittingQueryProc { count }) as Box<dyn Procedure>)),
-        fetch: sync_fetch(|_| Err(AppError("no fetch expected".into()))),
-        backoff: Duration::from_millis(1),
+        transport: transport(sync_fetch(|_| Err(AppError("no fetch expected".into())))),
     }
 }
 
@@ -2130,7 +2093,7 @@ fn a_query_streams_partials_under_the_callers_token() {
         &deps,
         &procedure_decl("e.js"),
         "{}",
-        &|| false,
+        Arc::default(),
         Some(recording_partials(&pages)),
     )
     .expect("query succeeds");
@@ -2154,7 +2117,7 @@ fn a_full_partial_page_leaves_before_the_query_ends() {
         &deps,
         &procedure_decl("e.js"),
         "{}",
-        &|| false,
+        Arc::default(),
         Some(recording_partials(&pages)),
     )
     .expect("query succeeds");
@@ -2168,76 +2131,9 @@ fn a_full_partial_page_leaves_before_the_query_ends() {
 #[test]
 fn an_untokened_query_answers_with_nothing_streamed() {
     let deps = emitting_deps(3);
-    let out = run_query(&deps, &procedure_decl("e.js"), "{}", &|| false, None)
+    let out = run_query(&deps, &procedure_decl("e.js"), "{}", Arc::default(), None)
         .expect("query succeeds without an emitter");
     assert_eq!(out, "[]");
-}
-
-/// Streams three requests and records the order their answers landed in.
-struct StreamProbeProc {
-    order: Arc<Mutex<Vec<usize>>>,
-}
-
-impl Procedure for StreamProbeProc {
-    fn shape(&self) -> ProcShape {
-        ProcShape::Run
-    }
-    fn query(
-        &mut self,
-        _input: &[u8],
-        host: &mut dyn ProcHost,
-        _config: &str,
-    ) -> AppResult<Vec<u8>> {
-        let reqs: Vec<HttpRequestSpec> = ["slow", "fast", "fast2"]
-            .iter()
-            .map(|u| HttpRequestSpec {
-                method: "GET".into(),
-                url: (*u).into(),
-                headers: Vec::new(),
-                body: None,
-            })
-            .collect();
-        let order = self.order.clone();
-        host.fetch_stream(&reqs, &mut |i, r| {
-            r.expect("every request answers");
-            order.lock().unwrap().push(i);
-        });
-        Ok(b"{}".to_vec())
-    }
-}
-
-#[test]
-fn fetch_stream_hands_answers_over_in_completion_order() {
-    let order = Arc::new(Mutex::new(Vec::new()));
-    let seen = order.clone();
-    let deps = EngineDeps {
-        factory: Box::new(move |_| {
-            Ok(Box::new(StreamProbeProc {
-                order: seen.clone(),
-            }) as Box<dyn Procedure>)
-        }),
-        fetch: Box::new(|req| {
-            Box::pin(async move {
-                if req.url == "slow" {
-                    time::sleep(Duration::from_millis(50)).await;
-                }
-                Ok(HttpResponse {
-                    status: 200,
-                    body: Vec::new(),
-                })
-            })
-        }),
-        backoff: Duration::from_millis(1),
-    };
-    run_query(&deps, &procedure_decl("s.js"), "{}", &|| false, None).expect("query succeeds");
-
-    let order = order.lock().unwrap();
-    assert_eq!(order.len(), 3);
-    assert_eq!(
-        order.last(),
-        Some(&0),
-        "the slow request answers last instead of holding the others"
-    );
 }
 
 // -----------------------------------------------------------------------
@@ -2262,7 +2158,7 @@ fn gets(n: usize) -> Vec<HttpRequestSpec> {
 /// A fetch that holds each request until `target` are in flight (or `wait` passes),
 /// recording the most it ever saw at once. The body echoes the url, so a caller can
 /// check the answers came back in request order.
-fn barrier_fetch(target: u32, wait: Duration, peak: Arc<AtomicU32>) -> FetchFn {
+fn barrier_fetch(target: u32, wait: Duration, peak: Arc<AtomicU32>) -> SendFn {
     let live = Arc::new(AtomicU32::new(0));
     Box::new(move |req: HttpRequestSpec| {
         let (live, peak) = (live.clone(), peak.clone());
@@ -2280,229 +2176,6 @@ fn barrier_fetch(target: u32, wait: Duration, peak: Arc<AtomicU32>) -> FetchFn {
             })
         })
     })
-}
-
-/// Runs `body` against an `EngineHost` built outside a run, so the host imports can be
-/// exercised on their own.
-fn with_engine_host<R>(
-    fetch: FetchFn,
-    decl: &ProviderDecl,
-    rate: Option<RateSpec>,
-    body: impl FnOnce(&mut EngineHost) -> R,
-) -> R {
-    let (state, map_id) = setup(&[loc(1, 0.0, 0.0)]);
-    let h = Harness::new(ProcShape::Run, patch_all("{}"), fetch);
-    let ctx = h.ctx(&state, &map_id);
-    let prog = ProviderProgress::new(1, decl.id.clone(), 1, Arc::new(Box::new(|_| {})));
-    let budget = FetchBudget::new(decl.procedure.inflight, rate);
-    let mut host = EngineHost {
-        ctx: &ctx,
-        decl,
-        fanout: None,
-        budget: &budget,
-        rate_cost: 1,
-        prog: &prog,
-        reported: 0,
-        failed: Vec::new(),
-    };
-    body(&mut host)
-}
-
-fn bodies(res: Vec<AppResult<HttpResponse>>) -> Vec<String> {
-    res.into_iter()
-        .map(|r| String::from_utf8(r.expect("answered").body).unwrap())
-        .collect()
-}
-
-#[test]
-fn fetch_many_puts_every_request_in_flight_at_once() {
-    let peak = Arc::new(AtomicU32::new(0));
-    let d = decl("many", BatchMode::PerRow);
-    let reqs = gets(8);
-    let out = with_engine_host(
-        barrier_fetch(8, Duration::from_secs(5), peak.clone()),
-        &d,
-        None,
-        |h| h.fetch_many(&reqs),
-    );
-    assert_eq!(peak.load(Ordering::SeqCst), 8);
-    // Answers come back in request order, not completion order.
-    assert_eq!(
-        bodies(out),
-        (0..8)
-            .map(|i| format!("https://x.test/{i}"))
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn fetch_many_holds_the_declared_inflight_ceiling() {
-    let peak = Arc::new(AtomicU32::new(0));
-    let mut d = decl("many", BatchMode::PerRow);
-    d.procedure.inflight = Some(8);
-    let n = 20;
-    let reqs = gets(n);
-    // Nothing releases the barrier, so every request waits out the same short window:
-    // whatever runs together is what the budget allows.
-    let out = with_engine_host(
-        barrier_fetch(u32::MAX, Duration::from_millis(150), peak.clone()),
-        &d,
-        None,
-        |h| h.fetch_many(&reqs),
-    );
-    assert_eq!(out.len(), n);
-    assert_eq!(peak.load(Ordering::SeqCst), 8);
-}
-
-#[test]
-fn a_provider_declaring_no_inflight_takes_the_default_width() {
-    let peak = Arc::new(AtomicU32::new(0));
-    let d = decl("many", BatchMode::PerRow);
-    assert!(d.procedure.inflight.is_none());
-    let n = DEFAULT_INFLIGHT as usize + 12;
-    let reqs = gets(n);
-    let out = with_engine_host(
-        barrier_fetch(u32::MAX, Duration::from_millis(150), peak.clone()),
-        &d,
-        None,
-        |h| h.fetch_many(&reqs),
-    );
-    assert_eq!(out.len(), n);
-    assert_eq!(peak.load(Ordering::SeqCst), DEFAULT_INFLIGHT);
-}
-
-/// The budget belongs to the provider, so more instances buy no more network: two hosts
-/// sharing one budget hold its ceiling between them.
-#[test]
-fn instances_sharing_a_budget_do_not_widen_it() {
-    let peak = Arc::new(AtomicU32::new(0));
-    let fetch = barrier_fetch(u32::MAX, Duration::from_millis(150), peak.clone());
-    let (state, map_id) = setup(&[loc(1, 0.0, 0.0)]);
-    let h = Harness::new(ProcShape::Run, patch_all("{}"), fetch);
-    let ctx = h.ctx(&state, &map_id);
-    let d = decl("many", BatchMode::PerRow);
-    let prog = ProviderProgress::new(1, d.id.clone(), 1, Arc::new(Box::new(|_| {})));
-    let budget = FetchBudget::new(Some(6), None);
-    let reqs = gets(10);
-    thread::scope(|s| {
-        for _ in 0..2 {
-            let (budget, prog, ctx, d, reqs) = (&budget, &prog, &ctx, &d, &reqs);
-            s.spawn(move || {
-                let mut host = EngineHost {
-                    ctx,
-                    decl: d,
-                    fanout: None,
-                    budget,
-                    rate_cost: 1,
-                    prog,
-                    reported: 0,
-                    failed: Vec::new(),
-                };
-                assert_eq!(host.fetch_many(reqs).len(), 10);
-            });
-        }
-    });
-    assert_eq!(peak.load(Ordering::SeqCst), 6);
-}
-
-#[test]
-fn fetch_many_retries_a_declared_status_per_request() {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let log = seen.clone();
-    let fetch: FetchFn = sync_fetch(move |req: HttpRequestSpec| {
-        let mut log = log.lock().unwrap();
-        log.push(req.url.clone());
-        // The first request is throttled once, then answers.
-        let first_try =
-            req.url.ends_with('0') && log.iter().filter(|u| **u == req.url).count() == 1;
-        Ok(HttpResponse {
-            status: if first_try { 429 } else { 200 },
-            body: req.url.as_bytes().to_vec(),
-        })
-    });
-    let mut d = decl("many", BatchMode::PerRow);
-    d.procedure.retry = Some(RetrySpec {
-        attempts: 3,
-        on: vec![429],
-    });
-    let reqs = gets(2);
-    let out = with_engine_host(fetch, &d, None, |h| h.fetch_many(&reqs));
-
-    assert_eq!(
-        bodies(out),
-        vec![
-            "https://x.test/0".to_string(),
-            "https://x.test/1".to_string()
-        ]
-    );
-    assert_eq!(seen.lock().unwrap().len(), 3);
-}
-
-#[test]
-fn fetch_many_pays_the_rate_limiter_per_request() {
-    let d = decl("many", BatchMode::PerRow);
-    let reqs = gets(8);
-    // Two tokens up front, then one every 2ms: eight requests cannot beat 12ms.
-    let rate = RateSpec {
-        units: 2,
-        per_ms: 4,
-        cost: RateCost::Request,
-    };
-    let start = Instant::now();
-    let out = with_engine_host(
-        sync_fetch(|_| {
-            Ok(HttpResponse {
-                status: 200,
-                body: Vec::new(),
-            })
-        }),
-        &d,
-        Some(rate),
-        |h| h.fetch_many(&reqs),
-    );
-    assert_eq!(out.len(), 8);
-    assert!(
-        start.elapsed() >= Duration::from_millis(10),
-        "{:?}",
-        start.elapsed()
-    );
-}
-
-#[test]
-fn fetch_many_declines_every_request_once_cancelled() {
-    let calls = Arc::new(AtomicU32::new(0));
-    let seen = calls.clone();
-    let fetch: FetchFn = sync_fetch(move |_: HttpRequestSpec| {
-        seen.fetch_add(1, Ordering::SeqCst);
-        Ok(HttpResponse {
-            status: 200,
-            body: Vec::new(),
-        })
-    });
-    let d = decl("many", BatchMode::PerRow);
-    let (state, map_id) = setup(&[loc(1, 0.0, 0.0)]);
-    let h = Harness::new(ProcShape::Run, patch_all("{}"), fetch);
-    h.cancel.store(true, Ordering::Relaxed);
-    let ctx = h.ctx(&state, &map_id);
-    let prog = ProviderProgress::new(1, "many".into(), 1, Arc::new(Box::new(|_| {})));
-    let budget = FetchBudget::new(None, None);
-    let mut host = EngineHost {
-        ctx: &ctx,
-        decl: &d,
-        fanout: None,
-        budget: &budget,
-        rate_cost: 1,
-        prog: &prog,
-        reported: 0,
-        failed: Vec::new(),
-    };
-    for n in [1, 4] {
-        let out = host.fetch_many(&gets(n));
-        assert_eq!(out.len(), n);
-        assert!(out.iter().all(Result::is_err), "{n} requests");
-    }
-    // Including the single-request path, which takes the same slot and the same check.
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 // -----------------------------------------------------------------------
@@ -2803,11 +2476,11 @@ fn a_working_provider_reports_its_requests_in_flight() {
     let h = Harness::new(
         ProcShape::RequestMap,
         patch_all("{}"),
-        barrier_fetch(u32::MAX, Duration::from_millis(800), peak),
+        barrier_fetch(u32::MAX, Duration::from_millis(800), peak.clone()),
     );
     let mut d = decl("activityHeld", BatchMode::PerRow);
     d.label = Some("Held".into());
-    d.procedure.inflight = Some(4);
+    d.procedure.policy.inflight = Some(4);
     d.instances = Some(8);
     let ctx = h.ctx(&state, &map_id);
 
@@ -2831,6 +2504,11 @@ fn a_working_provider_reports_its_requests_in_flight() {
     assert_eq!(row.total, 8);
     assert_eq!(row.inflight, 4);
     assert_eq!(row.inflight_limit, 4);
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        4,
+        "the provider's instances share one session"
+    );
     assert!(row.instances > 0, "no instance was counted alive");
     assert!(
         procedure_activity()
@@ -2848,7 +2526,7 @@ fn a_query_in_flight_is_reported_under_its_entry() {
     let entry = "res://procedures/activityProbe.js";
 
     let row = thread::scope(|s| {
-        let run = s.spawn(|| run_query(&deps, &procedure_decl(entry), "{}", &|| false, None));
+        let run = s.spawn(|| run_query(&deps, &procedure_decl(entry), "{}", Arc::default(), None));
         let snapshot = await_activity(|a| {
             a.queries
                 .iter()
@@ -2881,7 +2559,7 @@ fn a_cancelled_run_leaves_nothing_reported() {
         barrier_fetch(u32::MAX, Duration::from_millis(800), peak),
     );
     let mut d = decl("activityCancelled", BatchMode::PerRow);
-    d.procedure.inflight = Some(2);
+    d.procedure.policy.inflight = Some(2);
     d.instances = Some(4);
     let ctx = h.ctx(&state, &map_id);
 

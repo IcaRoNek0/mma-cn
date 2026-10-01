@@ -44,9 +44,10 @@ use std::mem;
 use std::sync::OnceLock;
 use std::thread;
 
-use super::{HttpRequestSpec, HttpResponse, PatchEntry, ProcHost, ProcShape, Procedure};
+use super::{PatchEntry, ProcHost, ProcShape, Procedure};
+use crate::net::fetch::{self, HttpRequestSpec, HttpResponse};
 use crate::plugins::sidecar::SidecarStream;
-use crate::sv::pano::{self, PanoAnswer, PanoQuery};
+use crate::sv::pano::{PanoAnswer, PanoQuery};
 use crate::types::{AppError, AppResult};
 
 /// Ceiling on one runtime's heap. Procedures decode whole responses in memory, so this
@@ -263,7 +264,7 @@ fn service(host: &mut dyn ProcHost, stream: &mut Option<SidecarStream>, req: Hos
     match req {
         HostReq::Fetch(spec) => HostRep::Fetch(host.fetch(&spec)),
         HostReq::FetchMany(specs) => HostRep::FetchMany(host.fetch_many(&specs)),
-        HostReq::Panos(queries) => HostRep::Panos(pano::resolve_panos(host, &queries)),
+        HostReq::Panos(queries) => HostRep::Panos(host.panos(&queries)),
         HostReq::Classify { dataset, lat, lng } => {
             HostRep::Classify(host.classify(&dataset, lat, lng))
         }
@@ -322,6 +323,9 @@ struct NoHost;
 impl ProcHost for NoHost {
     fn fetch(&mut self, _req: &HttpRequestSpec) -> AppResult<HttpResponse> {
         Err(AppError("procedure has no host attached".into()))
+    }
+    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+        vec![PanoAnswer::Failed; queries.len()]
     }
     fn classify(&mut self, _dataset: &str, _lat: f64, _lng: f64) -> AppResult<Option<String>> {
         Err(AppError("procedure has no host attached".into()))
@@ -652,7 +656,7 @@ fn install_host_calls<'js>(
                         let resp = match r {
                             Ok(resp) => response_to_js(&ctx, resp)?,
                             Err(e) => {
-                                if e.0 != super::engine::CANCELLED {
+                                if e.0 != fetch::CANCELLED {
                                     log::debug!("[procedure] fetchMany: {e}");
                                 }
                                 response_to_js(&ctx, &failed_response())?

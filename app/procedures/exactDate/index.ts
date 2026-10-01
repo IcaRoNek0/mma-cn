@@ -4,7 +4,7 @@
 //
 // `run` narrows a whole batch as one wavefront: every round issues one probe per cut for
 // every row still searching, in a single host call. A round costs one round trip whatever
-// the batch size, and the width it runs at is the engine's `inflight` budget rather than
+// the batch size, and the width it runs at is the SingleImageSearch endpoint's rather than
 // anything this module decides. `query` answers the same question for a single point.
 
 import type { ProcedureConfig } from "@/bindings.gen";
