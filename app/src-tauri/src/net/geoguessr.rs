@@ -29,19 +29,12 @@ const LOGIN_LABEL: &str = "gg-login";
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// The upstream GeoGuessr origin. E2E builds may point it at the harness's local stub, so
-/// the suite never talks to geoguessr.com.
-#[cfg(feature = "e2e")]
+/// The upstream GeoGuessr origin.
 pub(crate) fn origin() -> &'static str {
-    static O: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    O.get_or_init(|| match std::env::var("MMA_E2E_GG_ORIGIN") {
-        Ok(o) if !o.is_empty() => o.trim_end_matches('/').to_string(),
-        _ => ORIGIN.to_string(),
-    })
-}
-
-#[cfg(not(feature = "e2e"))]
-pub(crate) fn origin() -> &'static str {
+    #[cfg(feature = "e2e")]
+    if let Some(o) = crate::e2e::gg_origin() {
+        return o;
+    }
     ORIGIN
 }
 
@@ -66,21 +59,8 @@ fn session() -> AppResult<Option<String>> {
     SESSION.get()
 }
 
-fn set_session(ncfa: Option<String>) -> AppResult<()> {
+pub(crate) fn set_session(ncfa: Option<String>) -> AppResult<()> {
     SESSION.set(ncfa)
-}
-
-/// An e2e build has no credential store and no interactive sign-in, so the harness hands it
-/// the session the proxy is expected to replay. Seeded once at startup, so a logout during a
-/// run clears it for good exactly as in production.
-#[cfg(feature = "e2e")]
-pub fn seed_session_from_env() {
-    match std::env::var("MMA_E2E_GG_NCFA") {
-        Ok(v) if !v.is_empty() => {
-            let _ = set_session(Some(v));
-        }
-        _ => {}
-    }
 }
 
 // ---------------------------------------------------------------------------

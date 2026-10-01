@@ -15,6 +15,8 @@ use tauri::plugin::TauriPlugin;
 
 mod types;
 
+#[cfg(feature = "e2e")]
+mod e2e;
 mod io;
 mod net;
 mod plugins;
@@ -533,7 +535,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn error::Error>> {
     log::info!("[startup] migrations: {}ms", t.elapsed().as_millis());
 
     #[cfg(feature = "e2e")]
-    net::geoguessr::seed_session_from_env();
+    e2e::seed_gg_session();
 
     thread::spawn(|| {
         plugins::borders::update_border_files();

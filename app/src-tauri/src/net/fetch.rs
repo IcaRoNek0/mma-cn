@@ -120,8 +120,11 @@ impl Transport {
     pub fn production() -> Arc<Transport> {
         static T: OnceLock<Arc<Transport>> = OnceLock::new();
         T.get_or_init(|| {
+            let send: SendFn = Box::new(|req| Box::pin(http_fetch(req)));
+            #[cfg(feature = "e2e")]
+            let send = crate::e2e::stub_origin(send);
             Arc::new(Transport {
-                send: Box::new(|req| Box::pin(http_fetch(req))),
+                send,
                 backoff: DEFAULT_BACKOFF,
             })
         })
@@ -151,40 +154,10 @@ fn http_client() -> &'static reqwest::Client {
     &pool[NEXT.fetch_add(1, Ordering::Relaxed) % pool.len()]
 }
 
-/// Test-only: swap the origin of an outgoing URL for the local e2e Street View stub,
-/// keeping path and query.
-#[cfg(feature = "e2e")]
-fn rewrite_origin(url: &str, origin: &str) -> String {
-    let path = url
-        .find("://")
-        .map(|i| i + 3)
-        .and_then(|start| url[start..].find('/').map(|j| &url[start + j..]))
-        .unwrap_or("/");
-    format!("{}{}", origin.trim_end_matches('/'), path)
-}
-
-#[cfg(feature = "e2e")]
-fn e2e_origin() -> Option<&'static str> {
-    static O: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    O.get_or_init(|| {
-        std::env::var("MMA_E2E_SV_ORIGIN")
-            .ok()
-            .filter(|s| !s.is_empty())
-    })
-    .as_deref()
-}
-
 async fn http_fetch(req: HttpRequestSpec) -> AppResult<HttpResponse> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .map_err(|e| AppError(format!("bad method '{}': {e}", req.method)))?;
-    #[cfg(feature = "e2e")]
-    let url = match e2e_origin() {
-        Some(o) => rewrite_origin(&req.url, o),
-        None => req.url.clone(),
-    };
-    #[cfg(not(feature = "e2e"))]
-    let url = &req.url;
-    let mut rb = http_client().request(method, url.as_str());
+    let mut rb = http_client().request(method, req.url.as_str());
     for (k, v) in &req.headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
