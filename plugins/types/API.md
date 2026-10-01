@@ -1030,6 +1030,7 @@ patchMapMeta(id: string, patch: MapMetaPatch_Deserialize): Promise<void>
 ```
 
 Patch any map's metadata by id and persist it. Updates the open map's state when it is that map.
+Writes land in the order they were made.
 
 ### previewDuplicateGroups
 
@@ -1482,6 +1483,17 @@ unregisterPlugin(id: string): void
 Remove a plugin from the registry.
 
 ## PluginStorage
+
+### mapStorage
+
+`stable` · unreleased
+
+```ts
+mapStorage(id: string): MapPluginStorage
+```
+
+Persistent key-value storage a plugin keeps with the open map, so every map has its own.
+Throws when no map is open.
 
 ### reloadStorage
 

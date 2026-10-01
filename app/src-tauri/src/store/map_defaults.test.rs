@@ -25,14 +25,15 @@ fn defaults_saved_from_a_map_keep_only_its_preferences() {
         "pointAlongRoad": false,
         "keyBindings": [{"key": "m", "action": {"type": "applyTag", "tagId": 7}}],
         "virtualTags": {"Europe": {"color": "#123456"}},
-        "aliases": {"Europe/France": 7}
+        "aliases": {"Europe/France": 7},
+        "pluginData": {"heatmap": {"project": {"layers": []}}}
     }))
     .unwrap();
     save(&conn, Some(&preferences)).unwrap();
 
     let saved = stored(&conn).unwrap();
     assert_eq!(saved["pointAlongRoad"], false);
-    for key in ["keyBindings", "virtualTags", "aliases"] {
+    for key in ["keyBindings", "virtualTags", "aliases", "pluginData"] {
         assert!(saved.get(key).is_none(), "{key} was saved as a default");
     }
     let settings = new_map_settings(&conn).unwrap();
@@ -40,6 +41,7 @@ fn defaults_saved_from_a_map_keep_only_its_preferences() {
     assert!(settings.key_bindings.is_empty());
     assert!(settings.virtual_tags.is_empty());
     assert!(settings.aliases.is_empty());
+    assert!(settings.plugin_data.is_empty());
 }
 
 #[test]

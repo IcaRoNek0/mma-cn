@@ -31,6 +31,7 @@ fn legacy_flat_settings_round_trip_unchanged() {
         "keyBindings": [{"key": "m", "action": {"type": "applyTag", "tagId": 7}}],
         "virtualTags": {"Europe": {"color": "#123456", "order": null}},
         "aliases": {"Europe/France": 7},
+        "pluginData": {"heatmap": {"project": {"layers": []}}},
         "duplicateScore": "zoom",
         "reviewOrder": "-year",
         "pinResolve": false,
@@ -46,12 +47,13 @@ fn map_preferences_leave_out_what_refers_to_the_map() {
         "pointAlongRoad": false,
         "keyBindings": [{"key": "m", "action": {"type": "applyTag", "tagId": 7}}],
         "virtualTags": {"Europe": {"color": "#123456"}},
-        "aliases": {"Europe/France": 7}
+        "aliases": {"Europe/France": 7},
+        "pluginData": {"heatmap": {"project": {"layers": []}}}
     }))
     .unwrap();
     let value = serde_json::to_value(&settings.preferences).unwrap();
     assert_eq!(value["pointAlongRoad"], false);
-    for key in ["keyBindings", "virtualTags", "aliases"] {
+    for key in ["keyBindings", "virtualTags", "aliases", "pluginData"] {
         assert!(value.get(key).is_none(), "{key} leaked into preferences");
     }
 }

@@ -281,7 +281,7 @@ async function doSave(): Promise<void> {
 /** Save any unsaved changes now instead of waiting for the autosave timer. @unstable */
 export async function flushSave(): Promise<void> {
 	cancelAutosave();
-	await doSave();
+	await Promise.all([doSave(), metaWrites]);
 }
 
 // --- Init (called once at startup) ---
@@ -429,18 +429,35 @@ export function setSelectedLocationIds(ids: SelectedIds) {
 	setState({ selectedLocationIds: ids });
 }
 
-/** Patch any map's metadata by id and persist it. Updates the open map's state when it is that map. */
-export async function patchMapMeta(id: string, patch: MapMetaPatch) {
+/** Every metadata write, chained so they land in the order they were made. */
+let metaWrites: Promise<void> = Promise.resolve();
+/** The last write still waiting its turn; a patch to the same map joins it. */
+let waitingMetaWrite: { id: string; patch: MapMetaPatch; done: Promise<void> } | null = null;
+
+/** Patch any map's metadata by id and persist it. Updates the open map's state when it is that map.
+ *  Writes land in the order they were made. */
+export function patchMapMeta(id: string, patch: MapMetaPatch): Promise<void> {
+	const carried = Object.fromEntries(
+		Object.entries(patch).filter(([, v]) => v !== undefined),
+	) as MapMetaPatch;
 	if (state.map && state.mapId === id) {
-		const carried = Object.fromEntries(
-			Object.entries(patch).filter(([, v]) => v !== undefined),
-		) as Partial<MapMeta>;
-		setState({ map: { ...state.map, ...carried } });
+		setState({ map: { ...state.map, ...(carried as Partial<MapMeta>) } });
 	}
 	emitEvent("store:changed");
-	const r = await cmd.storeUpdateMapMeta(id, patch);
-	if (r && state.mapId === id) applyMutation(r);
-	await invalidateMapList();
+	if (waitingMetaWrite?.id === id) {
+		Object.assign(waitingMetaWrite.patch, carried);
+		return waitingMetaWrite.done;
+	}
+	const write = { id, patch: carried, done: Promise.resolve() };
+	write.done = metaWrites.then(async () => {
+		if (waitingMetaWrite === write) waitingMetaWrite = null;
+		const r = await cmd.storeUpdateMapMeta(write.id, write.patch);
+		if (r && state.mapId === write.id) applyMutation(r);
+		await invalidateMapList();
+	});
+	waitingMetaWrite = write;
+	metaWrites = write.done.catch(() => {});
+	return write.done;
 }
 
 /** `patchMapMeta` for the map open in this window. */

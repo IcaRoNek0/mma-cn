@@ -101,6 +101,9 @@ pub struct MapSettings {
     /// Tag aliases: a second tree location (full slash path) -> the real tag id shown
     /// there. Tree-view only; clicking the alias leaf toggles the real tag.
     pub aliases: HashMap<String, u32>,
+    /// What each plugin keeps with this map, by plugin id and then key.
+    #[specta(type = HashMap<String, HashMap<String, specta_typescript::Unknown>>)]
+    pub plugin_data: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
 wire_str_enum! {

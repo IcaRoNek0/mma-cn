@@ -1233,6 +1233,8 @@ export type MapSettings = {
 	 *  there. Tree-view only; clicking the alias leaf toggles the real tag.
 	 */
 	aliases?: { [key in string]: number },
+	/**  What each plugin keeps with this map, by plugin id and then key. */
+	pluginData?: { [key in string]: { [key in string]: unknown } },
 } & MapPreferences;
 
 

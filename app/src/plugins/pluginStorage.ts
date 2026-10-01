@@ -1,11 +1,39 @@
 import { useState, useCallback, type SetStateAction } from "react";
+import type { MapMeta } from "@/bindings.gen";
 import { getLocal, reloadLocal, setLocal } from "@/lib/hooks/useLocalStorage";
+import { getMapState, patchMapMeta } from "@/store/useMapStore";
 
 export interface PluginStorage {
 	get<T = unknown>(key: string, fallback?: T): T;
 	set(key: string, value: unknown): void;
 	remove(key: string): void;
 	keys(): string[];
+}
+
+/** A plugin's store in the open map. Writes resolve once they are saved. */
+export interface MapPluginStorage {
+	get<T = unknown>(key: string, fallback?: T): T;
+	set(key: string, value: unknown): Promise<void>;
+	remove(key: string): Promise<void>;
+	keys(): string[];
+}
+
+type Entries = Record<string, unknown>;
+
+function keyValue<W>(read: () => Entries, write: (data: Entries) => W) {
+	return {
+		get<T = unknown>(key: string, fallback?: T): T {
+			const data = read();
+			return (key in data ? data[key] : fallback) as T;
+		},
+		set: (key: string, value: unknown) => write({ ...read(), [key]: value }),
+		remove: (key: string) => {
+			const data = { ...read() };
+			delete data[key];
+			return write(data);
+		},
+		keys: () => Object.keys(read()),
+	};
 }
 
 function pluginStoreKey(id: string): string {
@@ -22,25 +50,37 @@ function writePluginStore(id: string, data: Record<string, unknown>) {
 
 /** Persistent key-value storage namespaced to a plugin. Survives restarts. */
 export function storage(id: string): PluginStorage {
-	return {
-		get<T = unknown>(key: string, fallback?: T): T {
-			const data = readPluginStore(id);
-			return (key in data ? data[key] : fallback) as T;
-		},
-		set(key, value) {
-			const data = readPluginStore(id);
-			data[key] = value;
-			writePluginStore(id, data);
-		},
-		remove(key) {
-			const data = readPluginStore(id);
-			delete data[key];
-			writePluginStore(id, data);
-		},
-		keys() {
-			return Object.keys(readPluginStore(id));
-		},
-	};
+	return keyValue(
+		() => readPluginStore(id),
+		(data) => writePluginStore(id, data),
+	);
+}
+
+function requireOpenMap(): MapMeta {
+	const { map } = getMapState();
+	if (!map) throw new Error("No map is open");
+	return map;
+}
+
+function readMapPluginStore(id: string): Entries {
+	return requireOpenMap().settings.pluginData?.[id] ?? {};
+}
+
+function writeMapPluginStore(id: string, data: Entries): Promise<void> {
+	const map = requireOpenMap();
+	const pluginData = { ...map.settings.pluginData };
+	if (Object.keys(data).length > 0) pluginData[id] = data;
+	else delete pluginData[id];
+	return patchMapMeta(map.id, { settings: { ...map.settings, pluginData } });
+}
+
+/** Persistent key-value storage a plugin keeps with the open map, so every map has its own.
+ *  Throws when no map is open. */
+export function mapStorage(id: string): MapPluginStorage {
+	return keyValue(
+		() => readMapPluginStore(id),
+		(data) => writeMapPluginStore(id, data),
+	);
 }
 
 /** Re-read a plugin's store after another window wrote it. @unstable */

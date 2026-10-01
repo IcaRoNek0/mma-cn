@@ -2034,6 +2034,12 @@ type MapSettings = {
     aliases?: {
         [key in string]: number;
     };
+    /**  What each plugin keeps with this map, by plugin id and then key. */
+    pluginData?: {
+        [key in string]: {
+            [key in string]: unknown;
+        };
+    };
 } & MapPreferences;
 /**  A map the key holder can link to. @unstable */
 type MmMapSummary = {
@@ -3548,7 +3554,8 @@ declare const getActiveSelections: () => Selection[];
 declare function currentSelection(): Selector;
 /** Overwrite the selected-id set directly, bypassing selection resolution. Rarely what you want. @unstable */
 declare function setSelectedLocationIds(ids: SelectedIds): void;
-/** Patch any map's metadata by id and persist it. Updates the open map's state when it is that map. */
+/** Patch any map's metadata by id and persist it. Updates the open map's state when it is that map.
+ *  Writes land in the order they were made. */
 declare function patchMapMeta(id: string, patch: MapMetaPatch_Deserialize): Promise<void>;
 /** `patchMapMeta` for the map open in this window. */
 declare function updateMapMeta(patch: MapMetaPatch_Deserialize): Promise<void> | undefined;
@@ -5692,8 +5699,18 @@ export interface PluginStorage {
     remove(key: string): void;
     keys(): string[];
 }
+/** A plugin's store in the open map. Writes resolve once they are saved. */
+export interface MapPluginStorage {
+    get<T = unknown>(key: string, fallback?: T): T;
+    set(key: string, value: unknown): Promise<void>;
+    remove(key: string): Promise<void>;
+    keys(): string[];
+}
 /** Persistent key-value storage namespaced to a plugin. Survives restarts. */
 declare function storage(id: string): PluginStorage;
+/** Persistent key-value storage a plugin keeps with the open map, so every map has its own.
+ *  Throws when no map is open. */
+declare function mapStorage(id: string): MapPluginStorage;
 /** Re-read a plugin's store after another window wrote it. @unstable */
 declare function reloadStorage(id: string): void;
 /** React state hook backed by the plugin's persistent store. Survives sidebar
@@ -5701,14 +5718,17 @@ declare function reloadStorage(id: string): void;
 declare function usePluginState<T>(pluginId: string, key: string, initial: T | (() => T)): readonly [T, (action: SetStateAction<T>) => void];
 
 /** @unstable */
+export type pluginStorage_MapPluginStorage = MapPluginStorage;
+/** @unstable */
 export type pluginStorage_PluginStorage = PluginStorage;
+declare const pluginStorage_mapStorage: typeof mapStorage;
 /** @unstable */
 declare const pluginStorage_reloadStorage: typeof reloadStorage;
 declare const pluginStorage_storage: typeof storage;
 declare const pluginStorage_usePluginState: typeof usePluginState;
 declare namespace pluginStorage {
-  export { pluginStorage_reloadStorage as reloadStorage, pluginStorage_storage as storage, pluginStorage_usePluginState as usePluginState };
-  export type { pluginStorage_PluginStorage as PluginStorage };
+  export { pluginStorage_mapStorage as mapStorage, pluginStorage_reloadStorage as reloadStorage, pluginStorage_storage as storage, pluginStorage_usePluginState as usePluginState };
+  export type { pluginStorage_MapPluginStorage as MapPluginStorage, pluginStorage_PluginStorage as PluginStorage };
 }
 
 /** @unstable */
