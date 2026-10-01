@@ -4264,6 +4264,16 @@ exists, else all locations. Use `createSelectorPick` when non-React code also re
 
 The cached map list and its refresh.
 
+### copyName
+
+`unstable` · unreleased
+
+```ts
+copyName(name: string): string
+```
+
+The name a copy of the map named `name` starts with.
+
 ### createMap
 
 `unstable` · since v0.4.0
@@ -4293,6 +4303,16 @@ deleteMap(id: string): Promise<void>
 ```
 
 Permanently delete a map and all its data. Not undoable.
+
+### duplicateMap
+
+`unstable` · unreleased
+
+```ts
+duplicateMap(id: string, name: string): Promise<MapMeta>
+```
+
+Copy a map, uncommitted edits included, into a new map named `name` and return its metadata.
 
 ### getMapBadges
 
@@ -5747,6 +5767,17 @@ cmd.storeDuplicateGroups(distance: number): Promise<number[][]>
 
 Find groups of locations within `distance` metres of each other (transitive).
 Returns groups of IDs, each with at least two members.
+
+#### cmd.storeDuplicateMap
+
+`unstable` · unreleased
+
+```ts
+cmd.storeDuplicateMap(id: string, name: string): Promise<MapMeta>
+```
+
+Copy a map, uncommitted edits included, into a new map named `name`. Version history,
+edit history, sync links, and review sessions stay with the original.
 
 #### cmd.storeEvenlySpaced
 

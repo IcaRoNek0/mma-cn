@@ -11,6 +11,7 @@ import { isReservedMap } from "@/store/mapList";
 import { SeenDialog } from "@/components/dialogs/SeenDialog";
 import { CopyToMapDialog } from "@/components/editor/CopyToMapDialog";
 import { QuickCopyToMapDialog } from "@/components/editor/QuickCopyToMapDialog";
+import { SaveAsDialog } from "@/components/editor/SaveAsDialog";
 import { loadSeenPano } from "@/lib/seen/seenRecorder";
 import { usePano } from "@/lib/hooks/usePano";
 import { Button } from "@/components/primitives/Button";
@@ -77,6 +78,7 @@ export function MapMetaBar() {
 	const [showHistory, setShowHistory] = useDialogState("history");
 	const [showSeen, setShowSeen] = useDialogState("seen");
 	const [showCopyToMap, setShowCopyToMap] = useDialogState("copy-to-map");
+	const [showSaveAs, setShowSaveAs] = useDialogState("save-as");
 	const [quickCopyId, setQuickCopyId] = useState<number | null>(null);
 
 	const importFile = useCallback(async () => {
@@ -118,6 +120,7 @@ export function MapMetaBar() {
 				/>
 			)}
 			{showCopyToMap && <CopyToMapDialog open onOpenChange={setShowCopyToMap} />}
+			{showSaveAs && <SaveAsDialog open onOpenChange={setShowSaveAs} />}
 			{quickCopyId != null && (
 				<QuickCopyToMapDialog
 					open

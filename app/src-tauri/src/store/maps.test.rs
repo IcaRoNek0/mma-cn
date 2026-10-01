@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_util::TempDir;
+use crate::types::Location;
 use std::collections::HashSet;
 
 #[test]
@@ -716,4 +717,124 @@ fn new_maps_start_from_the_saved_defaults_and_existing_maps_keep_theirs() {
     assert!(!created.settings.preferences.point_along_road);
     assert!(!scratch.settings.preferences.point_along_road);
     assert!(existing.settings.preferences.point_along_road);
+}
+
+#[test]
+fn a_duplicate_is_an_independent_copy_without_the_originals_history() {
+    let conn = setup_real_db();
+    let settings = r##"{"pointAlongRoad":false,"aliases":{"A/B":1},"pluginData":{"vali":{"project":{"tag":"T"}}}}"##;
+    conn.execute(
+        "UPDATE maps SET description = 'about', folder = 'Europe', settings = ?1, extra = ?2,
+             tags = ?3, labels = '[\"wip\"]', pending_added = 4 WHERE id = 'm1'",
+        params![
+            settings,
+            r#"{"fields":{"altitude":{"type":"number","label":"Altitude","values":null,"comparison":null}}}"#,
+            r##"{"1":{"name":"A","color":"#ff0000"}}"##
+        ],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "INSERT INTO commits (id, map_id, location_count, created_at) VALUES ('c1', 'm1', 2, 'now');
+         INSERT INTO edit_history (map_id) VALUES ('m1');
+         INSERT INTO remote_mapping (provider, map_id, local_id, remote_id, hash) VALUES ('mm', 'm1', 1, 9, 'h');
+         INSERT INTO sync_log (map_id, provider, started_at, entry) VALUES ('m1', 'mm', 0, '{}');
+         INSERT INTO review_sessions (id, map_id, source_key, ordering, cursor_id, created_at, updated_at)
+             VALUES ('r1', 'm1', 'k', '[]', 1, 'now', 'now');
+         INSERT INTO seen (pano_id, lat, lng, heading, pitch, zoom, entered_at, map_id)
+             VALUES ('p', 0, 0, 0, 0, 0, 0, 'm1');",
+    )
+    .unwrap();
+    let locations: Vec<Location> = (1..=2)
+        .map(|id| Location {
+            id,
+            lat: f64::from(id),
+            tags: vec![1],
+            ..Location::default()
+        })
+        .collect();
+    let dir = TempDir::new("mma_test_duplicate");
+    let path = dir.join("copy.arrow");
+
+    let copy = duplicate_map_row(
+        &conn,
+        "m1",
+        "copy",
+        "Real (copy)",
+        &arrow::locations_to_batch(&locations),
+        &path,
+    )
+    .unwrap();
+
+    let source = conn
+        .query_row("SELECT * FROM maps WHERE id = 'm1'", [], row_to_map_meta)
+        .unwrap();
+    assert_eq!(copy.name, "Real (copy)");
+    assert_eq!(copy.description, "about");
+    assert_eq!(copy.folder.as_deref(), Some("Europe"));
+    assert_eq!(copy.labels, vec!["wip"]);
+    assert_eq!(
+        serde_json::to_value(&copy.settings).unwrap(),
+        serde_json::to_value(&source.settings).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&copy.extra).unwrap(),
+        serde_json::to_value(&source.extra).unwrap()
+    );
+    assert_eq!(copy.tags.len(), 1);
+    assert_eq!(copy.location_count, 2);
+    assert_eq!(
+        copy.pending.added, 0,
+        "the copy's locations are its baseline"
+    );
+    let written = arrow::batch_to_locations(&arrow::read_arrow_ipc(&path).unwrap());
+    assert_eq!(written.iter().map(|l| l.id).collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(written[0].tags, vec![1]);
+
+    for table in [
+        "commits",
+        "edit_history",
+        "remote_mapping",
+        "sync_log",
+        "review_sessions",
+        "seen",
+    ] {
+        let n: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE map_id = 'copy'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "{table} came along");
+    }
+
+    update_map_meta_row(
+        &conn,
+        "copy",
+        &MapMetaPatch {
+            name: Some("Renamed".into()),
+            settings: Some(MapSettings::default()),
+            ..MapMetaPatch::default()
+        },
+    )
+    .unwrap();
+    let source = conn
+        .query_row("SELECT * FROM maps WHERE id = 'm1'", [], row_to_map_meta)
+        .unwrap();
+    assert_eq!(source.name, "Real");
+    assert!(!source.settings.preferences.point_along_road);
+}
+
+#[test]
+fn duplicating_a_missing_map_writes_nothing() {
+    let conn = setup_real_db();
+    let dir = TempDir::new("mma_test_duplicate_missing");
+    let path = dir.join("copy.arrow");
+    let empty = RecordBatch::new_empty(arrow::schema());
+    assert!(duplicate_map_row(&conn, "nope", "copy", "x", &empty, &path).is_err());
+    assert!(!path.exists());
+    let maps: i64 = conn
+        .query_row("SELECT COUNT(*) FROM maps", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(maps, 1);
 }

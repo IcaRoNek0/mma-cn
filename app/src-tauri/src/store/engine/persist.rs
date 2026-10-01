@@ -186,7 +186,7 @@ pub(crate) fn load_edit_history(map_id: &str) -> AppResult<(Vec<EditEntry>, Vec<
 /// overlay, drop the stale delta file, and re-mmap. A failed write leaves the store as it was.
 pub(crate) fn write_baked_base(store: &mut Store, path: &Path, delta_path: &Path) -> AppResult<()> {
     let _t = Instant::now();
-    let Some(batch) = store.baked_batch().or_else(|| store.batch.clone()) else {
+    let Some(batch) = store.current_batch() else {
         return Ok(());
     };
     let t_bake = _t.elapsed();

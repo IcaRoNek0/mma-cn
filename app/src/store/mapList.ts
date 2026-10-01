@@ -49,6 +49,18 @@ export async function createMap(name: string, folder: string | null = null) {
 	return meta;
 }
 
+/** The name a copy of the map named `name` starts with. @unstable */
+export function copyName(name: string): string {
+	return t("{name} (copy)", { name: name || t("(unnamed)") });
+}
+
+/** Copy a map, uncommitted edits included, into a new map named `name` and return its metadata. */
+export async function duplicateMap(id: string, name: string) {
+	const meta = await cmd.storeDuplicateMap(id, name);
+	await invalidateMapList();
+	return meta;
+}
+
 /** Open the scratch map, creating it on first use. */
 export async function openScratchMap() {
 	const meta = await cmd.storeScratchMap();

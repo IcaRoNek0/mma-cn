@@ -569,6 +569,12 @@ impl Store {
         self.clear_overlay();
     }
 
+    /// Every live location as one batch: the base with the overlay merged in, or `None` for a
+    /// store with no base and nothing in its overlay.
+    pub(crate) fn current_batch(&self) -> Option<RecordBatch> {
+        self.baked_batch().or_else(|| self.batch.clone())
+    }
+
     /// The base batch with the overlay merged in, or `None` when there is nothing to merge.
     /// O(N) where N = batch rows. Expensive at 10M+ rows - prefer delta saves; full bake only on commit.
     /// Gated on emptiness: an autosave folds nothing in, so a saved overlay must still bake.

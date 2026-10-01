@@ -6,6 +6,8 @@ import { Notice } from "@/components/primitives/Hint";
 import {
 	useMapList,
 	createMap,
+	copyName,
+	duplicateMap,
 	openScratchMap,
 	renameFolder,
 	deleteFolder,
@@ -41,6 +43,7 @@ import {
 	mdiChevronRight,
 	mdiPencil,
 	mdiFolder,
+	mdiContentCopy,
 	mdiDelete,
 	mdiPlus,
 	mdiTextSearch,
@@ -52,7 +55,7 @@ import {
 import clsx from "clsx";
 import type { SortMode } from "@/types";
 import { events, type MapMeta } from "@/bindings.gen";
-import { fmt, relativeTime, shortDateFmt } from "@/lib/util/format";
+import { errText, fmt, relativeTime, shortDateFmt } from "@/lib/util/format";
 import { useLocalStorage } from "@/lib/hooks/useLocalStorage";
 import { useSetting, type MapListField } from "@/store/settings";
 import { labelColor, textColorFor } from "@/lib/util/color";
@@ -361,6 +364,17 @@ const MapEntry = React.memo(function MapEntry({
 				label={t("Edit map")}
 				reveal
 				onClick={() => onAction({ type: "edit", id: meta.id, name: meta.name })}
+			/>
+			<IconButton
+				className="map-list__edit"
+				icon={mdiContentCopy}
+				label={t("Duplicate map")}
+				reveal
+				onClick={() =>
+					void duplicateMap(meta.id, copyName(meta.name)).catch((e: unknown) =>
+						toast(t("Could not save a copy: {error}", { error: errText(e) })),
+					)
+				}
 			/>
 			<IconButton
 				className="map-list__edit"

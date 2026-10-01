@@ -5,6 +5,7 @@
 //! and deleting maps, plus the auto-registration logic that discovers new
 //! `Location.extra` fields and persists their type definitions.
 
+use crate::store::arrow;
 use crate::store::engine;
 use crate::store::engine::StoreState;
 use crate::store::engine::ValueRecord;
@@ -15,9 +16,10 @@ use crate::sv::schema::PanoType;
 use crate::types;
 use crate::types::shape::MapShape;
 use crate::types::wire_str_enum;
-use crate::types::AppResult;
 use crate::types::RawExtra;
+use crate::types::{AppError, AppResult};
 use crate::util::now_iso;
+use arrow_array::RecordBatch;
 use rusqlite::types::ToSql;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
@@ -697,6 +699,74 @@ fn create_map_row(conn: &Connection, name: &str, folder: Option<&str>) -> AppRes
 #[specta::specta]
 pub async fn store_create_map(name: String, folder: Option<String>) -> AppResult<MapMeta> {
     storage::with_db(move |conn| create_map_row(conn, &name, folder.as_deref())).await
+}
+
+/// Add `copy_id` as a copy of `source`'s row holding `batch`. The row lands only once the
+/// locations are on disk.
+fn duplicate_map_row(
+    conn: &Connection,
+    source: &str,
+    copy_id: &str,
+    name: &str,
+    batch: &RecordBatch,
+    arrow_path: &Path,
+) -> AppResult<MapMeta> {
+    let tx = conn.unchecked_transaction()?;
+    let now = now_iso();
+    let copied = tx.execute(
+        "INSERT INTO maps (id, name, description, folder, settings, score_bounds, extra, tags, labels, location_count, created_at, updated_at)
+         SELECT ?1, ?2, description, folder, settings, score_bounds, extra, tags, labels, ?3, ?4, ?4 FROM maps WHERE id = ?5",
+        params![copy_id, name, batch.num_rows() as i64, now, source],
+    )?;
+    if copied == 0 {
+        return Err(AppError(format!("no map {source} to copy")));
+    }
+    arrow::write_arrow_ipc(arrow_path, batch)?;
+    if let Err(e) = tx.commit() {
+        let _ = fs::remove_file(arrow_path);
+        return Err(e.into());
+    }
+    Ok(conn.query_row(
+        "SELECT * FROM maps WHERE id = ?1",
+        params![copy_id],
+        row_to_map_meta,
+    )?)
+}
+
+/// Copy a map, uncommitted edits included, into a new map named `name`. Version history,
+/// edit history, sync links, and review sessions stay with the original.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+#[specta::specta]
+pub fn store_duplicate_map(
+    state: tauri::State<'_, StoreState>,
+    id: String,
+    name: String,
+) -> AppResult<MapMeta> {
+    // Held throughout, so the source can neither change nor open while it is read.
+    let mgr = state.lock()?;
+    let batch = match mgr.stores.get(&id) {
+        Some(store) => store
+            .current_batch()
+            .unwrap_or_else(|| RecordBatch::new_empty(arrow::schema())),
+        None => {
+            let mut locations = engine::read_full_state_from_disk(&id)?;
+            locations.sort_unstable_by_key(|l| l.id);
+            arrow::locations_to_batch(&locations)
+        }
+    };
+    let copy_id = uuid::Uuid::new_v4().to_string();
+    let conn = storage::open_db()?;
+    let copy = duplicate_map_row(
+        &conn,
+        &id,
+        &copy_id,
+        &name,
+        &batch,
+        &storage::arrow_path(&copy_id)?,
+    );
+    drop(mgr);
+    copy
 }
 
 /// Drop a map's rows and its files on disk. Returns whether the map was there at all.

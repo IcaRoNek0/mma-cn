@@ -312,6 +312,11 @@ export const commands = {
 	/**  Delete a map and all its data permanently. */
 	storeDeleteMap: (id: string) => __TAURI_INVOKE<null>("store_delete_map", { id }),
 	/**
+	 *  Copy a map, uncommitted edits included, into a new map named `name`. Version history,
+	 *  edit history, sync links, and review sessions stay with the original.
+	 */
+	storeDuplicateMap: (id: string, name: string) => __TAURI_INVOKE<MapMeta>("store_duplicate_map", { id, name }),
+	/**
 	 *  Apply a partial update to a map's metadata. Omitted fields are left unchanged.
 	 *  Returns a mutation result when the open map's field definitions changed.
 	 */

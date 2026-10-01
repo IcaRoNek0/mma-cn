@@ -264,6 +264,7 @@
 	"Correct: {place}. Streak: {n}": "正确: {place}。连续: {n}",
 	"Could not add the tag": "无法添加标签",
 	"Could not read the report ({status}).": "无法读取反馈（{status}）。",
+	"Could not save a copy: {error}": "无法保存副本：{error}",
 	"Could not save the new map defaults: {error}": "无法保存新地图的默认设置：{error}",
 	"Could not update tags": "无法更新标签",
 	"Couldn't download border data. Check your connection.": "无法下载边界数据。请检查网络连接。",
@@ -402,6 +403,7 @@
 	"Drop file to import": "拖放文件以导入",
 	"Drop marker": "放置标记",
 	"Duplicate location": "复制位置",
+	"Duplicate map": "复制地图",
 	"Duplicate panos skipped": "跳过的重复全景",
 	"Duplicate preference": "重复项优先级：",
 	"Duplicates ({distance})": "重复（{distance}）",
@@ -1075,7 +1077,9 @@
 	"Satellite": "卫星",
 	"Save": "保存",
 	"Save ZIP": "保存 ZIP",
+	"Save as": "另存为",
 	"Save as tag": "保存为标签",
+	"Save as...": "另存为...",
 	"Save current selections": "保存当前选择",
 	"Save current selections...": "保存当前选择…",
 	"Save failed": "保存失败",
@@ -1552,6 +1556,7 @@
 	"{maps} maps · {locations} locations": "{maps} 张地图 · {locations} 个位置",
 	"{min}–{max} links": "{min}–{max} 个链接",
 	"{mode} sampling": "{mode}采样",
+	"{name} (copy)": "{name}（副本）",
 	"{name} updated to v{version}": "{name} 已更新至 v{version}",
 	"{name}() takes {n} arguments": {
 		"other": "{name}() 需要 {n} 个参数"

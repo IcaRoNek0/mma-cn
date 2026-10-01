@@ -202,6 +202,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             store::maps::store_create_map,
             store::maps::store_scratch_map,
             store::maps::store_delete_map,
+            store::maps::store_duplicate_map,
             store::maps::store_update_map_meta,
             store::maps::store_touch_map_opened,
             store::maps::store_rename_folder,

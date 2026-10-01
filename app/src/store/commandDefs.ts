@@ -4,6 +4,7 @@ import {
 	mdiFileImportOutline,
 	mdiFileExportOutline,
 	mdiContentSave,
+	mdiContentSaveOutline,
 	mdiSelectRemove,
 	mdiSetCenter,
 	mdiSetAll,
@@ -106,6 +107,14 @@ const COMMANDS = {
 		aliases: ["save", "snapshot"],
 		execute: () => openDialog("commit"),
 		enabled: () => requiresVersioning() && hasCommitDiff(),
+	},
+	saveAs: {
+		label: msg("Save as..."),
+		icon: mdiContentSaveOutline,
+		group: msg("Map"),
+		aliases: ["duplicate", "copy map"],
+		execute: () => openDialog("save-as"),
+		enabled: requiresMap,
 	},
 	basemapPrev: {
 		label: msg("Previous basemap"),

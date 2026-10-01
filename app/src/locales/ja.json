@@ -264,6 +264,7 @@
 	"Correct: {place}. Streak: {n}": "正解: {place}。連続: {n}",
 	"Could not add the tag": "タグを追加できませんでした",
 	"Could not read the report ({status}).": "報告を読み込めませんでした（{status}）。",
+	"Could not save a copy: {error}": "コピーを保存できませんでした: {error}",
 	"Could not save the new map defaults: {error}": "新しいマップの既定値を保存できませんでした: {error}",
 	"Could not update tags": "タグを更新できませんでした",
 	"Couldn't download border data. Check your connection.": "境界データをダウンロードできませんでした。接続を確認してください。",
@@ -402,6 +403,7 @@
 	"Drop file to import": "ファイルをドロップしてインポート",
 	"Drop marker": "マーカーを置く",
 	"Duplicate location": "地点を複製",
+	"Duplicate map": "マップを複製",
 	"Duplicate panos skipped": "スキップされた重複パノラマ",
 	"Duplicate preference": "重複の優先度",
 	"Duplicates ({distance})": "重複（{distance}）",
@@ -1075,7 +1077,9 @@
 	"Satellite": "衛星",
 	"Save": "保存",
 	"Save ZIP": "ZIP を保存",
+	"Save as": "名前を付けて保存",
 	"Save as tag": "タグとして保存",
+	"Save as...": "名前を付けて保存...",
 	"Save current selections": "現在の選択を保存",
 	"Save current selections...": "現在の選択を保存...",
 	"Save failed": "保存に失敗しました",
@@ -1552,6 +1556,7 @@
 	"{maps} maps · {locations} locations": "{maps} マップ・{locations} 地点",
 	"{min}–{max} links": "リンク {min}–{max}",
 	"{mode} sampling": "{mode}サンプリング",
+	"{name} (copy)": "{name} (コピー)",
 	"{name} updated to v{version}": "{name} を v{version} に更新しました",
 	"{name}() takes {n} arguments": {
 		"other": "{name}() には引数が {n} 個必要です"

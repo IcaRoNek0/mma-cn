@@ -864,6 +864,12 @@ declare const commands$1: {
     /**  Delete a map and all its data permanently. @unstable */
     storeDeleteMap: (id: string) => Promise<null>;
     /**
+     *  Copy a map, uncommitted edits included, into a new map named `name`. Version history,
+     *  edit history, sync links, and review sessions stay with the original.
+     *  @unstable
+     */
+    storeDuplicateMap: (id: string, name: string) => Promise<MapMeta>;
+    /**
      *  Apply a partial update to a map's metadata. Omitted fields are left unchanged.
      *  Returns a mutation result when the open map's field definitions changed.
      *  @unstable
@@ -4122,6 +4128,14 @@ declare const COMMANDS: {
         execute: () => void;
         enabled: () => boolean;
     };
+    saveAs: {
+        label: "Save as...";
+        icon: string;
+        group: "Map";
+        aliases: string[];
+        execute: () => void;
+        enabled: typeof requiresMap;
+    };
     basemapPrev: {
         label: "Previous basemap";
         icon: string;
@@ -5303,6 +5317,10 @@ declare function invalidateMapList(): Promise<void>;
 declare function setCachedMapList(list: MapMeta[]): void;
 /** Create a new empty map and return its metadata. @unstable */
 declare function createMap(name: string, folder?: string | null): Promise<MapMeta>;
+/** The name a copy of the map named `name` starts with. @unstable */
+declare function copyName(name: string): string;
+/** Copy a map, uncommitted edits included, into a new map named `name` and return its metadata. @unstable */
+declare function duplicateMap(id: string, name: string): Promise<MapMeta>;
 /** Open the scratch map, creating it on first use. @unstable */
 declare function openScratchMap(): Promise<void>;
 /** Whether `id` belongs to an app fixture rather than a user-created map. @unstable */
@@ -5349,9 +5367,13 @@ export type mapList_BadgeSource = BadgeSource;
 /** @unstable */
 export type mapList_MapBadge = MapBadge;
 /** @unstable */
+declare const mapList_copyName: typeof copyName;
+/** @unstable */
 declare const mapList_createMap: typeof createMap;
 /** @unstable */
 declare const mapList_deleteFolder: typeof deleteFolder;
+/** @unstable */
+declare const mapList_duplicateMap: typeof duplicateMap;
 /** @unstable */
 declare const mapList_getMapBadgeSources: typeof getMapBadgeSources;
 /** @unstable */
@@ -5379,7 +5401,7 @@ declare const mapList_useMapBadges: typeof useMapBadges;
 /** @unstable */
 declare const mapList_useMapList: typeof useMapList;
 declare namespace mapList {
-  export { mapList_createMap as createMap, mapList_deleteFolder as deleteFolder, deleteMap$1 as deleteMap, mapList_getMapBadgeSources as getMapBadgeSources, mapList_getMapBadges as getMapBadges, mapList_getMapList as getMapList, mapList_invalidateMapList as invalidateMapList, mapList_isReservedMap as isReservedMap, mapList_moveMapToFolder as moveMapToFolder, mapList_openScratchMap as openScratchMap, mapList_registerMapBadges as registerMapBadges, mapList_reloadMapList as reloadMapList, mapList_renameFolder as renameFolder, mapList_setCachedMapList as setCachedMapList, mapList_useMapBadges as useMapBadges, mapList_useMapList as useMapList };
+  export { mapList_copyName as copyName, mapList_createMap as createMap, mapList_deleteFolder as deleteFolder, deleteMap$1 as deleteMap, mapList_duplicateMap as duplicateMap, mapList_getMapBadgeSources as getMapBadgeSources, mapList_getMapBadges as getMapBadges, mapList_getMapList as getMapList, mapList_invalidateMapList as invalidateMapList, mapList_isReservedMap as isReservedMap, mapList_moveMapToFolder as moveMapToFolder, mapList_openScratchMap as openScratchMap, mapList_registerMapBadges as registerMapBadges, mapList_reloadMapList as reloadMapList, mapList_renameFolder as renameFolder, mapList_setCachedMapList as setCachedMapList, mapList_useMapBadges as useMapBadges, mapList_useMapList as useMapList };
   export type { mapList_BadgeSource as BadgeSource, mapList_MapBadge as MapBadge };
 }
 
