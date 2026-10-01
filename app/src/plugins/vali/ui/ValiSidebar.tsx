@@ -7,6 +7,8 @@ import type { ValiCountryStatus, ValiLocation } from "@/bindings.gen";
 import { createLocation } from "@/types";
 import { LocationFlag } from "@/bindings.consts";
 import { createTags } from "@/store/useMapStore";
+import { mapStorage } from "@/plugins/pluginStorage";
+import { ConfirmButton } from "@/components/primitives/ConfirmButton";
 import { Sidebar } from "@/components/primitives/Sidebar";
 import { ValiDownloadDialog } from "./ValiDownloadDialog";
 import { log } from "@/lib/util/log";
@@ -15,13 +17,38 @@ import { t } from "@/lib/i18n";
 import { IconButton } from "@/components/primitives/IconButton";
 
 // The embedded Vali GUI (vendored bundle, ?host=mma) owns the whole flow: definition
-// editor, tag input, generate button, progress. This side is just the bridge:
+// editor, tag input, generate button, progress. This side is the bridge, and keeps the
+// definition and tag with the map:
+//   <- iframe  { type: "vali:ready" }
+//   -> iframe  { type: "vali:load", definition?, tag? }
+//   <- iframe  { type: "vali:state", definition, tag }
 //   <- iframe  { type: "vali:generate", data, tag }
 //   <- iframe  { type: "vali:cancel" }
 //   -> iframe  { type: "vali:progress", progress } (forwarded vali-progress events)
 //   -> iframe  { type: "vali:done", count } | { type: "vali:error", message }
 
 const VALIG_URL = "/valig/index.html?host=mma";
+
+/** What a map keeps of its Vali setup. Absent fields mean the GUI's defaults. */
+interface ValiProject {
+	definition?: unknown;
+	tag?: string;
+}
+
+/** The tag the GUI shares across maps; a map reads it until it saves its own setup. */
+const SHARED_TAG_KEY = "vali-mma-tag";
+
+function loadValiProject(): ValiProject {
+	const sharedTag = localStorage.getItem(SHARED_TAG_KEY);
+	return mapStorage("vali").get<ValiProject>(
+		"project",
+		sharedTag === null ? {} : { tag: sharedTag },
+	);
+}
+
+function saveValiProject(project: ValiProject) {
+	void mapStorage("vali").set("project", project);
+}
 
 async function importLocations(valiLocs: ValiLocation[], tagName: string): Promise<number> {
 	let tagId: number | null = null;
@@ -74,7 +101,17 @@ export function ValiSidebar({ onClose }: { onClose: () => void }) {
 
 	useEffect(() => {
 		const onMessage = async (e: MessageEvent) => {
-			const post = (msg: unknown) => iframeRef.current?.contentWindow?.postMessage(msg, "*");
+			const gui = iframeRef.current?.contentWindow;
+			if (!gui || e.source !== gui) return;
+			const post = (msg: unknown) => gui.postMessage(msg, "*");
+			if (e.data?.type === "vali:ready") {
+				post({ type: "vali:load", ...loadValiProject() });
+				return;
+			}
+			if (e.data?.type === "vali:state") {
+				saveValiProject({ definition: e.data.definition, tag: String(e.data.tag ?? "") });
+				return;
+			}
 			const action = valiMessageAction(e.data?.type, busyRef.current);
 			if (action === "ignore") return;
 			if (action === "cancel") {
@@ -121,6 +158,11 @@ export function ValiSidebar({ onClose }: { onClose: () => void }) {
 
 	const outdated = (stale?.length ?? 0) > 0;
 
+	const reset = () => {
+		saveValiProject({});
+		iframeRef.current?.contentWindow?.postMessage({ type: "vali:load" }, "*");
+	};
+
 	return (
 		<Sidebar
 			title={t("Vali")}
@@ -128,17 +170,22 @@ export function ValiSidebar({ onClose }: { onClose: () => void }) {
 			className="vali-sidebar"
 			flush
 			actions={
-				<IconButton
-					className="vali-sidebar__download"
-					icon={mdiCloudDownloadOutline}
-					label={t("Download coverage data")}
-					tooltip={outdated ? t("Coverage data is out of date") : t("Download coverage data")}
-					tooltipSide="bottom"
-					disabled={busy === "generate"}
-					onClick={() => setDownloadOpen(true)}
-				>
-					{outdated && <span className="vali-sidebar__badge" />}
-				</IconButton>
+				<>
+					<ConfirmButton variant="ghost" small disabled={busy === "generate"} onConfirm={reset}>
+						{t("Reset")}
+					</ConfirmButton>
+					<IconButton
+						className="vali-sidebar__download"
+						icon={mdiCloudDownloadOutline}
+						label={t("Download coverage data")}
+						tooltip={outdated ? t("Coverage data is out of date") : t("Download coverage data")}
+						tooltipSide="bottom"
+						disabled={busy === "generate"}
+						onClick={() => setDownloadOpen(true)}
+					>
+						{outdated && <span className="vali-sidebar__badge" />}
+					</IconButton>
+				</>
 			}
 		>
 			<div className="vali-sidebar__iframe-wrap">
