@@ -1184,11 +1184,8 @@ export type MapMetaPatch = {
 	labels: string[] | null,
 };
 
-/**
- *  Per-map editor preferences. Controls Street View lookup behavior (official vs
- *  unofficial, camera type filters), export defaults, and metadata enrichment.
- */
-export type MapSettings = {
+/**  Street View lookup, export, and enrichment preferences that can start any map. */
+export type MapPreferences = {
 	pointAlongRoad?: boolean,
 	preferDirection?: string | null,
 	preferOfficial?: boolean,
@@ -1203,14 +1200,6 @@ export type MapSettings = {
 	searchRadius?: number | null,
 	enrichMetadata?: boolean,
 	enrichFields?: string[] | null,
-	keyBindings?: MapKeyBinding[],
-	/**  Virtual tag-tree nodes keyed by full slash path. Tree-view only. */
-	virtualTags?: { [key in string]: VirtualTag },
-	/**
-	 *  Tag aliases: a second tree location (full slash path) -> the real tag id shown
-	 *  there. Tree-view only; clicking the alias leaf toggles the real tag.
-	 */
-	aliases?: { [key in string]: number },
 	/**
 	 *  Which member of a duplicate group survives a merge: a field expression scoring the
 	 *  location, highest wins. `null` (or blank) keeps the built-in ranking.
@@ -1226,6 +1215,18 @@ export type MapSettings = {
 	/**  Which capture a bulk pin's resolve settles on; `null` keeps the pano as found. */
 	pinCapture?: CapturePick | null,
 };
+
+/**  A map's settings: its preferences plus what refers to its own tags and data. */
+export type MapSettings = {
+	keyBindings?: MapKeyBinding[],
+	/**  Virtual tag-tree nodes keyed by full slash path. Tree-view only. */
+	virtualTags?: { [key in string]: VirtualTag },
+	/**
+	 *  Tag aliases: a second tree location (full slash path) -> the real tag id shown
+	 *  there. Tree-view only; clicking the alias leaf toggles the real tag.
+	 */
+	aliases?: { [key in string]: number },
+} & MapPreferences;
 
 
 

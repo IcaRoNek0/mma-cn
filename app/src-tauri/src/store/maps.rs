@@ -58,11 +58,10 @@ pub struct VirtualTag {
     pub order: Option<f64>,
 }
 
-/// Per-map editor preferences. Controls Street View lookup behavior (official vs
-/// unofficial, camera type filters), export defaults, and metadata enrichment.
+/// Street View lookup, export, and enrichment preferences that can start any map.
 #[derive(Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(default, rename_all = "camelCase")]
-pub struct MapSettings {
+pub struct MapPreferences {
     pub point_along_road: bool,
     pub prefer_direction: Option<String>,
     pub prefer_official: bool,
@@ -77,12 +76,6 @@ pub struct MapSettings {
     pub search_radius: Option<u32>,
     pub enrich_metadata: bool,
     pub enrich_fields: Option<Vec<String>>,
-    pub key_bindings: Vec<MapKeyBinding>,
-    /// Virtual tag-tree nodes keyed by full slash path. Tree-view only.
-    pub virtual_tags: HashMap<String, VirtualTag>,
-    /// Tag aliases: a second tree location (full slash path) -> the real tag id shown
-    /// there. Tree-view only; clicking the alias leaf toggles the real tag.
-    pub aliases: HashMap<String, u32>,
     /// Which member of a duplicate group survives a merge: a field expression scoring the
     /// location, highest wins. `null` (or blank) keeps the built-in ranking.
     pub duplicate_score: Option<String>,
@@ -93,6 +86,20 @@ pub struct MapSettings {
     pub pin_resolve: bool,
     /// Which capture a bulk pin's resolve settles on; `null` keeps the pano as found.
     pub pin_capture: Option<CapturePick>,
+}
+
+/// A map's settings: its preferences plus what refers to its own tags and data.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MapSettings {
+    #[serde(flatten)]
+    pub preferences: MapPreferences,
+    pub key_bindings: Vec<MapKeyBinding>,
+    /// Virtual tag-tree nodes keyed by full slash path. Tree-view only.
+    pub virtual_tags: HashMap<String, VirtualTag>,
+    /// Tag aliases: a second tree location (full slash path) -> the real tag id shown
+    /// there. Tree-view only; clicking the alias leaf toggles the real tag.
+    pub aliases: HashMap<String, u32>,
 }
 
 wire_str_enum! {
@@ -106,7 +113,7 @@ wire_str_enum! {
     }
 }
 
-impl Default for MapSettings {
+impl Default for MapPreferences {
     fn default() -> Self {
         Self {
             point_along_road: true,
@@ -122,9 +129,6 @@ impl Default for MapSettings {
             search_radius: None,
             enrich_metadata: false,
             enrich_fields: None,
-            key_bindings: Vec::new(),
-            virtual_tags: HashMap::new(),
-            aliases: HashMap::new(),
             duplicate_score: None,
             review_order: None,
             pin_resolve: true,

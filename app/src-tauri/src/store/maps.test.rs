@@ -7,9 +7,53 @@ fn map_settings_never_serializes_absent_keys() {
     // JS reads settings with no fallback, so every key must survive an old
     // settings row: missing on disk means the Rust default, present on the wire.
     let settings: MapSettings = serde_json::from_str(r#"{"pointAlongRoad":true}"#).unwrap();
-    assert!(!settings.enrich_metadata);
+    assert!(!settings.preferences.enrich_metadata);
     let value: serde_json::Value = serde_json::to_value(&settings).unwrap();
     assert_eq!(value["enrichMetadata"], serde_json::Value::Bool(false));
+}
+
+#[test]
+fn legacy_flat_settings_round_trip_unchanged() {
+    let legacy = serde_json::json!({
+        "pointAlongRoad": false,
+        "preferDirection": "north",
+        "preferOfficial": false,
+        "preferHigherQuality": true,
+        "onlyOfficial": true,
+        "cameraTypes": ["gen4"],
+        "defaultPanoId": true,
+        "exportZoom": true,
+        "exportUnpanned": false,
+        "exportShape": "local",
+        "searchRadius": 75,
+        "enrichMetadata": true,
+        "enrichFields": ["altitude"],
+        "keyBindings": [{"key": "m", "action": {"type": "applyTag", "tagId": 7}}],
+        "virtualTags": {"Europe": {"color": "#123456", "order": null}},
+        "aliases": {"Europe/France": 7},
+        "duplicateScore": "zoom",
+        "reviewOrder": "-year",
+        "pinResolve": false,
+        "pinCapture": "oldest"
+    });
+    let settings: MapSettings = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&settings).unwrap(), legacy);
+}
+
+#[test]
+fn map_preferences_leave_out_what_refers_to_the_map() {
+    let settings: MapSettings = serde_json::from_value(serde_json::json!({
+        "pointAlongRoad": false,
+        "keyBindings": [{"key": "m", "action": {"type": "applyTag", "tagId": 7}}],
+        "virtualTags": {"Europe": {"color": "#123456"}},
+        "aliases": {"Europe/France": 7}
+    }))
+    .unwrap();
+    let value = serde_json::to_value(&settings.preferences).unwrap();
+    assert_eq!(value["pointAlongRoad"], false);
+    for key in ["keyBindings", "virtualTags", "aliases"] {
+        assert!(value.get(key).is_none(), "{key} leaked into preferences");
+    }
 }
 
 #[test]
@@ -65,13 +109,13 @@ fn map_settings_duplicate_score_defaults_unset() {
     // Old settings JSON (no duplicateScore) must deserialize as "built-in ranking".
     let old_json = r#"{"pointAlongRoad":true}"#;
     let settings: MapSettings = serde_json::from_str(old_json).unwrap();
-    assert!(settings.duplicate_score.is_none());
-    assert!(MapSettings::default().duplicate_score.is_none());
+    assert!(settings.preferences.duplicate_score.is_none());
+    assert!(MapPreferences::default().duplicate_score.is_none());
 
     let json = r#"{"duplicateScore":"tagCount + 2 * zoom"}"#;
     let settings: MapSettings = serde_json::from_str(json).unwrap();
     assert_eq!(
-        settings.duplicate_score.as_deref(),
+        settings.preferences.duplicate_score.as_deref(),
         Some("tagCount + 2 * zoom")
     );
 }
@@ -81,12 +125,12 @@ fn map_settings_review_order_defaults_unset() {
     // Old settings JSON (no reviewOrder) must deserialize as "selection order".
     let old_json = r#"{"pointAlongRoad":true}"#;
     let settings: MapSettings = serde_json::from_str(old_json).unwrap();
-    assert!(settings.review_order.is_none());
-    assert!(MapSettings::default().review_order.is_none());
+    assert!(settings.preferences.review_order.is_none());
+    assert!(MapPreferences::default().review_order.is_none());
 
     let json = r#"{"reviewOrder":"-year"}"#;
     let settings: MapSettings = serde_json::from_str(json).unwrap();
-    assert_eq!(settings.review_order.as_deref(), Some("-year"));
+    assert_eq!(settings.preferences.review_order.as_deref(), Some("-year"));
 }
 
 #[test]
@@ -577,19 +621,46 @@ fn default_settings_json_round_trips_to_default() {
     let parsed: MapSettings = serde_json::from_str(&json).unwrap();
     let default = MapSettings::default();
 
-    assert_eq!(parsed.point_along_road, default.point_along_road);
-    assert_eq!(parsed.prefer_official, default.prefer_official);
-    assert_eq!(parsed.prefer_higher_quality, default.prefer_higher_quality);
-    assert_eq!(parsed.only_official, default.only_official);
-    assert_eq!(parsed.default_pano_id, default.default_pano_id);
-    assert_eq!(parsed.export_zoom, default.export_zoom);
-    assert_eq!(parsed.export_unpanned, default.export_unpanned);
-    assert_eq!(parsed.export_shape, default.export_shape);
-    assert_eq!(parsed.enrich_metadata, default.enrich_metadata);
-    assert!(parsed.prefer_direction.is_none());
-    assert!(parsed.camera_types.is_none());
-    assert!(parsed.search_radius.is_none());
-    assert!(parsed.enrich_fields.is_none());
+    assert_eq!(
+        parsed.preferences.point_along_road,
+        default.preferences.point_along_road
+    );
+    assert_eq!(
+        parsed.preferences.prefer_official,
+        default.preferences.prefer_official
+    );
+    assert_eq!(
+        parsed.preferences.prefer_higher_quality,
+        default.preferences.prefer_higher_quality
+    );
+    assert_eq!(
+        parsed.preferences.only_official,
+        default.preferences.only_official
+    );
+    assert_eq!(
+        parsed.preferences.default_pano_id,
+        default.preferences.default_pano_id
+    );
+    assert_eq!(
+        parsed.preferences.export_zoom,
+        default.preferences.export_zoom
+    );
+    assert_eq!(
+        parsed.preferences.export_unpanned,
+        default.preferences.export_unpanned
+    );
+    assert_eq!(
+        parsed.preferences.export_shape,
+        default.preferences.export_shape
+    );
+    assert_eq!(
+        parsed.preferences.enrich_metadata,
+        default.preferences.enrich_metadata
+    );
+    assert!(parsed.preferences.prefer_direction.is_none());
+    assert!(parsed.preferences.camera_types.is_none());
+    assert!(parsed.preferences.search_radius.is_none());
+    assert!(parsed.preferences.enrich_fields.is_none());
     assert!(parsed.key_bindings.is_empty());
     assert!(parsed.virtual_tags.is_empty());
     assert!(parsed.aliases.is_empty());

@@ -4,8 +4,8 @@ use crate::store::engine;
 use crate::store::engine::{record_name, record_order, ValueRecord};
 use crate::store::engine::{Store, WindowLabel};
 use crate::store::maps;
-use crate::store::maps::MapSettings;
 use crate::store::maps::VirtualTag;
+use crate::store::maps::{MapPreferences, MapSettings};
 use crate::types::RawExtra;
 use crate::types::{Location, LocationFlags};
 use std::collections::HashMap;
@@ -324,7 +324,10 @@ fn merge_settings_overlays_present_keys_only() {
     let parsed = parse_single_json_mut(&mut buf);
 
     let mut base = MapSettings {
-        point_along_road: false, // non-default, unrelated key
+        preferences: MapPreferences {
+            point_along_road: false, // non-default, unrelated key
+            ..MapPreferences::default()
+        },
         ..MapSettings::default()
     };
     base.virtual_tags.insert(
@@ -337,7 +340,7 @@ fn merge_settings_overlays_present_keys_only() {
 
     let merged = merge_settings(base, &parsed.settings);
     assert!(
-        !merged.point_along_road,
+        !merged.preferences.point_along_road,
         "key absent from the overlay keeps its base value"
     );
     assert_eq!(
@@ -357,7 +360,7 @@ fn merge_settings_empty_overlay_is_base() {
     let base = MapSettings::default();
     let merged = merge_settings(base, &serde_json::Map::new());
     assert!(
-        merged.point_along_road,
+        merged.preferences.point_along_road,
         "empty overlay leaves defaults untouched"
     );
 }
