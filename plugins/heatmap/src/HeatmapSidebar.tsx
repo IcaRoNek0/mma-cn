@@ -5,7 +5,7 @@ import {
   updateLayer,
   addLayer,
   removeLayer,
-  resetLayers,
+  resetProject,
   addCustomGradient,
   updateCustomGradient,
   removeCustomGradient,
@@ -56,7 +56,7 @@ export function HeatmapSidebar({ onClose }: { onClose: () => void }) {
       title="Heatmap"
       onBack={onClose}
       actions={
-        <Button variant="ghost" small onClick={resetLayers}>
+        <Button variant="ghost" small onClick={resetProject}>
           Reset
         </Button>
       }

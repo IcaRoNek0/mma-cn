@@ -1168,7 +1168,16 @@ function hexToRgb(hex) {
 }
 
 // heatmap/src/heatmap.ts
-var { storage, getMapState, resolveIds, selectorForPick, getScenePositions, getMapHost, on } = MMA;
+var {
+  storage,
+  mapStorage,
+  getMapState,
+  resolveIds,
+  selectorForPick,
+  getScenePositions,
+  getMapHost,
+  on
+} = MMA;
 var LAYER_DEFAULTS = {
   visible: true,
   intensity: 1,
@@ -1177,7 +1186,13 @@ var LAYER_DEFAULTS = {
   threshold: 0.05,
   gradientId: DEFAULT_GRADIENT_ID
 };
-var store = storage("heatmap");
+var sharedStore = storage("heatmap");
+function project(key) {
+  return mapStorage("heatmap").get(key, sharedStore.get(key));
+}
+function saveProject(key, value) {
+  void mapStorage("heatmap").set(key, value);
+}
 function defaultSource() {
   return getMapState().selectedLocationIds.size > 0 ? { pick: "selection" } : { pick: "all" };
 }
@@ -1202,18 +1217,18 @@ function migrateLayer(stored) {
   return layer;
 }
 function loadLayers() {
-  const stored = store.get("layers");
+  const stored = project("layers");
   if (stored?.length) return stored.map(migrateLayer);
   return [newLayer()];
 }
 function loadGradients() {
-  return (store.get("gradients") ?? []).map(
+  return (project("gradients") ?? []).map(
     normalizeGradient
   );
 }
 var overlay = null;
-var layers = loadLayers();
-var customGradients = loadGradients();
+var layers = [];
+var customGradients = [];
 var onSettingsChange = null;
 function getLayers() {
   return layers;
@@ -1225,7 +1240,7 @@ function setOnSettingsChange(cb) {
   onSettingsChange = cb;
 }
 function commit() {
-  store.set("layers", layers);
+  saveProject("layers", layers);
   rebuild();
   onSettingsChange?.();
 }
@@ -1241,12 +1256,13 @@ function removeLayer(id) {
   layers = layers.filter((l) => l.id !== id);
   commit();
 }
-function resetLayers() {
+function resetProject() {
   layers = [newLayer()];
-  commit();
+  customGradients = [];
+  commitGradients();
 }
 function commitGradients() {
-  store.set("gradients", customGradients);
+  saveProject("gradients", customGradients);
   commit();
 }
 function addCustomGradient(layerId, from) {
@@ -1310,8 +1326,11 @@ async function rebuild() {
 function init() {
   const host = getMapHost();
   if (!host) throw new Error("No map instance");
+  layers = loadLayers();
+  customGradients = loadGradients();
   overlay = host.createDeckOverlay();
   void rebuild();
+  onSettingsChange?.();
   let rebuildTimer;
   const onChange = () => {
     clearTimeout(rebuildTimer);
@@ -1326,8 +1345,8 @@ function init() {
       overlay.finalize();
       overlay = null;
     }
-    layers = loadLayers();
-    customGradients = loadGradients();
+    layers = [];
+    customGradients = [];
     onSettingsChange = null;
   };
 }
@@ -1367,7 +1386,7 @@ function HeatmapSidebar({ onClose }) {
     {
       title: "Heatmap",
       onBack: onClose,
-      actions: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { variant: "ghost", small: true, onClick: resetLayers, children: "Reset" }),
+      actions: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { variant: "ghost", small: true, onClick: resetProject, children: "Reset" }),
       children: [
         layers2.map((l, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
           LayerControls,

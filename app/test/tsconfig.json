@@ -15,5 +15,5 @@
 	],
 	// Reaches into an external plugin's source, whose SDK import re-declares the MMA globals
 	// that api.ts already declares in this program.
-	"exclude": ["unit/heatmapGradients.test.ts"]
+	"exclude": ["unit/heatmapGradients.test.ts", "unit/heatmapProject.test.ts"]
 }

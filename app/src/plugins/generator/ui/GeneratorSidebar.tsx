@@ -8,7 +8,7 @@ import { applySelectionUpdate, getActiveSelections, useMapState } from "@/store/
 import { addSelection } from "@/store/selections";
 import { usePluginEvent } from "@/plugins/pluginEvents";
 import type { Selection } from "@/bindings.gen";
-import { storage } from "@/plugins/pluginStorage";
+import { mapStorage, storage } from "@/plugins/pluginStorage";
 import { Sidebar, Section } from "@/components/primitives/Sidebar";
 import { searchCoverage } from "../searchCoverage";
 import {
@@ -45,18 +45,25 @@ import { fieldValueLabel, getFieldDef } from "@/lib/data/fieldDefRegistry";
 import { TextInput } from "@/components/primitives/TextInput";
 import { Button } from "@/components/primitives/Button";
 import { IconButton } from "@/components/primitives/IconButton";
+import { ConfirmButton } from "@/components/primitives/ConfirmButton";
 import { downloadBlob, pickFiles } from "@/lib/util/util";
 import { toast } from "@/lib/util/toast";
 import { readGeneratorPreset, writeGeneratorPreset } from "../presetFile";
 
-const genStore = storage("map-generator");
+const GENERATOR_ID = "map-generator";
+/** The setup every map shares until it saves its own. */
+const sharedStore = storage(GENERATOR_ID);
 
-function loadSettings(): GeneratorSettings {
-	return normalizeGeneratorSettings(genStore.get<unknown>("settings"));
+function project<T>(key: string): T {
+	return mapStorage(GENERATOR_ID).get<T>(key, sharedStore.get<T>(key));
 }
 
-function saveSettings(s: GeneratorSettings) {
-	genStore.set("settings", s);
+function saveProject(key: string, value: unknown) {
+	void mapStorage(GENERATOR_ID).set(key, value);
+}
+
+function loadSettings(): GeneratorSettings {
+	return normalizeGeneratorSettings(project<unknown>("settings"));
 }
 
 function selectionToRegion(sel: Selection, meta: GeneratorRegionMeta): GeneratorRegion | null {
@@ -248,7 +255,7 @@ function summarizeSettings(s: GeneratorSettings): string {
 export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 	const [settings, setSettings] = useState<GeneratorSettings>(loadSettings);
 	const [meta, setMeta] = useState<Map<string, GeneratorRegionMeta>>(sessionMeta);
-	const [tagName, setTagName] = useState(() => genStore.get<string>("tagName", ""));
+	const [tagName, setTagName] = useState(() => project<string | undefined>("tagName") ?? "");
 	const status = usePluginEvent(GENERATOR_CHANGED, getGeneratorStatus);
 	const running = status !== "idle";
 	const paused = status === "paused";
@@ -271,7 +278,7 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 	const updateSettings = useCallback((patch: Partial<GeneratorSettings>) => {
 		setSettings((prev) => {
 			const next = { ...prev, ...patch };
-			saveSettings(next);
+			saveProject("settings", next);
 			updateGenerationSettings(next);
 			return next;
 		});
@@ -352,12 +359,21 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 		if (preset.settings) updateSettings(preset.settings);
 		if (preset.tagName !== null) {
 			setTagName(preset.tagName);
-			genStore.set("tagName", preset.tagName);
+			saveProject("tagName", preset.tagName);
 		}
 		await applySelectionUpdate(
 			addSelection(...preset.polygons.map((polygon) => ({ type: "Polygon" as const, polygon }))),
 		);
 	}, [updateSettings]);
+
+	const handleReset = useCallback(() => {
+		const fresh = normalizeGeneratorSettings(undefined);
+		setSettings(fresh);
+		updateGenerationSettings(fresh);
+		saveProject("settings", fresh);
+		setTagName("");
+		saveProject("tagName", "");
+	}, []);
 
 	const handleClose = useCallback(() => {
 		onClose();
@@ -387,6 +403,9 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 						tooltipSide="bottom"
 						onClick={handleExport}
 					/>
+					<ConfirmButton variant="ghost" small disabled={running} onConfirm={handleReset}>
+						{t("Reset")}
+					</ConfirmButton>
 				</>
 			}
 			footer={
@@ -433,7 +452,7 @@ export function GeneratorSidebar({ onClose }: { onClose: () => void }) {
 						value={tagName}
 						onChange={(e) => {
 							setTagName(e.target.value);
-							genStore.set("tagName", e.target.value);
+							saveProject("tagName", e.target.value);
 						}}
 						placeholder={t("None")}
 						disabled={running}

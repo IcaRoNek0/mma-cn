@@ -10,7 +10,16 @@ import {
   type HeatmapGradient,
 } from "./gradients";
 
-const { storage, getMapState, resolveIds, selectorForPick, getScenePositions, getMapHost, on } = MMA;
+const {
+  storage,
+  mapStorage,
+  getMapState,
+  resolveIds,
+  selectorForPick,
+  getScenePositions,
+  getMapHost,
+  on,
+} = MMA;
 
 export interface HeatmapLayerSettings {
   id: string;
@@ -32,7 +41,16 @@ export const LAYER_DEFAULTS: Omit<HeatmapLayerSettings, "id" | "source"> = {
   gradientId: DEFAULT_GRADIENT_ID,
 };
 
-const store = storage("heatmap");
+/** The setup every map shares until it saves its own. */
+const sharedStore = storage("heatmap");
+
+function project<T>(key: string): T | undefined {
+  return mapStorage("heatmap").get<T | undefined>(key, sharedStore.get<T>(key));
+}
+
+function saveProject(key: string, value: unknown) {
+  void mapStorage("heatmap").set(key, value);
+}
 
 function defaultSource(): SelectorPick {
   return getMapState().selectedLocationIds.size > 0
@@ -66,20 +84,20 @@ function migrateLayer(stored: Partial<HeatmapLayerSettings>): HeatmapLayerSettin
 }
 
 function loadLayers(): HeatmapLayerSettings[] {
-  const stored = store.get<Partial<HeatmapLayerSettings>[]>("layers");
+  const stored = project<Partial<HeatmapLayerSettings>[]>("layers");
   if (stored?.length) return stored.map(migrateLayer);
   return [newLayer()];
 }
 
 function loadGradients(): HeatmapGradient[] {
-  return (store.get<HeatmapGradient[]>("gradients") ?? []).map(
+  return (project<HeatmapGradient[]>("gradients") ?? []).map(
     normalizeGradient,
   );
 }
 
 let overlay: DeckOverlayHandle | null = null;
-let layers: HeatmapLayerSettings[] = loadLayers();
-let customGradients: HeatmapGradient[] = loadGradients();
+let layers: HeatmapLayerSettings[] = [];
+let customGradients: HeatmapGradient[] = [];
 let onSettingsChange: (() => void) | null = null;
 
 export function getLayers(): HeatmapLayerSettings[] {
@@ -95,7 +113,7 @@ export function setOnSettingsChange(cb: (() => void) | null) {
 }
 
 function commit() {
-  store.set("layers", layers);
+  saveProject("layers", layers);
   rebuild();
   onSettingsChange?.();
 }
@@ -115,13 +133,14 @@ export function removeLayer(id: string) {
   commit();
 }
 
-export function resetLayers() {
+export function resetProject() {
   layers = [newLayer()];
-  commit();
+  customGradients = [];
+  commitGradients();
 }
 
 function commitGradients() {
-  store.set("gradients", customGradients);
+  saveProject("gradients", customGradients);
   commit();
 }
 
@@ -210,8 +229,11 @@ export function init(): () => void {
   const host = getMapHost();
   if (!host) throw new Error("No map instance");
 
+  layers = loadLayers();
+  customGradients = loadGradients();
   overlay = host.createDeckOverlay();
   void rebuild();
+  onSettingsChange?.();
 
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   const onChange = () => {
@@ -228,8 +250,8 @@ export function init(): () => void {
       overlay.finalize();
       overlay = null;
     }
-    layers = loadLayers();
-    customGradients = loadGradients();
+    layers = [];
+    customGradients = [];
     onSettingsChange = null;
   };
 }

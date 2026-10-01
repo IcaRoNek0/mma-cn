@@ -109,9 +109,10 @@ vi.mock("@/store/useMapStore", () => ({
 	setPluginMode: () => {},
 }));
 vi.mock("@/plugins/pluginStorage", () => ({
-	storage: () => ({
+	storage: () => ({ get: (_key: string, fallback: unknown) => fallback }),
+	mapStorage: () => ({
 		get: (key: string, fallback: unknown) => (key in h.saved ? h.saved[key] : fallback),
-		set: () => {},
+		set: async () => {},
 	}),
 }));
 vi.mock("@/plugins/generator/ui/SettingsPanel", () => ({ SettingsPanel: () => null }));
