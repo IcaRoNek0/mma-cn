@@ -5024,6 +5024,37 @@ fn failed_base_write_keeps_the_overlay_and_the_delta() {
 }
 
 #[test]
+fn patches_only_base_write_replaces_the_mapped_file_it_was_read_from() {
+    let dir = TempDir::new("mma_test_mapped_base_write");
+    let base = dir.join("m1.arrow");
+    let delta = dir.join("m1_delta.arrow");
+    arrow::write_arrow_ipc(
+        &base,
+        &arrow::locations_to_batch(&[loc(1, 1.0, 1.0), loc(2, 2.0, 2.0)]),
+    )
+    .unwrap();
+    let mut store = Store::new();
+    let (batch, handle) = arrow::read_arrow_ipc_mmap(&base).unwrap();
+    store.batch = Some(batch);
+    store.mmap_handle = Some(handle);
+    let lats = |path: &Path| -> Vec<f64> {
+        arrow::batch_to_locations(&arrow::read_arrow_ipc(path).unwrap())
+            .iter()
+            .map(|l| l.lat)
+            .collect()
+    };
+
+    store.overlay_update(1, &patch!(lat: 5.0));
+    write_baked_base(&mut store, &base, &delta).unwrap();
+    assert_eq!(lats(&base), vec![5.0, 2.0]);
+
+    store.overlay_update(2, &patch!(lat: 7.0));
+    write_baked_base(&mut store, &base, &delta).unwrap();
+    assert_eq!(lats(&base), vec![5.0, 7.0]);
+    assert!(store.overlay.is_empty() && !store.overlay.is_unsaved());
+}
+
+#[test]
 fn crash_window_stale_delta_double_applies_baked_locations() {
     let x = vec![loc(5, 5.0, 5.0), loc(6, 6.0, 6.0)];
     let mut store = Store::new();
