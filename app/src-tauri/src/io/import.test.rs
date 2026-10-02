@@ -929,6 +929,22 @@ fn two_windows_previewing_at_once_keep_their_own_import() {
     cache.remove("preview-b");
 }
 
+#[test]
+fn editor_import_reports_marker_additions() {
+    let mut store = Store::new();
+    store.map_id = Some("test".into());
+    let mut parsed = ParsedMap {
+        locations: vec![loc_with_tags(0, Vec::new()), loc_with_tags(0, Vec::new())],
+        ..Default::default()
+    };
+
+    let result = add_parsed_to_store(&mut store, &mut parsed, &[]).unwrap();
+
+    assert_eq!(result.delta.added.len(), 2);
+    assert!(result.delta.updated.is_empty());
+    assert!(result.delta.removed.is_empty());
+}
+
 // -----------------------------------------------------------------------
 // Cross-map copy producer (add_copied_to_store): the core of the open-target
 // branch of store_copy_locations_to_map. The cross-window event ships exactly

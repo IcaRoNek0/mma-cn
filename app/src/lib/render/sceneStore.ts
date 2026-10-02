@@ -111,11 +111,8 @@ export function clearScene() {
 
 /** Start listening for deltas, selections, and active-location changes. Returns a stop function. */
 export function startSceneEngine(): () => void {
+	const unsubReset = subscribeEvent("render:reset", () => void loadScene(lastMarkerStyle));
 	const unsubDelta = subscribeEvent("render:delta", (delta) => {
-		if (delta.fullReset) {
-			void loadScene(lastMarkerStyle);
-			return;
-		}
 		const t = trace("delta", { summary: true });
 		const before = scene.overlay.version;
 		const affected = scene.applyDelta(delta);
@@ -140,6 +137,7 @@ export function startSceneEngine(): () => void {
 	});
 
 	return () => {
+		unsubReset();
 		unsubDelta();
 		unsubSel();
 		unsubStore();

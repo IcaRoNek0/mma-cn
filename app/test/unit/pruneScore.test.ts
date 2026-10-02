@@ -22,7 +22,7 @@ vi.mock("@/lib/commands", async () => {
 			h.calls.push({ selector, distance, score });
 			return {
 				version: 0,
-				delta: { added: [], updated: [], removed: [1, 2], fullReset: false },
+				delta: { added: [], updated: [], removed: [1, 2] },
 				selectionSync: null,
 				values: {
 					locationCount: null,

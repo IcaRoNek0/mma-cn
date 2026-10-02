@@ -125,6 +125,20 @@ describe("sceneStore full load", () => {
 		expect(h.marks).toContain("markers");
 	});
 
+	it("a reset loads the whole scene again", async () => {
+		h.mapId = "a";
+		vi.stubGlobal("fetch", async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }));
+		const init = vi.spyOn(getScene(), "initFromBinary").mockImplementation(() => {});
+		const stop = startSceneEngine();
+
+		(h.listeners.get("render:reset") ?? []).forEach((fn) => fn());
+		await vi.waitFor(() => expect(init).toHaveBeenCalledTimes(1));
+
+		stop();
+		init.mockRestore();
+		vi.unstubAllGlobals();
+	});
+
 	it("a load that outlives its map is dropped, so the next map's open is not marked early", async () => {
 		h.mapId = "a";
 		expect(

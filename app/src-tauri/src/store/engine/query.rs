@@ -300,7 +300,7 @@ impl Store {
         let Some(at) = self.bounds.if_built_mut().filter(|b| b.current(before)) else {
             return;
         };
-        if changes.full_reset || !changes.removed.is_empty() {
+        if !changes.removed.is_empty() {
             return;
         }
         let mut acc = *at.value();

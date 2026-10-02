@@ -2465,7 +2465,6 @@ type RenderDelta = {
     added: RenderEntry[];
     updated: RenderPatchEntry[];
     removed: CellRemoval[];
-    fullReset: boolean;
 };
 /**  A marker appended to a render cell: position, heading, and selection state. */
 type RenderEntry = {
@@ -5248,6 +5247,8 @@ declare const EVENT_DEFS: {
     "store:changed": void;
     /** @unstable */
     "render:delta": RenderDelta;
+    /** The scene must be loaded again from scratch. @unstable */
+    "render:reset": void;
     /** @unstable */
     "render:selection": SelectionBitmaskPayload;
     "map-list:changed": void;

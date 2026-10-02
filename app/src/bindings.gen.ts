@@ -1669,7 +1669,6 @@ export type RenderDelta = {
 	added: RenderEntry[],
 	updated: RenderPatchEntry[],
 	removed: CellRemoval[],
-	fullReset: boolean,
 };
 
 /**  A marker appended to a render cell: position, heading, and selection state. */

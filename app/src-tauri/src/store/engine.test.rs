@@ -3421,11 +3421,12 @@ fn full_resolve_ships_a_bitmask_for_every_cell() {
     insert_tag(&mut store, 1, 2);
     add_tag_selection(&mut store, 1, [255, 0, 0]);
 
-    // `full_reset` forces the full-resolve branch.
-    let result = store.finish_mutation(&ChangeSet {
-        full_reset: true,
-        ..Default::default()
-    });
+    // More than 100 rows in one change forces the full-resolve branch, all of them in l1's cell.
+    let changes = store.apply_edit(
+        Vec::new(),
+        (3..=103).map(|id| loc(id, 10.0, 20.0)).collect(),
+    );
+    let result = store.finish_mutation(&changes);
 
     let buf = result
         .selection_sync

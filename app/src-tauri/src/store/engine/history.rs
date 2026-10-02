@@ -186,7 +186,7 @@ impl Store {
     /// The changeset takes ownership of the rows - removed rows move through it without
     /// a clone (they left the store), and `apply_undoable` moves them back out into the
     /// undo entry after `finish_mutation` has projected them.
-    pub(super) fn apply_edit(&mut self, remove: Vec<Location>, create: Vec<Location>) -> ChangeSet {
+    pub(crate) fn apply_edit(&mut self, remove: Vec<Location>, create: Vec<Location>) -> ChangeSet {
         let t0 = Instant::now();
 
         self.overlay_remove(&remove);

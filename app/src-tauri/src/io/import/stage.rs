@@ -298,37 +298,20 @@ pub(super) fn add_parsed_to_store(
         loc.id = store.alloc_id();
     }
     let t_reconcile = _t.elapsed();
-    let t_counts = _t.elapsed();
 
-    let t_autoreg = _t.elapsed();
-
-    // Small imports keep a reversible undo entry (needs a copy of the locations). Large
-    // imports autocommit and skip undo, so the locations are MOVED into the overlay
-    // below instead of cloning each one.
-    if parsed.locations.len() <= IMPORT_AUTOCOMMIT_THRESHOLD {
-        store.push_undo(engine::EditEntry {
-            created: parsed.locations.clone(),
-            removed: Vec::new(),
-        });
+    let locations = mem::take(&mut parsed.locations);
+    let result = if locations.len() <= IMPORT_AUTOCOMMIT_THRESHOLD {
+        store.apply_undoable(Vec::new(), locations)
     } else {
         store.edits.edit().clear_redo();
-    }
-
-    let t_undo = _t.elapsed();
-
-    for loc in &parsed.locations {
-        store.cell_add_render(engine::render_cell_idx(loc.lat, loc.lng), loc.id);
-    }
-    store.overlay_add(mem::take(&mut parsed.locations));
-    let t_overlay = _t.elapsed();
-
-    let result = store.finish_mutation(&engine::ChangeSet {
-        full_reset: true,
-        ..Default::default()
-    });
-    log::debug!("[import-insert] n={n} reconcile+alloc={:.0}ms counts={:.0}ms auto_reg={:.0}ms undo={:.0}ms overlay_add={:.0}ms finish={:.0}ms total={:.0}ms",
-        t_reconcile.as_millis(), (t_counts - t_reconcile).as_millis(), (t_autoreg - t_counts).as_millis(),
-        (t_undo - t_autoreg).as_millis(), (t_overlay - t_undo).as_millis(), (_t.elapsed() - t_overlay).as_millis(), _t.elapsed().as_millis());
+        let changes = store.apply_edit(Vec::new(), locations);
+        store.finish_mutation(&changes)
+    };
+    log::debug!(
+        "[import-insert] n={n} reconcile+alloc={:.0}ms insert={:.0}ms",
+        t_reconcile.as_millis(),
+        (_t.elapsed() - t_reconcile).as_millis()
+    );
     Ok(result)
 }
 

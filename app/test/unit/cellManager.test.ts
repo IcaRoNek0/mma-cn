@@ -184,20 +184,6 @@ describe("CellManager", () => {
 		expect(mgr.overlay.count).toBe(0);
 	});
 
-	it("applyDelta with fullReset clears everything first", () => {
-		mgr.applyDelta(delta({ added: [entry("s", 1, 10, 20)] }));
-		mgr.applyDelta(
-			delta({
-				added: [entry("t", 2, 30, 40)],
-				removed: [],
-				fullReset: true,
-			}),
-		);
-		// fullReset isn't handled in applyDelta — it's handled by the caller. But the delta still applies.
-		// So totalCount should be 2 (original + new)
-		expect(mgr.totalCount).toBe(2);
-	});
-
 	it("resolvePickFromCell returns correct id", () => {
 		mgr.applyDelta(
 			delta({

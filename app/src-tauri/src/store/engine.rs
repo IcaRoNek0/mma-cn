@@ -231,35 +231,24 @@ impl Store {
         self.update_bounds(changes, before);
 
         // The indexes are a projection of the changeset like the render delta is: postings
-        // follow the rows here, so no mutation path can move a row past its counts. A bulk
-        // reset drops them instead; the next query rebuilds from the live view.
-        let moved_fields = if changes.full_reset {
-            self.field_indexes.clear();
-            selections::BUILTIN_FIELDS
-                .iter()
-                .filter(|f| f.field_type.index_shape() != maps::IndexShape::None)
-                .map(|f| f.key.to_string())
-                .collect()
-        } else {
-            let removed: Vec<&Location> = changes
-                .removed
-                .iter()
-                .chain(changes.updated.iter().map(|(o, _)| o))
-                .collect();
-            let added: Vec<&Location> = changes
-                .added
-                .iter()
-                .chain(changes.updated.iter().map(|(_, n)| n))
-                .collect();
-            self.reindex(&removed, &added)
-        };
+        // follow the rows here, so no mutation path can move a row past its counts.
+        let removed: Vec<&Location> = changes
+            .removed
+            .iter()
+            .chain(changes.updated.iter().map(|(o, _)| o))
+            .collect();
+        let added: Vec<&Location> = changes
+            .added
+            .iter()
+            .chain(changes.updated.iter().map(|(_, n)| n))
+            .collect();
+        let moved_fields = self.reindex(&removed, &added);
 
         // A metadata-only mutation (a value rename or reorder, a create with nothing to
         // assign) moves no rows, so there is no membership to re-test and no delta to derive.
         let has_selections = !changes.is_empty() && !self.selections.resolved.is_empty();
         let full_resolve = has_selections
-            && (changes.full_reset
-                || changes.added.len() + changes.removed.len() + changes.updated.len() > 100
+            && (changes.added.len() + changes.removed.len() + changes.updated.len() > 100
                 || self.selections_need_full_resolve());
 
         // Step 1: Update selection membership and get back what changed.

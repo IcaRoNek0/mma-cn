@@ -205,15 +205,13 @@ impl RenderState {
 
 /// Marker changes after an edit: added, updated, and removed markers.
 // Every entry states the row's resulting selection state, so applying a delta is idempotent
-// and the base cells and the selection overlay cannot drift apart. `full_reset` signals JS to
-// discard all cell data and re-fetch via `store_fill_render_file`.
+// and the base cells and the selection overlay cannot drift apart.
 #[derive(serde::Serialize, Clone, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderDelta {
     pub added: Vec<RenderEntry>,
     pub updated: Vec<RenderPatchEntry>,
     pub removed: Vec<CellRemoval>,
-    pub full_reset: bool,
 }
 
 /// The selection drawing a row: its colour, and its index in `SelectionState::resolved`.
@@ -501,7 +499,6 @@ impl Store {
             added: Vec::with_capacity(changes.added.len()),
             updated: Vec::with_capacity(changes.updated.len()),
             removed: Vec::with_capacity(changes.removed.len()),
-            full_reset: changes.full_reset,
         };
 
         for loc in &changes.removed {

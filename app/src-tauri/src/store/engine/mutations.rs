@@ -27,16 +27,12 @@ pub struct ChangeSet {
     /// materialized them anyway, so the changeset takes ownership instead of cloning.
     pub removed: Vec<Location>,
     pub updated: Vec<(Location, Location)>,
-    pub full_reset: bool,
 }
 
 impl ChangeSet {
     /// No rows moved. A metadata-only mutation (value rename, reorder) produces one of these.
     pub(crate) fn is_empty(&self) -> bool {
-        !self.full_reset
-            && self.added.is_empty()
-            && self.removed.is_empty()
-            && self.updated.is_empty()
+        self.added.is_empty() && self.removed.is_empty() && self.updated.is_empty()
     }
 }
 
@@ -132,24 +128,15 @@ pub struct LocationPatch {
 
 impl Store {
     /// Define every `extra` key the rows a change brought in carry that the map has no
-    /// definition for yet, with an inferred one, on disk and in memory. A bulk reset brings
-    /// in the overlay's adds.
+    /// definition for yet, with an inferred one, on disk and in memory.
     pub(super) fn register_fields(&mut self, changes: &ChangeSet) {
         let new_defs = {
-            let extras: Vec<&RawExtra> = if changes.full_reset {
-                self.overlay
-                    .adds
-                    .iter()
-                    .filter_map(|l| l.extra.as_ref())
-                    .collect()
-            } else {
-                changes
-                    .added
-                    .iter()
-                    .chain(changes.updated.iter().map(|(_, new)| new))
-                    .filter_map(|l| l.extra.as_ref())
-                    .collect()
-            };
+            let extras: Vec<&RawExtra> = changes
+                .added
+                .iter()
+                .chain(changes.updated.iter().map(|(_, new)| new))
+                .filter_map(|l| l.extra.as_ref())
+                .collect();
             maps::infer_field_defs(|k| self.field_defs.contains_key(k), &extras)
         };
         let Some(new_defs) = new_defs else {

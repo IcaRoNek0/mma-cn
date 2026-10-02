@@ -28,7 +28,7 @@ const result = (
 	over: Partial<MutationResult> = {},
 ): MutationResult => ({
 	version: 0,
-	delta: { added: [], updated: [], removed: [], fullReset: false },
+	delta: { added: [], updated: [], removed: [] },
 	selectionSync: null,
 	values: {
 		locationCount: null,

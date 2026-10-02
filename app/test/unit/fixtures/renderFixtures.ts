@@ -20,7 +20,7 @@ export function paint(color: [number, number, number], idx = 0): SelColor {
 
 /** A render delta with everything defaulted, so a case names only what it exercises. */
 export function delta(parts: Partial<RenderDelta> = {}): RenderDelta {
-	return { added: [], updated: [], removed: [], fullReset: false, ...parts };
+	return { added: [], updated: [], removed: [], ...parts };
 }
 
 /** A coordinate-free patch: the shape a pure membership change arrives as. */

@@ -41,6 +41,8 @@ const EVENT_DEFS = {
 	"store:changed": event<void>(),
 	/** @unstable */
 	"render:delta": event<RenderDelta>(),
+	/** The scene must be loaded again from scratch. @unstable */
+	"render:reset": event<void>(),
 	/** @unstable */
 	"render:selection": event<SelectionBitmaskPayload>(),
 	"map-list:changed": event<void>(),

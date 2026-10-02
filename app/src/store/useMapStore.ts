@@ -355,7 +355,7 @@ function resetMapState() {
 
 	clearEditState();
 
-	emitEvent("render:delta", { added: [], updated: [], removed: [], fullReset: true });
+	emitEvent("render:reset");
 	resetEngineState();
 	emitEvent("store:changed");
 }
@@ -516,7 +516,7 @@ function applySelectionSync(sync: SelectionSync) {
 
 const EMPTY_MUTATION: MutationResult = {
 	version: 0,
-	delta: { added: [], updated: [], removed: [], fullReset: false },
+	delta: { added: [], updated: [], removed: [] },
 	selectionSync: null,
 	values: {
 		locationCount: null,
@@ -1146,7 +1146,7 @@ export async function checkoutCommit(commitId: string) {
 	applyOpenedMap(map, openResult);
 	applyMutation(commitResult.status);
 
-	emitEvent("render:delta", { added: [], updated: [], removed: [], fullReset: true });
+	emitEvent("render:reset");
 	emitEvent("store:changed");
 	await invalidateMapList();
 }
