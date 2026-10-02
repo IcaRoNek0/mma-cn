@@ -25,16 +25,8 @@ const PAD_ID: i64 = 1;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PanoEntry {
-    pub pano_id: String,
-    pub world_width: u32,
-    pub world_height: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct EmbedInput {
-    pub panos: Vec<PanoEntry>,
+    pub pano_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -297,15 +289,16 @@ pub fn run(
     mut emit: impl FnMut(EmbedStatus),
 ) {
     let mut cache = EmbedCache::load(cache_dir);
-    let to_compute: Vec<&PanoEntry> = input.panos.iter()
-        .filter(|p| !cache.entries.contains_key(p.pano_id.as_str()))
+    let to_compute: Vec<&str> = input.pano_ids.iter()
+        .map(String::as_str)
+        .filter(|p| !cache.entries.contains_key(*p))
         .collect();
 
-    let cached_count = input.panos.len() - to_compute.len();
+    let cached_count = input.pano_ids.len() - to_compute.len();
     if cached_count > 0 {
         emit(EmbedStatus {
             pano_id: String::new(), status: "cache_hit".into(),
-            error: None, done: Some(cached_count), total: Some(input.panos.len()),
+            error: None, done: Some(cached_count), total: Some(input.pano_ids.len()),
         });
     }
     if to_compute.is_empty() { return; }
@@ -316,10 +309,7 @@ pub fn run(
 
     for chunk in to_compute.chunks(CHUNK_SIZE) {
         let t_fetch = std::time::Instant::now();
-        let fetch_args: Vec<(&str, u32, u32)> = chunk.iter()
-            .map(|p| (p.pano_id.as_str(), p.world_width, p.world_height))
-            .collect();
-        let fetched = fetch_panos_concurrent(&fetch_args);
+        let fetched = fetch_panos_concurrent(chunk);
         let fetch_ms = t_fetch.elapsed().as_millis();
 
         let t_crop = std::time::Instant::now();
@@ -328,7 +318,7 @@ pub fn run(
         let mut fetch_errors = 0;
 
         for entry in chunk {
-            let pid = entry.pano_id.as_str();
+            let pid = *entry;
             let result = fetched.get(pid);
             match result {
                 None => {

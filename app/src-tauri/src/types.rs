@@ -505,6 +505,7 @@ impl_app_error_from!(
     JoinError,
     ZipError,
     keyring::Error,
+    image::ImageError,
 );
 
 // reqwest's Display is just "error sending request for url (...)"; the actionable cause

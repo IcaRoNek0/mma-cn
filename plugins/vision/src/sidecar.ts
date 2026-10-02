@@ -2,7 +2,7 @@
 // are answered by a resident mma-vision (declared under `serve` in the manifest), so
 // repeat queries skip the ONNX/tokenizer/cache load. `embed` gets a one-shot run.
 
-const { svMetadata, sidecar } = MMA;
+const { sidecar } = MMA;
 
 export interface SearchResult {
 	panoId: string;
@@ -19,34 +19,6 @@ interface EmbedStatus {
 	error?: string;
 	done?: number;
 	total?: number;
-}
-
-interface PanoEntry {
-	panoId: string;
-	worldWidth: number;
-	worldHeight: number;
-}
-
-async function resolveWorldSizes(
-	panoIds: string[],
-	onProgress?: (done: number, total: number) => void,
-): Promise<PanoEntry[]> {
-	const BATCH = 200;
-	const entries: PanoEntry[] = [];
-	for (let i = 0; i < panoIds.length; i += BATCH) {
-		const batch = panoIds.slice(i, i + BATCH);
-		const metas = await svMetadata(batch);
-		for (let j = 0; j < batch.length; j++) {
-			const ws = metas[j]?.worldSize;
-			entries.push({
-				panoId: batch[j],
-				worldWidth: ws?.width ?? 6656,
-				worldHeight: ws?.height ?? 3328,
-			});
-		}
-		onProgress?.(Math.min(i + BATCH, panoIds.length), panoIds.length);
-	}
-	return entries;
 }
 
 async function listCached(): Promise<Set<string>> {
@@ -76,15 +48,10 @@ export async function embed(panoIds: string[], opts: EmbedOptions = {}): Promise
 		return;
 	}
 
-	opts.onStatus?.(`Fetching metadata for ${uncached.length} uncached panos...`);
-	const panos = await resolveWorldSizes(uncached, (done, total) => {
-		opts.onStatus?.(`Metadata: ${done}/${total}`);
-	});
-
 	await sidecar.request<EmbedStatus>(
 		"vision",
 		"embed",
-		{ panos },
+		{ panoIds: uncached },
 		{
 			signal: opts.signal,
 			onLog: (line) => {

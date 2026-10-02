@@ -11,7 +11,6 @@ import {
 } from "@/lib/sv/lookup";
 import type { Pano } from "@/bindings.gen";
 import type { CameraType } from "@/bindings.consts";
-import { panoTileLayout } from "@/lib/sv/panoDownload";
 
 describe("svSearchRadius", () => {
 	it("is unclamped at high zoom (the 25m floor now lives in the caller)", () => {
@@ -78,38 +77,6 @@ describe("nearestLinkHeading", () => {
 		// 70 and 110 are both 20deg from 90; first-seen wins on a tie
 		expect(nearestLinkHeading([70, 110], 90)).toBe(70);
 		expect(nearestLinkHeading([110, 70], 90)).toBe(110);
-	});
-});
-
-describe("panoTileLayout", () => {
-	it("uses a fixed 512px tile pitch", () => {
-		expect(panoTileLayout(3, { width: 6656, height: 3328 }).tile).toBe(512);
-	});
-
-	it("Gen 4 (16384x8192) fills the grid with no black padding", () => {
-		const l = panoTileLayout(3, { width: 16384, height: 8192 });
-		expect(l).toMatchObject({ zoom: 3, cols: 8, rows: 4, width: 4096, height: 2048 });
-	});
-
-	it("Gen 3 (6656x3328) crops the black padding instead of a full 8x4 grid", () => {
-		const l = panoTileLayout(3, { width: 6656, height: 3328 });
-		expect(l).toMatchObject({ zoom: 3, cols: 7, rows: 4, width: 3328, height: 1664 });
-	});
-
-	it("Gen 3 at native zoom keeps the half-row crop (13 cols, 6.5 rows)", () => {
-		const l = panoTileLayout(4, { width: 6656, height: 3328 });
-		expect(l).toMatchObject({ zoom: 4, cols: 13, rows: 7, width: 6656, height: 3328 });
-	});
-
-	it("clamps requested zoom to the pano's native max zoom", () => {
-		const l = panoTileLayout(5, { width: 6656, height: 3328 });
-		expect(l.zoom).toBe(4);
-		expect(l.width).toBe(6656);
-	});
-
-	it("falls back to the full power-of-two grid without metadata", () => {
-		const l = panoTileLayout(3);
-		expect(l).toMatchObject({ zoom: 3, cols: 8, rows: 4, width: 4096, height: 2048 });
 	});
 });
 

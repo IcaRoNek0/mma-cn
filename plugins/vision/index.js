@@ -42,25 +42,7 @@ var require_jsx_runtime = __commonJS({
 var import_react = __toESM(require_react());
 
 // vision/src/sidecar.ts
-var { svMetadata, sidecar } = MMA;
-async function resolveWorldSizes(panoIds, onProgress) {
-  const BATCH = 200;
-  const entries = [];
-  for (let i = 0; i < panoIds.length; i += BATCH) {
-    const batch = panoIds.slice(i, i + BATCH);
-    const metas = await svMetadata(batch);
-    for (let j = 0; j < batch.length; j++) {
-      const ws = metas[j]?.worldSize;
-      entries.push({
-        panoId: batch[j],
-        worldWidth: ws?.width ?? 6656,
-        worldHeight: ws?.height ?? 3328
-      });
-    }
-    onProgress?.(Math.min(i + BATCH, panoIds.length), panoIds.length);
-  }
-  return entries;
-}
+var { sidecar } = MMA;
 async function listCached() {
   const ids = await sidecar.request("vision", "list-cached");
   return new Set(ids ?? []);
@@ -73,14 +55,10 @@ async function embed(panoIds, opts = {}) {
     opts.onStatus?.(`All ${panoIds.length} panos cached`);
     return;
   }
-  opts.onStatus?.(`Fetching metadata for ${uncached.length} uncached panos...`);
-  const panos = await resolveWorldSizes(uncached, (done, total) => {
-    opts.onStatus?.(`Metadata: ${done}/${total}`);
-  });
   await sidecar.request(
     "vision",
     "embed",
-    { panos },
+    { panoIds: uncached },
     {
       signal: opts.signal,
       onLog: (line) => {

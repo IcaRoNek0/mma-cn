@@ -250,7 +250,7 @@ fn web_and_desktop_calls_match_with_query() {
             &[],
             b""
         ),
-        SchemeCall::from_web(
+        SchemeCall::from_http(
             "GET",
             "abc=w512",
             "fmt=jpeg&q=80".into(),
@@ -265,7 +265,7 @@ fn web_and_desktop_calls_match_with_query() {
 fn web_and_desktop_calls_match_without_query() {
     assert_eq!(
         desktop_call("http://gdoc.localhost/doc123", Method::GET, &[], b""),
-        SchemeCall::from_web(
+        SchemeCall::from_http(
             "GET",
             "doc123",
             String::new(),
@@ -285,7 +285,7 @@ fn web_and_desktop_calls_match_with_headers_and_body() {
             &[("content-type", "application/json"), ("user-agent", "ua/1")],
             b"payload",
         ),
-        SchemeCall::from_web(
+        SchemeCall::from_http(
             "POST",
             "maps/rpc%20x",
             String::new(),

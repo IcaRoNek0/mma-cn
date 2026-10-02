@@ -1,5 +1,5 @@
-//! Street View metadata: Google's GetMetadata RPC on the wire, and the [`pano::Pano`]
-//! every metadata-backed feature reads.
+//! Street View: Google's GetMetadata RPC on the wire, the [`pano::Pano`] every
+//! metadata-backed feature reads, and the imagery [`tiles`] every consumer fetches through.
 
 pub(crate) mod pano;
 pub(crate) mod pano_id;
@@ -7,4 +7,5 @@ pub(crate) mod pano_id;
 pub(crate) mod schema;
 #[cfg(test)]
 mod schema_codegen;
+pub(crate) mod tiles;
 pub(crate) mod wire;

@@ -67,7 +67,7 @@ fn register_web_schemes() {
     for scheme in proxy::SCHEMES {
         let handle = scheme.handle;
         register_scheme(scheme.name, move |req: SchemeRequest| {
-            relay(handle(proxy::SchemeCall::from_web(
+            relay(handle(proxy::SchemeCall::from_http(
                 &req.method,
                 &req.path,
                 req.query,

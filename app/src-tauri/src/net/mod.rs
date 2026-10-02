@@ -4,6 +4,7 @@ pub(crate) mod gdoc;
 pub(crate) mod geocoder;
 pub(crate) mod geoguessr;
 pub(crate) mod github;
+pub(crate) mod loopback;
 pub(crate) mod presence;
 pub(crate) mod proxy;
 pub(crate) mod remote_api;

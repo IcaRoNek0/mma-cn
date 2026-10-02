@@ -1,10 +1,11 @@
 //! Outbound HTTP clients and the custom URI schemes that proxy the webview's
-//! cross-origin requests (tiles, Google RPCs, GeoGuessr, short links, local files).
+//! cross-origin requests (tiles, panoramas, Google RPCs, GeoGuessr, short links, local files).
 
 use crate::io::export;
 use crate::net::gdoc;
 use crate::net::geoguessr;
 use crate::plugins::user;
+use crate::sv::tiles;
 use crate::types::AppResult;
 use reqwest::blocking::{Client, Response};
 use reqwest::redirect::Policy;
@@ -86,7 +87,7 @@ fn header_str(req: &Request<Vec<u8>>, name: header::HeaderName) -> Option<&str> 
     req.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
-/// A custom-scheme request in one shape, whether the desktop webview or the web server received it.
+/// A custom-scheme request in one shape, whether the desktop webview or an HTTP server received it.
 #[derive(Debug, PartialEq)]
 pub(crate) struct SchemeCall {
     method: Method,
@@ -109,9 +110,8 @@ impl SchemeCall {
         }
     }
 
-    /// The web server strips the leading slash and sends empty strings for absent parts.
-    #[cfg(any(test, feature = "web-serve"))]
-    pub(crate) fn from_web(
+    /// An HTTP server's request: the path without its leading slash, empty strings for absent parts.
+    pub(crate) fn from_http(
         method: &str,
         path: &str,
         query: String,
@@ -310,6 +310,8 @@ pub(crate) struct Scheme {
     pub(crate) name: &'static str,
     /// Methods a cross-origin preflight allows; schemes without one are never preflighted.
     preflight: Option<&'static str>,
+    /// Reachable by the app's sidecars too, over loopback.
+    pub(crate) sidecars: bool,
     pub(crate) handle: fn(SchemeCall) -> Reply,
 }
 
@@ -318,6 +320,7 @@ pub(crate) const SCHEMES: &[Scheme] = &[
     Scheme {
         name: "mma-buf",
         preflight: Some("GET, POST, OPTIONS"),
+        sidecars: false,
         handle: |c| {
             let raw = c.decoded_path();
             if c.method == Method::POST {
@@ -330,16 +333,31 @@ pub(crate) const SCHEMES: &[Scheme] = &[
     Scheme {
         name: "mma-plugin",
         preflight: None,
+        sidecars: false,
         handle: |c| user::serve_file(&c.decoded_path()),
     },
     Scheme {
         name: "svtile",
         preflight: None,
+        sidecars: false,
         handle: |c| fetch_svtile(&svtile_url(&c.path, &c.query_suffix())),
+    },
+    Scheme {
+        name: "pano",
+        preflight: None,
+        sidecars: true,
+        handle: |c| match tiles::fetch_path(&c.decoded_path()) {
+            Ok(jpeg) => cors()
+                .header("Content-Type", "image/jpeg")
+                .body(jpeg)
+                .unwrap(),
+            Err(e) => proxy_error(e.to_string()),
+        },
     },
     Scheme {
         name: "gmaps",
         preflight: None,
+        sidecars: false,
         handle: |c| {
             let url = gmaps_url(&c.path, &c.query_suffix());
             let content_type = c
@@ -357,6 +375,7 @@ pub(crate) const SCHEMES: &[Scheme] = &[
     Scheme {
         name: "ggapi",
         preflight: Some("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
+        sidecars: false,
         handle: |c| {
             geoguessr::proxy(
                 c.method,
@@ -370,11 +389,13 @@ pub(crate) const SCHEMES: &[Scheme] = &[
     Scheme {
         name: "gdoc",
         preflight: None,
+        sidecars: false,
         handle: |c| gdoc::fetch_gdoc(c.id()),
     },
     Scheme {
         name: "googl",
         preflight: None,
+        sidecars: false,
         handle: |c| {
             let mapsapp = c
                 .query

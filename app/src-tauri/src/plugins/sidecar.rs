@@ -14,8 +14,11 @@
 //!
 //! Every sidecar takes the same argv (see `build_args`), so the app can construct it
 //! without the plugin describing it: variable input travels as JSON, never as flags.
+//! Imagery a sidecar needs comes from the app's schemes over loopback, so every sidecar
+//! is started knowing where they are.
 
 use crate::emit_event;
+use crate::net::loopback;
 use crate::plugins::user::{validate_plugin_id, validate_sidecar_command, validate_sidecar_name};
 use crate::store::storage;
 use crate::types::{AppError, AppResult};
@@ -406,6 +409,12 @@ fn build_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    match loopback::base() {
+        Ok(base) => {
+            cmd.env(loopback::BASE_ENV, base);
+        }
+        Err(e) => log::error!("[sidecar] {plugin_id} starts without the app's schemes: {e}"),
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

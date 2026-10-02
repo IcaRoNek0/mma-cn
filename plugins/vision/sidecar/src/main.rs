@@ -54,10 +54,6 @@ enum Command {
         #[arg(long)]
         pano_id: String,
         #[arg(long)]
-        world_width: u32,
-        #[arg(long)]
-        world_height: u32,
-        #[arg(long)]
         output_dir: String,
     },
 }
@@ -134,10 +130,10 @@ fn main() {
         Command::Serve { idle_secs } => {
             serve::run(&model_dir, &data_dir, idle_secs);
         }
-        Command::DebugCrops { pano_id, world_width, world_height, output_dir } => {
+        Command::DebugCrops { pano_id, output_dir } => {
             let out = std::path::Path::new(&output_dir);
             std::fs::create_dir_all(out).ok();
-            let fetched = fetch::fetch_panos_concurrent(&[(pano_id.as_str(), world_width, world_height)]);
+            let fetched = fetch::fetch_panos_concurrent(&[pano_id.as_str()]);
             let pano = fetched.get(&pano_id).expect("fetch failed").as_ref().expect("fetch error");
             println!("Stitched pano: {}x{}", pano.width(), pano.height());
             pano.save(out.join("pano_stitched.png")).expect("save failed");

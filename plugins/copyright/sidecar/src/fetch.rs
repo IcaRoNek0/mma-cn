@@ -1,8 +1,8 @@
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 
-const TILE_URL: &str = "https://geo0.ggpht.com/cbk";
-const CONCURRENCY: usize = 50;
+/// Tiles asked of the app at once. The app paces the requests that reach Google.
+const CONCURRENCY: usize = 64;
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -20,46 +20,28 @@ static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(120))
             .pool_max_idle_per_host(CONCURRENCY)
             .build()
             .unwrap()
     })
 }
 
-const RETRY_BACKOFFS_MS: [u64; 2] = [500, 1500];
-
-// Opt-in disk cache for eval iteration; unset in production.
-fn cache_path(pano_id: &str, zoom: u32, x: u32, y: u32) -> Option<std::path::PathBuf> {
-    let dir = std::env::var_os("MMA_TILE_CACHE")?;
-    let safe: String = pano_id.chars().map(|c| if c == '/' { '_' } else { c }).collect();
-    Some(std::path::Path::new(&dir).join(format!("{safe}_{zoom}_{x}_{y}.jpg")))
+/// Where the app serves its schemes to this process.
+fn app_base() -> Result<&'static str, String> {
+    static BASE: OnceLock<Option<String>> = OnceLock::new();
+    BASE.get_or_init(|| std::env::var("MMA_SCHEMES").ok())
+        .as_deref()
+        .ok_or_else(|| "this sidecar needs a newer MMA to fetch imagery".to_string())
 }
 
-async fn fetch_one(cl: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let mut attempt = 0;
-    loop {
-        match cl.get(url).send().await {
-            Ok(resp) if resp.status().is_client_error() => {
-                return Err(format!("HTTP {}", resp.status()));
-            }
-            Ok(resp) => match resp.error_for_status() {
-                Ok(resp) => return resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string()),
-                Err(e) => {
-                    if attempt >= RETRY_BACKOFFS_MS.len() {
-                        return Err(e.to_string());
-                    }
-                }
-            },
-            Err(e) => {
-                if attempt >= RETRY_BACKOFFS_MS.len() {
-                    return Err(e.to_string());
-                }
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(RETRY_BACKOFFS_MS[attempt])).await;
-        attempt += 1;
+async fn fetch_tile(cl: &reqwest::Client, job: &TileJob) -> Result<Vec<u8>, String> {
+    let url = format!("{}/pano/{}/{}/{}/{}", app_base()?, job.pano_id, job.zoom, job.x, job.y);
+    let resp = cl.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
     }
+    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
 }
 
 /// One tile request; workers route the result by zoom (5 = fixed-spot rung, 4 = band cell).
@@ -101,26 +83,10 @@ pub fn start_fetcher() -> (JobSender, std::sync::mpsc::Receiver<TileResult>) {
                         let sem = sem.clone();
                         let res_tx = res_tx.clone();
                         set.spawn(async move {
-                            let (pid, zoom, x, y) = (&job.pano_id, job.zoom, job.x, job.y);
-                            let cache = cache_path(pid, zoom, x, y);
-                            if let Some(ref p) = cache
-                                && let Ok(data) = std::fs::read(p)
-                            {
-                                let _ = res_tx.send((job, Ok(data)));
-                                return;
-                            }
                             let result = match sem.acquire().await {
-                                Ok(_permit) => {
-                                    let url = format!(
-                                        "{TILE_URL}?cb_client=apiv3&panoid={pid}&output=tile&x={x}&y={y}&zoom={zoom}"
-                                    );
-                                    fetch_one(cl, &url).await
-                                }
+                                Ok(_permit) => fetch_tile(cl, &job).await,
                                 Err(e) => Err(e.to_string()),
                             };
-                            if let (Some(p), Ok(data)) = (&cache, &result) {
-                                std::fs::write(p, data).ok();
-                            }
                             let _ = res_tx.send((job, result));
                         });
                     }
