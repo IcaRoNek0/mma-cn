@@ -310,8 +310,9 @@ pub(super) fn add_parsed_to_store(
             created: parsed.locations.clone(),
             removed: Vec::new(),
         });
+    } else {
+        store.edits.edit().clear_redo();
     }
-    store.edits.edit().redo.clear();
 
     let t_undo = _t.elapsed();
 

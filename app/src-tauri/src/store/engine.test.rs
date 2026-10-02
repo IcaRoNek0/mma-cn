@@ -111,15 +111,13 @@ fn overlay_add_batch_merges_into_sorted_adds() {
 fn a_no_op_edit_pushes_no_undo_entry_and_keeps_redo() {
     let mut store = setup_store_with(&[loc(1, 0.0, 0.0)]);
     store.apply_undoable(vec![], vec![loc(2, 0.0, 0.0)]);
-    let entry = store.edits.edit().undo.pop().unwrap();
-    store.apply_edit_reverse(&entry.entry);
-    store.edits.edit().redo.push(entry);
+    press_undo(&mut store);
     let rev = store.overlay.rev();
 
     store.apply_undoable(vec![], vec![]);
 
-    assert!(store.edits.undo.is_empty());
-    assert_eq!(store.edits.redo.len(), 1);
+    assert!(store.edits.undo_len() == 0);
+    assert_eq!(store.edits.redo_len(), 1);
     assert_eq!(store.overlay.rev(), rev);
 }
 
@@ -132,8 +130,7 @@ fn undo_of_a_page_keeps_the_overlay_sorted() {
     store.apply_undoable(before, after);
     assert_eq!(store.get_loc_by_id(700).unwrap().lat, 5.0);
 
-    let entry = store.edits.edit().undo.pop().unwrap();
-    store.apply_edit_reverse(&entry.entry);
+    press_undo(&mut store);
     let ids: Vec<u32> = store.overlay.adds.iter().map(|l| l.id).collect();
     assert_eq!(ids, (1..=2000).collect::<Vec<u32>>());
     assert_eq!(store.get_loc_by_id(700).unwrap().lat, 0.0);
@@ -384,7 +381,7 @@ fn commit_diff_counts_patch_on_base_row_without_undo() {
     store.bake_overlay();
     assert_eq!(store.overlay_diff_counts(), (0, 0, 0));
     store.overlay_update(1, &patch!(lat: 5.0));
-    assert!(store.edits.undo.is_empty());
+    assert!(store.edits.undo_len() == 0);
     assert_eq!(store.overlay_diff_counts(), (0, 0, 1));
 }
 
@@ -526,27 +523,21 @@ fn undo_stack_capped_at_max() {
             removed: vec![],
         });
     }
-    assert_eq!(store.edits.undo.len(), MAX_UNDO_ENTRIES);
+    assert_eq!(store.edits.undo_len(), MAX_UNDO_ENTRIES);
 }
 
 #[test]
 fn redo_stack_cleared_on_new_edit() {
     let mut store = setup_store_with(&[]);
-    store.edits.edit().redo.push(LoggedEdit {
-        seq: u64::MAX,
-        entry: EditEntry {
-            created: vec![],
-            removed: vec![],
-        },
-    });
-    assert!(!store.edits.redo.is_empty());
+    click_add(&mut store, 0.0, 0.0);
+    press_undo(&mut store);
+    assert_eq!(store.edits.redo_len(), 1);
 
     store.push_undo(EditEntry {
         created: vec![loc(1, 0.0, 0.0)],
         removed: vec![],
     });
-    store.edits.edit().redo.clear();
-    assert!(store.edits.redo.is_empty());
+    assert_eq!(store.edits.redo_len(), 0, "a new edit drops redo by itself");
 }
 
 // -----------------------------------------------------------------------
@@ -797,13 +788,11 @@ fn open_status_reflects_undo_redo() {
     assert_eq!(s.values.can_undo, Some(true));
     assert_eq!(s.values.can_redo, Some(false));
 
-    store.edits.edit().redo.push(LoggedEdit {
-        seq: u64::MAX,
-        entry: EditEntry {
-            created: vec![],
-            removed: vec![],
-        },
+    store.push_undo(EditEntry {
+        created: vec![],
+        removed: vec![],
     });
+    press_undo(&mut store);
     let s = store.open_status();
     assert_eq!(s.values.can_undo, Some(true));
     assert_eq!(s.values.can_redo, Some(true));
@@ -845,9 +834,7 @@ fn undo_flags_ship_again_after_out_of_band_stack_clear() {
     assert_eq!(result.values.can_undo, Some(true));
 
     // A clear outside any mutation result must still re-ship the flags next mutation.
-    let edits = store.edits.edit();
-    edits.undo.clear();
-    edits.redo.clear();
+    store.edits.edit().clear();
 
     store.push_undo(EditEntry {
         created: vec![],
@@ -1112,7 +1099,7 @@ fn noop_batch_is_removed_before_selection_and_render_work() {
     add_tag_selection(&mut store, 1, [255, 0, 0]);
     store.resolve_selection_membership();
     let rev = store.overlay.rev();
-    let undo_len = store.edits.undo.len();
+    let undo_len = store.edits.undo_len();
     let updates: Vec<Update<LocationPatch>> = rows
         .iter()
         .map(|row| Update {
@@ -1124,7 +1111,7 @@ fn noop_batch_is_removed_before_selection_and_render_work() {
     let result = apply_updates(&mut store, &updates, true);
 
     assert_eq!(store.overlay.rev(), rev);
-    assert_eq!(store.edits.undo.len(), undo_len);
+    assert_eq!(store.edits.undo_len(), undo_len);
     assert!(result.delta.added.is_empty());
     assert!(result.delta.updated.is_empty());
     assert!(result.delta.removed.is_empty());
@@ -2697,8 +2684,7 @@ fn patch_field_values_rename_collision_merges_rows_in_one_undoable_edit() {
         "the emptied record keeps its name, dark"
     );
 
-    let entry = store.edits.edit().undo.pop().unwrap();
-    edit_and_finish(&mut store, &entry.entry, false);
+    undo_and_finish(&mut store);
     assert_eq!(store.get_loc_by_id(1).unwrap().tags, vec![a]);
     assert_eq!(store.get_loc_by_id(2).unwrap().tags, vec![a, b]);
 }
@@ -2818,9 +2804,12 @@ fn set_tags_lets_add_win_over_remove_and_never_churns_the_row_that_had_it() {
     assert_eq!(store.get_loc_by_id(2).unwrap().tags, vec![t], "add wins");
     assert_eq!(store.value_count("tags", &(t as f64).to_string()), 2);
 
-    let entry = store.edits.edit().undo.pop().unwrap();
     assert_eq!(
-        entry.entry.created.iter().map(|l| l.id).collect::<Vec<_>>(),
+        newest_undo(&store)
+            .created
+            .iter()
+            .map(|l| l.id)
+            .collect::<Vec<_>>(),
         vec![2],
         "row 1 already had it, so it is not stripped and re-added"
     );
@@ -2843,12 +2832,12 @@ fn set_tags_adds_and_removes_in_one_pass() {
 fn set_tags_records_no_update_for_a_row_already_in_the_requested_state() {
     let mut store = setup_store_with(&[loc(1, 10.0, 20.0)]);
     let t = tag_onto(&mut store, 7, &[1]);
-    let undo_len = store.edits.undo.len();
+    let undo_len = store.edits.undo_len();
 
     set_tags(&mut store, &[t], &[], &[1]);
 
     assert_eq!(
-        store.edits.undo.len(),
+        store.edits.undo_len(),
         undo_len,
         "no row moved, so no undo entry"
     );
@@ -2867,8 +2856,7 @@ fn set_tags_undo_restores_membership() {
     set_tags(&mut store, &[], &[t], &[1]);
     assert!(store.get_loc_by_id(1).unwrap().tags.is_empty());
 
-    let entry = store.edits.edit().undo.pop().unwrap();
-    edit_and_finish(&mut store, &entry.entry, false);
+    undo_and_finish(&mut store);
 
     assert_eq!(store.get_loc_by_id(1).unwrap().tags, vec![t]);
     assert_eq!(tag_count(&mut store, t), 1);
@@ -3062,8 +3050,7 @@ fn an_indexed_existence_filter_agrees_with_the_scan_through_every_edit() {
     assert_existence_matches_scan(&mut store, "k", &[3, 10]);
 
     for holders in [&[2, 3, 10][..], &[2, 10], &[1, 2, 10], &[1, 2]] {
-        let entry = store.edits.edit().undo.pop().unwrap();
-        edit_and_finish(&mut store, &entry.entry, false);
+        undo_and_finish(&mut store);
         assert_existence_matches_scan(&mut store, "k", holders);
     }
 }
@@ -3115,8 +3102,7 @@ fn coverage_follows_the_rows_that_hold_each_field() {
     store.apply_undoable(vec![two], Vec::new());
     assert_eq!(extra_coverage(&mut store, &all), counts(&[("a", 2)]));
 
-    let entry = store.edits.edit().undo.pop().unwrap();
-    edit_and_finish(&mut store, &entry.entry, false);
+    undo_and_finish(&mut store);
     assert_eq!(
         extra_coverage(&mut store, &all),
         counts(&[("a", 3), ("b", 1)])
@@ -3865,55 +3851,63 @@ fn selection_cell_segment_adapts_format() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn history_max_id_spans_both_stacks_and_both_sides() {
-    let logged = |seq, created, removed| LoggedEdit {
-        seq,
-        entry: EditEntry { created, removed },
+fn stored_history_max_id_spans_both_sides_of_every_edit() {
+    let mut store = setup_store_with(&[]);
+    for (created, removed) in [
+        (vec![loc(3, 0.0, 0.0)], vec![]),
+        (vec![], vec![loc(112, 0.0, 0.0)]),
+        (vec![loc(7, 0.0, 0.0)], vec![loc(9, 0.0, 0.0)]),
+    ] {
+        store.push_undo(EditEntry { created, removed });
+    }
+    with_history_db(|conn| {
+        assert_eq!(stored_history_max_id(conn, "m").unwrap(), 0);
+        save_edit_history(conn, "m", &store.edits).unwrap();
+        assert_eq!(stored_history_max_id(conn, "m").unwrap(), 112);
+    });
+}
+
+thread_local! {
+    static HISTORY_DB: rusqlite::Connection = {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::storage::run_migrations_on(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO maps (id, name, settings, created_at, updated_at) VALUES ('m', '', '{}', '', '')",
+            [],
+        )
+        .unwrap();
+        conn
     };
-    let undo = vec![
-        logged(0, vec![loc(3, 0.0, 0.0)], vec![]),
-        logged(1, vec![], vec![loc(112, 0.0, 0.0)]),
-    ];
-    let redo = vec![logged(2, vec![loc(7, 0.0, 0.0)], vec![loc(9, 0.0, 0.0)])];
-    assert_eq!(history_max_id(&undo, &redo), 112);
-    assert_eq!(history_max_id(&[], &[]), 0);
+}
+
+/// This test's own history database, holding map `m`.
+fn with_history_db<R>(f: impl FnOnce(&rusqlite::Connection) -> R) -> R {
+    HISTORY_DB.with(f)
+}
+
+fn fetch_stored(seq: u64) -> AppResult<EditEntry> {
+    with_history_db(|conn| load_edit(conn, "m", seq))
 }
 
 // Simulate "close map" (store_close_map + save_edit_history) and "reopen"
 // (store_open_map's delta/history load + next_id seeding) at the Store level,
 // through the same delta bytes and history rows the app writes.
 fn close_and_reopen(store: &Store) -> Store {
-    let conn = history_db();
-    close_and_reopen_on(&conn, store)
-}
-
-fn history_db() -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::store::storage::run_migrations_on(&conn).unwrap();
-    conn.execute(
-        "INSERT INTO maps (id, name, settings, created_at, updated_at) VALUES ('m', '', '{}', '', '')",
-        [],
-    )
-    .unwrap();
-    conn
-}
-
-fn close_and_reopen_on(conn: &rusqlite::Connection, store: &Store) -> Store {
     let delta_bytes = overlay_delta_bytes(&store.overlay).unwrap();
-    save_edit_history(conn, "m", &store.edits).unwrap();
-
+    let (edits, history_max) = with_history_db(|conn| {
+        save_edit_history(conn, "m", &store.edits).unwrap();
+        (
+            load_edit_history(conn, "m").unwrap(),
+            stored_history_max_id(conn, "m").unwrap(),
+        )
+    });
     let delta: Overlay = rmp_serde::from_slice(&delta_bytes).unwrap();
-    let edits = load_edit_history(conn, "m").unwrap();
 
     let mut reopened = Store::new();
     reopened.map_id = store.map_id.clone();
     reopened.batch = Some(empty_batch());
     reopened.overlay = Tracked::unsaved(delta);
-    reopened.next_id = seed_next_id(
-        0,
-        &reopened.overlay.adds,
-        history_max_id(&edits.undo, &edits.redo),
-    );
+    reopened.next_id = seed_next_id(0, &reopened.overlay.adds, history_max);
     reopened.alive_count = Tracked::new(reopened.overlay.adds.len());
     reopened.edits = Tracked::new(edits);
     reopened
@@ -3927,7 +3921,6 @@ fn click_add(store: &mut Store, lat: f64, lng: f64) -> u32 {
         created: vec![l.clone()],
         removed: vec![],
     });
-    store.edits.edit().redo.clear();
     store.overlay_add(vec![l]);
     id
 }
@@ -3939,99 +3932,147 @@ fn delete_loc(store: &mut Store, id: u32) {
         created: vec![],
         removed: vec![l.clone()],
     });
-    store.edits.edit().redo.clear();
     store.overlay_remove(slice::from_ref(&l));
 }
 
 // store_undo / store_redo replay.
 fn press_undo(store: &mut Store) {
-    let entry = store.edits.edit().undo.pop().unwrap();
-    store.apply_edit_reverse(&entry.entry);
-    store.edits.edit().redo.push(entry);
+    store.undo(fetch_stored).unwrap().unwrap();
 }
 
 fn press_redo(store: &mut Store) {
-    let entry = store.edits.edit().redo.pop().unwrap();
-    store.apply_edit_forward(&entry.entry);
-    store.edits.edit().push_undo(entry);
+    store.redo(fetch_stored).unwrap().unwrap();
 }
 
-fn stack_ids(edits: &[LoggedEdit]) -> Vec<(u64, Vec<u32>)> {
-    edits
+fn undo_and_finish(store: &mut Store) {
+    let changes = store.undo(fetch_stored).unwrap().unwrap();
+    store.finish_mutation(&changes);
+}
+
+fn newest_undo(store: &Store) -> EditEntry {
+    let (_, edit) = store
+        .edits
         .iter()
-        .map(|e| (e.seq, e.entry.created.iter().map(|l| l.id).collect()))
+        .filter(|(s, _)| *s == Stack::Undo)
+        .last()
+        .unwrap();
+    edit.entry
+        .clone()
+        .unwrap_or_else(|| fetch_stored(edit.seq).unwrap())
+}
+
+fn stack_ids(store: &Store, stack: Stack) -> Vec<(u64, Vec<u32>)> {
+    store
+        .edits
+        .iter()
+        .filter(|(s, _)| *s == stack)
+        .map(|(_, e)| {
+            let entry = e
+                .entry
+                .clone()
+                .unwrap_or_else(|| fetch_stored(e.seq).unwrap());
+            (e.seq, entry.created.iter().map(|l| l.id).collect())
+        })
         .collect()
 }
 
 #[test]
 fn history_survives_repeated_close_and_reopen_in_stack_order() {
-    let conn = history_db();
     let mut store = setup_store_with(&[]);
-    store.map_id = Some("m".into());
     for i in 0..5 {
         click_add(&mut store, f64::from(i), 0.0);
     }
     press_undo(&mut store);
     press_undo(&mut store);
-    let mut store = close_and_reopen_on(&conn, &store);
+    let mut store = close_and_reopen(&store);
     press_redo(&mut store);
-    let store = close_and_reopen_on(&conn, &store);
+    let store = close_and_reopen(&store);
 
-    let undo = stack_ids(&store.edits.undo);
-    let redo = stack_ids(&store.edits.redo);
+    let undo = stack_ids(&store, Stack::Undo);
     assert_eq!(
         undo.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
         vec![0, 1, 2, 3]
     );
     assert_eq!(
-        redo,
+        stack_ids(&store, Stack::Redo),
         vec![(4, vec![5])],
         "the one edit still undone is on top of redo"
     );
-    assert_eq!(stored_history_max_id(&conn, "m").unwrap(), 5);
+    assert_eq!(
+        with_history_db(|conn| stored_history_max_id(conn, "m").unwrap()),
+        5
+    );
 }
 
 #[test]
-fn a_close_writes_only_what_changed_since_the_last() {
-    let conn = history_db();
+fn a_reopened_history_reads_no_edit_until_undo_reaches_it() {
     let mut store = setup_store_with(&[]);
     for i in 0..3 {
         click_add(&mut store, f64::from(i), 0.0);
     }
-    save_edit_history(&conn, "m", &store.edits).unwrap();
-
-    let before = conn.total_changes();
-    save_edit_history(&conn, "m", &store.edits).unwrap();
-    assert_eq!(
-        conn.total_changes(),
-        before,
-        "an unchanged history writes nothing"
-    );
-
-    click_add(&mut store, 9.0, 0.0);
-    save_edit_history(&conn, "m", &store.edits).unwrap();
-    assert_eq!(conn.total_changes(), before + 1, "one new edit is one row");
+    let mut store = close_and_reopen(&store);
+    assert!(store.edits.iter().all(|(_, e)| e.entry.is_none()));
 
     press_undo(&mut store);
-    save_edit_history(&conn, "m", &store.edits).unwrap();
-    assert_eq!(conn.total_changes(), before + 2, "an undo moves one row");
+    let read: Vec<u64> = store
+        .edits
+        .iter()
+        .filter(|(_, e)| e.entry.is_some())
+        .map(|(_, e)| e.seq)
+        .collect();
+    assert_eq!(read, vec![2], "only the undone edit was read");
+}
+
+#[test]
+fn an_unreadable_edit_drops_the_history_rather_than_replay_around_it() {
+    let mut store = setup_store_with(&[]);
+    click_add(&mut store, 0.0, 0.0);
+    click_add(&mut store, 1.0, 0.0);
+    let mut store = close_and_reopen(&store);
+
+    let failed = store.undo(|_| Err("unreadable".into()));
+    assert!(failed.is_err());
+    assert_eq!((store.edits.undo_len(), store.edits.redo_len()), (0, 0));
+}
+
+#[test]
+fn a_close_writes_only_what_changed_since_the_last() {
+    let mut store = setup_store_with(&[]);
+    for i in 0..3 {
+        click_add(&mut store, f64::from(i), 0.0);
+    }
+    with_history_db(|conn| {
+        save_edit_history(conn, "m", &store.edits).unwrap();
+        let before = conn.total_changes();
+        save_edit_history(conn, "m", &store.edits).unwrap();
+        assert_eq!(
+            conn.total_changes(),
+            before,
+            "an unchanged history writes nothing"
+        );
+
+        click_add(&mut store, 9.0, 0.0);
+        save_edit_history(conn, "m", &store.edits).unwrap();
+        assert_eq!(conn.total_changes(), before + 1, "one new edit is one row");
+
+        press_undo(&mut store);
+        save_edit_history(conn, "m", &store.edits).unwrap();
+        assert_eq!(conn.total_changes(), before + 2, "an undo moves one row");
+    });
 }
 
 #[test]
 fn edits_after_a_cleared_history_never_reuse_a_stored_number() {
-    let conn = history_db();
     let mut store = setup_store_with(&[]);
     click_add(&mut store, 0.0, 0.0);
     click_add(&mut store, 1.0, 0.0);
-    save_edit_history(&conn, "m", &store.edits).unwrap();
+    with_history_db(|conn| save_edit_history(conn, "m", &store.edits).unwrap());
 
-    let edits = store.edits.edit();
-    edits.undo.clear();
-    edits.redo.clear();
+    store.edits.edit().clear();
     let id = click_add(&mut store, 2.0, 0.0);
-    let store = close_and_reopen_on(&conn, &store);
+    let store = close_and_reopen(&store);
 
-    assert_eq!(stack_ids(&store.edits.undo), vec![(2, vec![id])]);
+    assert_eq!(stack_ids(&store, Stack::Undo), vec![(2, vec![id])]);
 }
 
 fn assert_bake_sorted(store: &mut Store) {
@@ -5039,7 +5080,6 @@ fn apply_model_op(
                 created: vec![l.clone()],
                 removed: vec![],
             });
-            store.edits.edit().redo.clear();
             store.overlay_add(vec![l.clone()]);
             model.insert(id, l);
             let pos = alive_ids.partition_point(|&x| x < id);
@@ -5057,7 +5097,6 @@ fn apply_model_op(
                 created: vec![],
                 removed: vec![l],
             });
-            store.edits.edit().redo.clear();
             model.remove(&id);
             alive_ids.remove(idx);
         }
@@ -5128,7 +5167,7 @@ proptest::proptest! {
         }
 
         let final_snapshot = model_snapshot(&model);
-        let pushed = store.edits.undo.len();
+        let pushed = store.edits.undo_len();
 
         for _ in 0..pushed {
             press_undo(&mut store);
@@ -5774,12 +5813,12 @@ fn uploaded_add_matches_direct_add() {
         serde_json::to_value(&uploaded).unwrap()
     );
     assert_eq!(
-        direct_store.edits.undo.len(),
-        uploaded_store.edits.undo.len()
+        direct_store.edits.undo_len(),
+        uploaded_store.edits.undo_len()
     );
     assert_eq!(
-        direct_store.edits.undo.last().unwrap().entry.created,
-        uploaded_store.edits.undo.last().unwrap().entry.created
+        newest_undo(&direct_store).created,
+        newest_undo(&uploaded_store).created
     );
 }
 
@@ -5801,7 +5840,7 @@ fn uploaded_add_rejects_malformed_chunk_before_mutating() {
     }
 
     assert_eq!(*store.alive_count, 1);
-    assert!(store.edits.undo.is_empty());
+    assert!(store.edits.undo_len() == 0);
 }
 
 #[test]

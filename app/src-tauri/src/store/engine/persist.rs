@@ -61,8 +61,8 @@ pub(crate) fn flush_closed_store(map_id: &str, store: &Store) -> AppResult<()> {
         save_edit_history(&conn, map_id, &store.edits)?;
         log::debug!(
             "[close_map] {map_id} flushed: undo={} redo={}",
-            store.edits.undo.len(),
-            store.edits.redo.len()
+            store.edits.undo_len(),
+            store.edits.redo_len()
         );
     }
     Ok(())
@@ -124,8 +124,12 @@ pub(crate) fn persist_dirty(
     Ok(())
 }
 
-const UNDO: i64 = 0;
-const REDO: i64 = 1;
+fn stack_code(stack: Stack) -> i64 {
+    match stack {
+        Stack::Undo => 0,
+        Stack::Redo => 1,
+    }
+}
 
 /// Bring the stored history in line with the stacks: store edits it lacks, move the ones
 /// that changed stack, drop the ones the stacks no longer hold. An edit is serialized
@@ -140,23 +144,19 @@ pub(crate) fn save_edit_history(
         .query_map([map_id], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
     let tx = conn.unchecked_transaction()?;
-    let mut live = HashSet::with_capacity(edits.undo.len() + edits.redo.len());
-    let stacked = edits
-        .undo
-        .iter()
-        .map(|e| (e, UNDO))
-        .chain(edits.redo.iter().map(|e| (e, REDO)));
-    for (edit, stack) in stacked {
+    let mut live = HashSet::with_capacity(edits.undo_len() + edits.redo_len());
+    for (stack, edit) in edits.iter() {
         live.insert(edit.seq);
-        match stored.get(&edit.seq) {
-            Some(&at) if at == stack => {}
-            Some(_) => {
+        let stack = stack_code(stack);
+        match (stored.get(&edit.seq), &edit.entry) {
+            (Some(&at), _) if at == stack => {}
+            (Some(_), _) => {
                 tx.prepare_cached(
                     "UPDATE edit_entries SET stack = ?3 WHERE map_id = ?1 AND seq = ?2",
                 )?
                 .execute(rusqlite::params![map_id, edit.seq as i64, stack])?;
             }
-            None => {
+            (None, Some(entry)) => {
                 tx.prepare_cached(
                     "INSERT INTO edit_entries (map_id, seq, stack, max_id, entry) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )?
@@ -164,10 +164,14 @@ pub(crate) fn save_edit_history(
                     map_id,
                     edit.seq as i64,
                     stack,
-                    edit.entry.max_id(),
-                    rmp_serde::to_vec_named(&edit.entry)?
+                    entry.max_id(),
+                    rmp_serde::to_vec_named(entry)?
                 ])?;
             }
+            (None, None) => log::warn!(
+                "[save_edit_history] {map_id} edit {} is on no disk",
+                edit.seq
+            ),
         }
     }
     for seq in stored.keys().filter(|seq| !live.contains(seq)) {
@@ -178,44 +182,32 @@ pub(crate) fn save_edit_history(
     Ok(())
 }
 
-/// Load the stored undo/redo stacks. An unreadable edit drops the whole history, since
-/// replaying around a gap would corrupt the map.
+/// The stored undo/redo stacks, without reading any edit: each is fetched with
+/// [`load_edit`] when undo or redo first reaches it.
 pub(crate) fn load_edit_history(conn: &Connection, map_id: &str) -> AppResult<EditStacks> {
-    let mut stmt =
-        conn.prepare("SELECT seq, stack, entry FROM edit_entries WHERE map_id = ?1 ORDER BY seq")?;
-    let rows = stmt.query_map([map_id], |r| {
-        Ok((
-            r.get::<_, i64>(0)? as u64,
-            r.get::<_, i64>(1)?,
-            r.get::<_, Vec<u8>>(2)?,
-        ))
-    })?;
-    let (mut undo, mut redo) = (Vec::new(), Vec::new());
-    for row in rows {
-        let (seq, stack, bytes) = row?;
-        let entry = match rmp_serde::from_slice(&bytes) {
-            Ok(entry) => entry,
-            Err(e) => {
-                log::warn!(
-                    "[load_edit_history] {map_id} edit {seq} unreadable, history dropped: {e}"
-                );
-                return Ok(EditStacks::default());
-            }
-        };
-        let edit = LoggedEdit { seq, entry };
-        if stack == REDO {
-            redo.push(edit);
-        } else {
-            undo.push(edit);
-        }
-    }
-    redo.reverse();
-    log::debug!(
-        "[load_edit_history] {map_id} loaded: undo={} redo={}",
-        undo.len(),
-        redo.len()
-    );
-    Ok(EditStacks::loaded(undo, redo))
+    let rows = conn
+        .prepare("SELECT seq, stack FROM edit_entries WHERE map_id = ?1")?
+        .query_map([map_id], |r| {
+            let stack = if r.get::<_, i64>(1)? == stack_code(Stack::Redo) {
+                Stack::Redo
+            } else {
+                Stack::Undo
+            };
+            Ok((r.get::<_, i64>(0)? as u64, stack))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    log::debug!("[load_edit_history] {map_id} {} edits on disk", rows.len());
+    Ok(EditStacks::on_disk(rows))
+}
+
+/// One stored edit.
+pub(crate) fn load_edit(conn: &Connection, map_id: &str, seq: u64) -> AppResult<EditEntry> {
+    let bytes: Vec<u8> = conn.query_row(
+        "SELECT entry FROM edit_entries WHERE map_id = ?1 AND seq = ?2",
+        rusqlite::params![map_id, seq as i64],
+        |r| r.get(0),
+    )?;
+    Ok(rmp_serde::from_slice(&bytes)?)
 }
 
 /// Highest location id the stored history can re-materialize, without reading it.

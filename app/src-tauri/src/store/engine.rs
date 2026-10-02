@@ -189,8 +189,8 @@ impl Store {
             version: self.version,
             values: EngineValues {
                 location_count: Some(*self.alive_count),
-                can_undo: Some(!self.edits.undo.is_empty()),
-                can_redo: Some(!self.edits.redo.is_empty()),
+                can_undo: Some(self.edits.undo_len() > 0),
+                can_redo: Some(self.edits.redo_len() > 0),
                 value_counts,
                 value_meta,
                 field_defs: Some((*self.field_defs).clone()),
@@ -216,8 +216,8 @@ impl Store {
             result.values.location_count = Some(*self.alive_count);
         }
         if self.edits.ship() {
-            result.values.can_undo = Some(!self.edits.undo.is_empty());
-            result.values.can_redo = Some(!self.edits.redo.is_empty());
+            result.values.can_undo = Some(self.edits.undo_len() > 0);
+            result.values.can_redo = Some(self.edits.redo_len() > 0);
         }
     }
 

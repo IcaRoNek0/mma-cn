@@ -148,14 +148,16 @@ async fn open_claimed_map(
             0
         };
 
-        let edits = load_edit_history(&storage::open_db()?, &map_id2)?;
+        let conn = storage::open_db()?;
+        let edits = load_edit_history(&conn, &map_id2)?;
+        let history_max = stored_history_max_id(&conn, &map_id2)?;
 
         log::debug!("[store_open] TOTAL={}ms", t_total.elapsed().as_millis());
-        Ok::<_, AppError>((batch, mmap_handle, max_id, edits, delta))
+        Ok::<_, AppError>((batch, mmap_handle, max_id, edits, history_max, delta))
     })
     .await??;
 
-    let (batch, mmap_handle, max_id, edits, delta) = result;
+    let (batch, mmap_handle, max_id, edits, history_max, delta) = result;
 
     let mut store = Store::new();
     store.bump();
@@ -168,11 +170,7 @@ async fn open_claimed_map(
     if let Some(d) = delta {
         store.overlay = Tracked::unsaved(d);
     }
-    store.next_id = seed_next_id(
-        max_id,
-        &store.overlay.adds,
-        history_max_id(&edits.undo, &edits.redo),
-    );
+    store.next_id = seed_next_id(max_id, &store.overlay.adds, history_max);
 
     let LocationAggregates { alive, bounds } = store.scan_locations();
     store.alive_count = Tracked::new(alive);
@@ -734,22 +732,11 @@ pub async fn store_undo(
 ) -> AppResult<MutationResult> {
     with_store!(label, state, |store| {
         let _t = Instant::now();
-        let edit = store.edits.edit().undo.pop().ok_or("nothing to undo")?;
-        log::debug!(
-            "[UNDO] stack_depth={} created={} removed={}",
-            store.edits.undo.len(),
-            edit.entry.created.len(),
-            edit.entry.removed.len()
-        );
-        let changes = store.apply_edit_reverse(&edit.entry);
-        log::debug!(
-            "[UNDO] apply_edit={}ms changes: +{} ~{} -{}",
-            _t.elapsed().as_millis(),
-            changes.added.len(),
-            changes.updated.len(),
-            changes.removed.len()
-        );
-        store.edits.edit().redo.push(edit);
+        let map_id = store.map_id.clone().unwrap_or_default();
+        let changes = store
+            .undo(|seq| load_edit(&storage::open_db()?, &map_id, seq))?
+            .ok_or("nothing to undo")?;
+        log_history_step("UNDO", _t, store.edits.undo_len(), &changes);
         Ok(store.finish_mutation(&changes))
     })
 }
@@ -763,24 +750,23 @@ pub async fn store_redo(
 ) -> AppResult<MutationResult> {
     with_store!(label, state, |store| {
         let _t = Instant::now();
-        let edit = store.edits.edit().redo.pop().ok_or("nothing to redo")?;
-        log::debug!(
-            "[REDO] stack_depth={} created={} removed={}",
-            store.edits.redo.len(),
-            edit.entry.created.len(),
-            edit.entry.removed.len()
-        );
-        let changes = store.apply_edit_forward(&edit.entry);
-        log::debug!(
-            "[REDO] apply_edit={}ms changes: +{} ~{} -{}",
-            _t.elapsed().as_millis(),
-            changes.added.len(),
-            changes.updated.len(),
-            changes.removed.len()
-        );
-        store.edits.edit().push_undo(edit);
+        let map_id = store.map_id.clone().unwrap_or_default();
+        let changes = store
+            .redo(|seq| load_edit(&storage::open_db()?, &map_id, seq))?
+            .ok_or("nothing to redo")?;
+        log_history_step("REDO", _t, store.edits.redo_len(), &changes);
         Ok(store.finish_mutation(&changes))
     })
+}
+
+fn log_history_step(step: &str, started: Instant, depth: usize, changes: &ChangeSet) {
+    log::debug!(
+        "[{step}] stack_depth={depth} apply_edit={}ms changes: +{} ~{} -{}",
+        started.elapsed().as_millis(),
+        changes.added.len(),
+        changes.updated.len(),
+        changes.removed.len()
+    );
 }
 
 /// Return the uncommitted change counts (added, removed, modified) since the last commit.

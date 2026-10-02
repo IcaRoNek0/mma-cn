@@ -7,52 +7,90 @@ use std::time::Instant;
 
 pub(super) const MAX_UNDO_ENTRIES: usize = 1000;
 
+/// Which stack an edit sits in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Stack {
+    Undo,
+    Redo,
+}
+
 /// The undo and redo stacks. Undo holds ascending `seq`, redo descending, and every undo
 /// `seq` is below every redo `seq`, so the order of both is recoverable from `seq` alone.
+/// Only this module moves edits, which keeps that true.
 #[derive(Default)]
 pub(crate) struct EditStacks {
-    pub undo: Vec<LoggedEdit>,
-    pub redo: Vec<LoggedEdit>,
+    undo: Vec<LoggedEdit>,
+    redo: Vec<LoggedEdit>,
     next_seq: u64,
 }
 
-/// An edit with the number it is stored under. Never reused within a map, so a stored
-/// row with a live `seq` always holds that same edit.
+/// An edit and the number it is stored under, never reused within a map, so a stored
+/// row with a live `seq` always holds that same edit. `entry` is `None` while the edit
+/// is only on disk.
 pub(crate) struct LoggedEdit {
     pub seq: u64,
-    pub entry: EditEntry,
+    pub entry: Option<EditEntry>,
 }
 
 impl EditStacks {
-    /// Stacks loaded from disk; new edits number after every stored one.
-    pub(crate) fn loaded(undo: Vec<LoggedEdit>, redo: Vec<LoggedEdit>) -> Self {
-        let next_seq = undo
-            .iter()
-            .chain(&redo)
-            .map(|e| e.seq + 1)
-            .max()
-            .unwrap_or(0);
+    /// Stacks for edits that are only on disk, from each one's `seq` and stack. New edits
+    /// number after every stored one.
+    pub(crate) fn on_disk(mut rows: Vec<(u64, Stack)>) -> Self {
+        rows.sort_unstable_by_key(|&(seq, _)| seq);
+        let next_seq = rows.last().map_or(0, |&(seq, _)| seq + 1);
+        let (undo, mut redo): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .map(|(seq, stack)| (LoggedEdit { seq, entry: None }, stack))
+            .partition(|(_, stack)| *stack == Stack::Undo);
+        redo.reverse();
         Self {
-            undo,
-            redo,
+            undo: undo.into_iter().map(|(edit, _)| edit).collect(),
+            redo: redo.into_iter().map(|(edit, _)| edit).collect(),
             next_seq,
         }
     }
 
-    /// Push a new edit onto the undo stack, capping at MAX_UNDO_ENTRIES. O(1) amortized.
+    /// Record a new edit: it goes on top of undo, under the cap, and redo is gone.
     pub(crate) fn record(&mut self, entry: EditEntry) {
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.push_undo(LoggedEdit { seq, entry });
+        self.push_undo(LoggedEdit {
+            seq,
+            entry: Some(entry),
+        });
+        self.redo.clear();
     }
 
-    /// Return an edit to the undo stack, as redo does, under the cap.
-    pub(crate) fn push_undo(&mut self, edit: LoggedEdit) {
+    fn push_undo(&mut self, edit: LoggedEdit) {
         self.undo.push(edit);
         if self.undo.len() > MAX_UNDO_ENTRIES {
             let excess = self.undo.len() - MAX_UNDO_ENTRIES;
             self.undo.drain(..excess);
         }
+    }
+
+    /// Forget redo, for a change that leaves no undo entry of its own.
+    pub(crate) fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
+    pub(crate) fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
+    pub(crate) fn redo_len(&self) -> usize {
+        self.redo.len()
+    }
+
+    /// Every edit with its stack: undo bottom to top, then redo bottom to top.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Stack, &LoggedEdit)> {
+        let undo = self.undo.iter().map(|e| (Stack::Undo, e));
+        undo.chain(self.redo.iter().map(|e| (Stack::Redo, e)))
     }
 }
 
@@ -63,16 +101,6 @@ impl EditStacks {
 pub(crate) struct EditEntry {
     pub created: Vec<Location>,
     pub removed: Vec<Location>,
-}
-
-/// Highest location id referenced anywhere in the undo/redo stacks. Used to seed
-/// `next_id` on map open so undo/redo replay can never collide with a fresh allocation.
-pub(crate) fn history_max_id(undo: &[LoggedEdit], redo: &[LoggedEdit]) -> u32 {
-    undo.iter()
-        .chain(redo)
-        .map(|e| e.entry.max_id())
-        .max()
-        .unwrap_or(0)
 }
 
 impl EditEntry {
@@ -112,7 +140,6 @@ impl Store {
             created: changed_new,
             removed: changed_old,
         });
-        self.edits.edit().redo.clear();
         true
     }
 
@@ -185,13 +212,60 @@ impl Store {
             created,
             removed: removed_rows,
         });
-        self.edits.edit().redo.clear();
         self.report(&mut result);
         result
     }
 
-    /// Push a new edit onto the undo stack.
+    /// Record a new edit; redo is gone.
     pub(crate) fn push_undo(&mut self, entry: EditEntry) {
         self.edits.edit().record(entry);
+    }
+
+    /// Reverse the newest edit and move it to redo. `fetch` reads an edit that is only on
+    /// disk; when it fails the whole history goes, since replaying around a gap would
+    /// corrupt the map. `None` when there is nothing to undo.
+    pub(crate) fn undo(
+        &mut self,
+        fetch: impl FnOnce(u64) -> AppResult<EditEntry>,
+    ) -> AppResult<Option<ChangeSet>> {
+        self.step(Stack::Undo, fetch)
+    }
+
+    /// Re-apply the newest undone edit and move it back to undo. As [`Store::undo`].
+    pub(crate) fn redo(
+        &mut self,
+        fetch: impl FnOnce(u64) -> AppResult<EditEntry>,
+    ) -> AppResult<Option<ChangeSet>> {
+        self.step(Stack::Redo, fetch)
+    }
+
+    fn step(
+        &mut self,
+        from: Stack,
+        fetch: impl FnOnce(u64) -> AppResult<EditEntry>,
+    ) -> AppResult<Option<ChangeSet>> {
+        let edits = self.edits.edit();
+        let popped = match from {
+            Stack::Undo => edits.undo.pop(),
+            Stack::Redo => edits.redo.pop(),
+        };
+        let Some(mut edit) = popped else {
+            return Ok(None);
+        };
+        let entry = match edit.entry.take() {
+            Some(entry) => entry,
+            None => fetch(edit.seq).inspect_err(|_| self.edits.edit().clear())?,
+        };
+        let changes = match from {
+            Stack::Undo => self.apply_edit_reverse(&entry),
+            Stack::Redo => self.apply_edit_forward(&entry),
+        };
+        edit.entry = Some(entry);
+        let edits = self.edits.edit();
+        match from {
+            Stack::Undo => edits.redo.push(edit),
+            Stack::Redo => edits.push_undo(edit),
+        }
+        Ok(Some(changes))
     }
 }
