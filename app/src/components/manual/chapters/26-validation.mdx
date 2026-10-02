@@ -2,16 +2,19 @@ export const title = "Validation";
 
 Validation checks whether each location still has valid Street View coverage and classifies any problems. Run it via **Validate locations** in the command palette (a bulk operation with a scope).
 
-## Problem categories
+## Findings
 
-- **Valid location.** No issues.
-- **Newer coverage available.** The pinned pano has a more recent version in its timeline, or the coordinates now resolve to a different pano than the pinned one.
-- **Coverage updated since last view.** A coordinate-based location now resolves to a different, newer pano.
+A location can carry several findings at once, and each finding becomes its own selection. Combine them with the pinned state to narrow down, for example pinned locations that are **Pinned away from the default pano** but not **Newer coverage than the stored pano** are deliberate pins that unpinning would not improve.
+
+The **default pano** is the one a location's coordinates load when it is not pinned.
+
+- **Valid location.** No findings.
+- **Newer coverage than the stored pano.** Official coverage newer than the location's stored pano exists, either as the default pano or in the stored pano's own timeline.
+- **Pinned away from the default pano.** The location is pinned to a pano other than the default.
+- **Default pano is not the newest.** The default pano has newer captures in its own timeline, so loading the coordinates shows older coverage.
 - **Not found.** No coverage at the coordinates or pano ID.
 - **Pano ID broke.** The pinned pano ID no longer resolves.
 - **Unofficial.** Resolves to user-uploaded coverage.
 - **Badcam, but good coverage available.** The current coverage is a low-quality camera, but a better one exists in the timeline.
 
-**Check pinned locations for newer coverage** (on by default) compares pinned locations against what their coordinates resolve to, and checks their camera quality. Turn it off for maps that deliberately pin older coverage, such as historical or generation-specific maps - there, every pin would otherwise flag as having an update.
-
-Results become a **Validation state** selection you can act on, for example review every "Pano ID broke" location and re-pin it.
+Results become **Validation** selections you can act on, for example review every "Pano ID broke" location and re-pin it.

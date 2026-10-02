@@ -1,12 +1,11 @@
 /* The validate procedure's notion of "pinned" is the shared `isPinned` predicate: the
- * LoadAsPanoId flag alone does not pin a row that carries no pano id. With pinned checks
- * off, the badcam/goodcam check runs only for an unpinned row, so its verdict is the
- * observable. */
+ * LoadAsPanoId flag alone does not pin a row that carries no pano id, so a missing stored
+ * pano is not a broken pin. */
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Pano, PanoAnswer, PanoQuery } from "@/bindings.gen";
-import { ValidationState } from "@/bindings.consts";
+import { ValidationFlag } from "@/bindings.consts";
 import { CAR_PANO } from "./fixtures/pano";
 
 const app = fileURLToPath(new URL("../..", import.meta.url));
@@ -49,19 +48,11 @@ const row = (panoId: string) => ({
 	tags: [],
 });
 
-const NO_CHECK_PINNED = { fields: [], force: false, config: { checkPinned: false } };
+const CFG = { fields: [], force: false, config: null };
 
 describe("validate procedure", () => {
 	it("treats a flagged row with no pano id as unpinned", () => {
-		const { out, rounds } = withHost(() => mod.run([row("")], NO_CHECK_PINNED));
-		expect(out).toEqual([{ id: 1, patch: ValidationState.GoodcamAvailable }]);
-		// The timeline round only happens for a row the procedure considers unpinned.
-		expect(rounds[2]).toHaveLength(CAR_PANO.time.length);
-	});
-
-	it("skips the goodcam round for a genuinely pinned row", () => {
-		const { out, rounds } = withHost(() => mod.run([row(CAR_PANO.id)], NO_CHECK_PINNED));
-		expect(out).toEqual([{ id: 1, patch: ValidationState.Ok }]);
-		expect(rounds[2]).toHaveLength(0);
+		const { out } = withHost(() => mod.run([row("")], CFG));
+		expect(out).toEqual([{ id: 1, patch: ValidationFlag.GoodcamAvailable }]);
 	});
 });

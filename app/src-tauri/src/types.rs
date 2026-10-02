@@ -302,22 +302,25 @@ macro_rules! wire_str_enum {
 pub(crate) use wire_str_enum;
 
 wire_enum! {
-    /// Outcome of a Street View coverage check, as `validate` answers it per row.
-    ValidationState: u8 {
-        /// The location's coverage checked out, with nothing to report.
-        OK = 0,
-        /// The location is pinned to a pano, and newer official coverage exists that it does not show.
-        UPDATE_AVAILABLE = 1,
-        /// Newer official coverage exists here, and the unpinned location already shows it.
-        UPDATE_APPLIED = 2,
-        /// The location shows bad-camera coverage, but its timeline holds a better camera capture.
-        GOODCAM_AVAILABLE = 6,
+    /// One finding of a Street View coverage check. `validate` answers each row with the
+    /// findings that apply, combined into one number.
+    ValidationFlag: u8 {
+        /// No findings: the location's coverage checked out.
+        NONE = 0,
+        /// Official coverage newer than the location's stored pano exists.
+        NEWER = 1,
+        /// The location is pinned to a pano other than the one its coordinates load.
+        OFF_DEFAULT = 2,
+        /// The pano the location's coordinates load is not the newest capture there.
+        DEFAULT_STALE = 4,
         /// The location's pinned pano no longer loads, though coverage still exists at its coordinates.
-        PANO_ID_BROKE = 4,
+        PANO_ID_BROKE = 8,
         /// The coverage the location shows is unofficial.
-        UNOFFICIAL = 5,
+        UNOFFICIAL = 16,
+        /// The location shows bad-camera coverage, but its timeline holds a better camera capture.
+        GOODCAM_AVAILABLE = 32,
         /// No coverage was found, neither the stored pano nor any within the search radius.
-        NOT_FOUND = 3,
+        NOT_FOUND = 64,
     }
 }
 

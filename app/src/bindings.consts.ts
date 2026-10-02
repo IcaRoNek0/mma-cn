@@ -192,24 +192,29 @@ export const RankingStrategy = {
 } as const;
 export type RankingStrategy = (typeof RankingStrategy)[keyof typeof RankingStrategy];
 
-/** Outcome of a Street View coverage check, as `validate` answers it per row. */
-export const ValidationState = {
-	/** The location's coverage checked out, with nothing to report. */
-	Ok: 0,
-	/** The location is pinned to a pano, and newer official coverage exists that it does not show. */
-	UpdateAvailable: 1,
-	/** Newer official coverage exists here, and the unpinned location already shows it. */
-	UpdateApplied: 2,
-	/** The location shows bad-camera coverage, but its timeline holds a better camera capture. */
-	GoodcamAvailable: 6,
+/**
+ * One finding of a Street View coverage check. `validate` answers each row with the
+ * findings that apply, combined into one number.
+ */
+export const ValidationFlag = {
+	/** No findings: the location's coverage checked out. */
+	None: 0,
+	/** Official coverage newer than the location's stored pano exists. */
+	Newer: 1,
+	/** The location is pinned to a pano other than the one its coordinates load. */
+	OffDefault: 2,
+	/** The pano the location's coordinates load is not the newest capture there. */
+	DefaultStale: 4,
 	/** The location's pinned pano no longer loads, though coverage still exists at its coordinates. */
-	PanoIdBroke: 4,
+	PanoIdBroke: 8,
 	/** The coverage the location shows is unofficial. */
-	Unofficial: 5,
+	Unofficial: 16,
+	/** The location shows bad-camera coverage, but its timeline holds a better camera capture. */
+	GoodcamAvailable: 32,
 	/** No coverage was found, neither the stored pano nor any within the search radius. */
-	NotFound: 3,
+	NotFound: 64,
 } as const;
-export type ValidationState = (typeof ValidationState)[keyof typeof ValidationState];
+export type ValidationFlag = (typeof ValidationFlag)[keyof typeof ValidationFlag];
 
 /** Which way a link carries changes. @unstable */
 export const SyncDirection = {

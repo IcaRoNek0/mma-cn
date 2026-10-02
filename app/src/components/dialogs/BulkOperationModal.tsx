@@ -31,7 +31,7 @@ import {
 } from "@/lib/data/fieldDefRegistry";
 import { cmd } from "@/lib/commands";
 import { useMapSetting } from "@/store/useMapSetting";
-import { CapturePick, ValidationState } from "@/bindings.consts";
+import { CapturePick, ValidationFlag } from "@/bindings.consts";
 import { validateLocations } from "@/lib/sv/validate";
 import { enrichAll, type EnrichOutcome } from "@/lib/sv/enrich";
 import { getEnrichFieldOptions, getDefaultEnrichKeys, isFieldEnabled } from "@/lib/data/fieldDefs";
@@ -115,36 +115,26 @@ async function readTargetInfo(selector: Selector): Promise<TargetInfo> {
 // Setup components — each produces a BulkRunner closure
 // ---------------------------------------------------------------------------
 
-function ValidateSetup({ picker, info, onReady }: SetupProps) {
-	const [checkPinned, setCheckPinned] = useState(true);
+function ValidateSetup({ picker, onReady }: SetupProps) {
 	return (
 		<div className="modal__stack">
 			<SelectorPicker ctl={picker} />
-			{info.pinned > 0 && (
-				<Checkbox checked={checkPinned} onChange={(e) => setCheckPinned(e.target.checked)}>
-					{t("Check pinned locations for newer coverage")}
-				</Checkbox>
-			)}
 			<DialogActions
 				cancel
 				primary={{
 					label: t("Start"),
 					onClick: () =>
 						onReady(async ({ selector, signal, onProgress }) => {
-							const result = await validateLocations(selector, {
-								signal,
-								onProgress,
-								config: { checkPinned },
-							});
-							const batch = Object.values(ValidationState)
-								.filter((state) => (result.states.get(state)?.length ?? 0) > 0)
-								.map((state) => ({
-									type: "ValidationState" as const,
-									locations: result.states.get(state)!,
-									state,
+							const result = await validateLocations(selector, { signal, onProgress });
+							const batch = Object.values(ValidationFlag)
+								.filter((flag) => (result.flags.get(flag)?.length ?? 0) > 0)
+								.map((flag) => ({
+									type: "Validation" as const,
+									locations: result.flags.get(flag)!,
+									flag,
 								}));
 							if (batch.length > 0) void applySelectionUpdate(addSelection(...batch));
-							const n = batch.reduce((total, b) => total + b.locations.length, 0);
+							const n = new Set(batch.flatMap((b) => b.locations)).size;
 							return {
 								outcome: result,
 								doneMessage: t(

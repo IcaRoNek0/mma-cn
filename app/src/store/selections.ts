@@ -13,7 +13,7 @@ import { hexToRgb, hslToRgb, type RGB } from "@/lib/util/color";
 import { getFieldDef, fieldValueLabel } from "@/lib/data/fieldDefRegistry";
 import { formatDistance, localDateTime, utcDateTime } from "@/lib/util/format";
 import { isVariant, toggle, unionTuple, type Variant } from "@/types/util";
-import { ValidationState } from "@/bindings.consts";
+import { ValidationFlag } from "@/bindings.consts";
 import { getSettings } from "@/store/settings";
 import { dayMonthFmt } from "@/lib/util/format";
 import { t, msg } from "@/lib/i18n";
@@ -279,9 +279,9 @@ export const SELECTIONS: { [K in Selector["type"]]: SelectionDescriptor<K> } = {
 		label: () => t("Manual selection"),
 		locations: ownLocations,
 	},
-	ValidationState: {
-		key: (s) => `validation:${s.state}`,
-		label: (s) => t(validationStateLabel(s.state as ValidationState)),
+	Validation: {
+		key: (s) => `validation:${s.flag}`,
+		label: (s) => t(validationFlagLabel(s.flag as ValidationFlag)),
 		locations: ownLocations,
 	},
 	Reviewed: {
@@ -767,21 +767,23 @@ function tagDisplayName(tagId: number, tagNames?: Record<number, string>): strin
 	return tagNames?.[tagId] ?? String(tagId);
 }
 
-function validationStateLabel(state: ValidationState): string {
-	switch (state) {
-		case ValidationState.Ok:
+function validationFlagLabel(flag: ValidationFlag): string {
+	switch (flag) {
+		case ValidationFlag.None:
 			return msg("Valid location");
-		case ValidationState.UpdateAvailable:
-			return msg("Newer coverage available");
-		case ValidationState.UpdateApplied:
-			return msg("Coverage updated since last view");
-		case ValidationState.NotFound:
+		case ValidationFlag.Newer:
+			return msg("Newer coverage than the stored pano");
+		case ValidationFlag.OffDefault:
+			return msg("Pinned away from the default pano");
+		case ValidationFlag.DefaultStale:
+			return msg("Default pano is not the newest");
+		case ValidationFlag.NotFound:
 			return msg("Not found");
-		case ValidationState.PanoIdBroke:
+		case ValidationFlag.PanoIdBroke:
 			return msg("Pano ID broke");
-		case ValidationState.Unofficial:
+		case ValidationFlag.Unofficial:
 			return msg("Unofficial");
-		case ValidationState.GoodcamAvailable:
+		case ValidationFlag.GoodcamAvailable:
 			return msg("Badcam, but good coverage available");
 	}
 }

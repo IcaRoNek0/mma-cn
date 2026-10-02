@@ -192,24 +192,29 @@ declare const RankingStrategy: {
     readonly Closest: 2;
 };
 type RankingStrategy = (typeof RankingStrategy)[keyof typeof RankingStrategy];
-/** Outcome of a Street View coverage check, as `validate` answers it per row. */
-declare const ValidationState: {
-    /** The location's coverage checked out, with nothing to report. */
-    readonly Ok: 0;
-    /** The location is pinned to a pano, and newer official coverage exists that it does not show. */
-    readonly UpdateAvailable: 1;
-    /** Newer official coverage exists here, and the unpinned location already shows it. */
-    readonly UpdateApplied: 2;
-    /** The location shows bad-camera coverage, but its timeline holds a better camera capture. */
-    readonly GoodcamAvailable: 6;
+/**
+ * One finding of a Street View coverage check. `validate` answers each row with the
+ * findings that apply, combined into one number.
+ */
+declare const ValidationFlag: {
+    /** No findings: the location's coverage checked out. */
+    readonly None: 0;
+    /** Official coverage newer than the location's stored pano exists. */
+    readonly Newer: 1;
+    /** The location is pinned to a pano other than the one its coordinates load. */
+    readonly OffDefault: 2;
+    /** The pano the location's coordinates load is not the newest capture there. */
+    readonly DefaultStale: 4;
     /** The location's pinned pano no longer loads, though coverage still exists at its coordinates. */
-    readonly PanoIdBroke: 4;
+    readonly PanoIdBroke: 8;
     /** The coverage the location shows is unofficial. */
-    readonly Unofficial: 5;
+    readonly Unofficial: 16;
+    /** The location shows bad-camera coverage, but its timeline holds a better camera capture. */
+    readonly GoodcamAvailable: 32;
     /** No coverage was found, neither the stored pano nor any within the search radius. */
-    readonly NotFound: 3;
+    readonly NotFound: 64;
 };
-type ValidationState = (typeof ValidationState)[keyof typeof ValidationState];
+type ValidationFlag = (typeof ValidationFlag)[keyof typeof ValidationFlag];
 /** Which way a link carries changes. @unstable */
 declare const SyncDirection: {
     /** Changes travel both ways, and conflicts wait for review. */
@@ -513,12 +518,12 @@ declare const consts_SyncTrigger: typeof SyncTrigger;
 /** @unstable */
 export type consts_SyncTrigger = SyncTrigger;
 declare const consts_VIRTUAL_FLAGS: typeof VIRTUAL_FLAGS;
-declare const consts_ValidationState: typeof ValidationState;
+declare const consts_ValidationFlag: typeof ValidationFlag;
 /** @unstable */
-export type consts_ValidationState = ValidationState;
+export type consts_ValidationFlag = ValidationFlag;
 declare namespace consts {
   export { consts_BUILTIN_FIELDS as BUILTIN_FIELDS, consts_CLEARABLE_BUILTINS as CLEARABLE_BUILTINS, consts_DEFAULT_DUPLICATE_SCORE as DEFAULT_DUPLICATE_SCORE, consts_EFFECT_CALLS as EFFECT_CALLS, consts_ERROR_CODES as ERROR_CODES, consts_KNOWN_FIELDS as KNOWN_FIELDS, consts_OFFICIAL_ID_PATTERN as OFFICIAL_ID_PATTERN, consts_PLAIN_CALLS as PLAIN_CALLS, consts_PROJECTIONS as PROJECTIONS, consts_SCRATCH_MAP_ID as SCRATCH_MAP_ID, consts_SYNC_PROVIDERS as SYNC_PROVIDERS, consts_VIRTUAL_FLAGS as VIRTUAL_FLAGS };
-  export { consts_CameraType as CameraType, consts_CapturePick as CapturePick, consts_DatePart as DatePart, consts_FieldType as FieldType, consts_FirstSyncMode as FirstSyncMode, consts_IssueState as IssueState, consts_LocationFlag as LocationFlag, consts_MapShape as MapShape, consts_MergeWinner as MergeWinner, consts_PanoType as PanoType, consts_RankingStrategy as RankingStrategy, consts_RateCost as RateCost, consts_ResolutionSide as ResolutionSide, consts_Sink as Sink, consts_SyncDirection as SyncDirection, consts_SyncTrigger as SyncTrigger, consts_ValidationState as ValidationState };
+  export { consts_CameraType as CameraType, consts_CapturePick as CapturePick, consts_DatePart as DatePart, consts_FieldType as FieldType, consts_FirstSyncMode as FirstSyncMode, consts_IssueState as IssueState, consts_LocationFlag as LocationFlag, consts_MapShape as MapShape, consts_MergeWinner as MergeWinner, consts_PanoType as PanoType, consts_RankingStrategy as RankingStrategy, consts_RateCost as RateCost, consts_ResolutionSide as ResolutionSide, consts_Sink as Sink, consts_SyncDirection as SyncDirection, consts_SyncTrigger as SyncTrigger, consts_ValidationFlag as ValidationFlag };
 }
 
 /** Commands @unstable */
@@ -2717,9 +2722,9 @@ type Selector = {
     type: "Duplicates";
     distance: number;
 } | {
-    type: "ValidationState";
+    type: "Validation";
     locations: number[];
-    state: number;
+    flag: number;
 } | {
     type: "Reviewed";
     locations: number[];
@@ -4037,7 +4042,7 @@ declare namespace selectionActions {
  *  re-resolve against whatever map is open. */
 
 /** Selection types that cannot be saved as rules because they are bound to the open map. @unstable */
-declare const MAP_LOCAL_TYPES: readonly ["Locations", "Manual", "ValidationState", "Reviewed"];
+declare const MAP_LOCAL_TYPES: readonly ["Locations", "Manual", "Validation", "Reviewed"];
 /** Whether the selector tree contains only portable types (no map-local leaves). @unstable */
 declare function isSaveable(selector: Selector): boolean;
 /** One part of a saved rule: what its chip reads as, and what it resolves to here. The
@@ -7076,17 +7081,14 @@ declare namespace pinPano {
   export type { pinPano_PinOpts as PinOpts, pinPano_PinOutcome as PinOutcome };
 }
 
-/** Configuration for Street View validation: search radius, and whether pinned rows are
- *  also compared against the coordinate lookup (off = a pin means the row is deliberate,
- *  its stored pano's own timeline is the only update signal). @unstable */
+/** Configuration for Street View validation: the radius of the coordinate lookup. @unstable */
 export interface ValidateConfig {
     radius: number;
-    checkPinned: boolean;
 }
-/** What a validation run answered: the ids grouped by the state they validated to, over
- *  the outcome every run reports. @unstable */
+/** What a validation run answered: the ids carrying each flag, and under
+ *  `ValidationFlag.None` the ids with none, over the outcome every run reports. @unstable */
 export interface ValidationOutcome extends BatchOutcome {
-    states: Map<ValidationState, number[]>;
+    flags: Map<ValidationFlag, number[]>;
 }
 /** Check that each location's Street View coverage still exists. @unstable */
 declare function validateLocations(selector: Selector, opts?: BulkOpts & {
@@ -7946,5 +7948,5 @@ declare global {
     const MMA: MMA;
 }
 
-export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, SYNC_PROVIDERS, Sink, SyncDirection, SyncTrigger, VIRTUAL_FLAGS, ValidationState, commands$1 as commands, events };
+export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, SYNC_PROVIDERS, Sink, SyncDirection, SyncTrigger, VIRTUAL_FLAGS, ValidationFlag, commands$1 as commands, events };
 export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FileSource, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapPreferences, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, Policy, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RemoteTag, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SaveResult, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncLogEntry, SyncLogResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };

@@ -59,9 +59,9 @@ pub enum Selector {
     Duplicates {
         distance: f64,
     },
-    ValidationState {
+    Validation {
         locations: Vec<u32>,
-        state: u8,
+        flag: u8,
     },
     #[serde(rename_all = "camelCase")]
     Reviewed {
@@ -551,7 +551,7 @@ fn test_row(r: &RowRef, selector: &Selector) -> bool {
         Selector::Everything => true,
         Selector::Locations { locations, .. }
         | Selector::Manual { locations }
-        | Selector::ValidationState { locations, .. }
+        | Selector::Validation { locations, .. }
         | Selector::Reviewed { locations, .. } => locations.contains(&r.id()),
         Selector::Uncommitted => r.is_uncommitted(),
         Selector::Polygon { polygon } => point_in_geometry(r.lng(), r.lat(), polygon),
@@ -768,7 +768,7 @@ impl<'v, 'a> Scope<'v, 'a> {
             },
             Selector::Locations { locations, .. }
             | Selector::Manual { locations }
-            | Selector::ValidationState { locations, .. }
+            | Selector::Validation { locations, .. }
             | Selector::Reviewed { locations, .. } => {
                 let ids: RoaringBitmap = locations.iter().copied().collect();
                 self.within(&ids).ids()

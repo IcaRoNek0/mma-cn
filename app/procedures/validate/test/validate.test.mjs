@@ -8,15 +8,16 @@ const { run } = await import(
 	new URL("../../../src-tauri/procedures/validate.js", import.meta.url).href
 );
 
-// --- ValidationState (app/src/types/index.ts) ---
+// --- ValidationFlag ---
 
 const OK = 0;
-const UPDATE_AVAILABLE = 1;
-const UPDATE_APPLIED = 2;
-const NOT_FOUND = 3;
-const PANO_ID_BROKE = 4;
-const UNOFFICIAL = 5;
-const GOODCAM_AVAILABLE = 6;
+const NEWER = 1;
+const OFF_DEFAULT = 2;
+const DEFAULT_STALE = 4;
+const PANO_ID_BROKE = 8;
+const UNOFFICIAL = 16;
+const GOODCAM_AVAILABLE = 32;
+const NOT_FOUND = 64;
 
 const PINNED = 1;
 
@@ -124,7 +125,7 @@ function runProcedure(
 
 	const answers = run(rows.map(toRow), { fields: [], force: false, config });
 	for (const a of answers) {
-		assert.equal(typeof a.patch, "number", "an answer is a bare ValidationState");
+		assert.equal(typeof a.patch, "number", "an answer is a bare set of ValidationFlags");
 	}
 	return { answers, metaCalls, coordCalls, progress, hostCalls };
 }
@@ -183,15 +184,6 @@ test("a pinned row whose coordinate agrees with its pano is ok", () => {
 	);
 	assert.equal(state, OK);
 	assert.equal(coordCalls.length, 1);
-});
-
-test("with pinned checks off, a pinned row never looks up its coordinate while its pano resolves", () => {
-	const { state, coordCalls } = stateOf(
-		{ panoId: A, flags: PINNED },
-		{ panos: { [A]: meta(A) }, coords: { "1,2": B }, config: { checkPinned: false } },
-	);
-	assert.equal(state, OK);
-	assert.deepEqual(coordCalls, []);
 });
 
 // --- Unofficial ---
@@ -266,18 +258,25 @@ test("a pinned badcam row with a better camera in its timeline reports one", () 
 	assert.equal(state, GOODCAM_AVAILABLE);
 });
 
-test("with pinned checks off, a pinned badcam row is never checked for a better camera", () => {
-	const { state, metaCalls } = stateOf(
+test("a better camera and newer coverage are both reported", () => {
+	const { state } = stateOf(
 		{ panoId: A, flags: PINNED },
-		{ panos: { [A]: badcam(A) }, config: { checkPinned: false } },
+		{
+			panos: {
+				[A]: badcam(A, {
+					date: { year: 2019, month: 5, day: 1 },
+					timeline: [{ panoId: B, date: { year: 2021, month: 6, day: 1 } }],
+				}),
+				[B]: meta(B),
+			},
+		},
 	);
-	assert.equal(state, OK);
-	assert.deepEqual(metaCalls, [[A]]);
+	assert.equal(state, GOODCAM_AVAILABLE | NEWER);
 });
 
 // --- Updates ---
 
-test("a moved coordinate reports an applied update", () => {
+test("an unpinned row whose coordinate answers a newer pano reports newer coverage", () => {
 	const { state } = stateOf(
 		{ panoId: A },
 		{
@@ -285,10 +284,10 @@ test("a moved coordinate reports an applied update", () => {
 			coords: { "1,2": B },
 		},
 	);
-	assert.equal(state, UPDATE_APPLIED);
+	assert.equal(state, NEWER);
 });
 
-test("a pinned row whose coordinate answers a newer pano reports an available update", () => {
+test("a pinned row whose coordinate answers a newer pano is newer and off default", () => {
 	// A republished area: the stored pano still resolves but a new graph sits at the coordinate.
 	const { state } = stateOf(
 		{ panoId: A, flags: PINNED },
@@ -297,10 +296,10 @@ test("a pinned row whose coordinate answers a newer pano reports an available up
 			coords: { "1,2": B },
 		},
 	);
-	assert.equal(state, UPDATE_AVAILABLE);
+	assert.equal(state, NEWER | OFF_DEFAULT);
 });
 
-test("a pin ahead of a lagging default is not an update", () => {
+test("a pin ahead of a lagging default is off default, not newer", () => {
 	// The row is pinned to the newest graph; the coordinate's default is an older official
 	// pano. Different id, but nothing newer exists.
 	const { state } = stateOf(
@@ -313,27 +312,27 @@ test("a pin ahead of a lagging default is not an update", () => {
 			coords: { "1,2": B },
 		},
 	);
-	assert.equal(state, OK);
+	assert.equal(state, OFF_DEFAULT);
 });
 
-test("an unofficial pano at the coordinate is not an update", () => {
-	// The nearest hit can be a photosphere; only official coverage counts as an update.
+test("an unofficial pano at the coordinate is off default, not newer or stale", () => {
+	// The nearest hit can be a photosphere; only official coverage counts as newer.
 	const { state } = stateOf(
 		{ panoId: A, flags: PINNED },
+		{ panos: { [A]: meta(A), [LONG]: meta(LONG) }, coords: { "1,2": LONG } },
+	);
+	assert.equal(state, OFF_DEFAULT);
+});
+
+test("an unpinned row is never off default", () => {
+	const { state } = stateOf(
+		{ panoId: A },
 		{ panos: { [A]: meta(A), [LONG]: meta(LONG) }, coords: { "1,2": LONG } },
 	);
 	assert.equal(state, OK);
 });
 
-test("with pinned checks off, a republished area is not caught", () => {
-	const { state } = stateOf(
-		{ panoId: A, flags: PINNED },
-		{ panos: { [A]: meta(A), [B]: meta(B) }, coords: { "1,2": B }, config: { checkPinned: false } },
-	);
-	assert.equal(state, OK);
-});
-
-test("a pinned row on an older official capture reports an available update", () => {
+test("a pinned row on an older official capture reports newer coverage", () => {
 	const { state } = stateOf(
 		{ panoId: A, flags: PINNED },
 		{
@@ -345,10 +344,31 @@ test("a pinned row on an older official capture reports an available update", ()
 			},
 		},
 	);
-	assert.equal(state, UPDATE_AVAILABLE);
+	assert.equal(state, NEWER);
 });
 
-test("an unpinned row on an older official capture reports it as applied", () => {
+test("a pin on a default that is not the newest is newer and stale, not off default", () => {
+	const older = meta(A, {
+		date: { year: 2019, month: 5, day: 1 },
+		timeline: [{ panoId: B, date: { year: 2021, month: 6, day: 1 } }],
+	});
+	const { state } = stateOf(
+		{ panoId: A, flags: PINNED },
+		{ panos: { [A]: older }, coords: { "1,2": A } },
+	);
+	assert.equal(state, NEWER | DEFAULT_STALE);
+});
+
+test("a default behind its own timeline is stale for a row with no stored pano", () => {
+	const older = meta(A, {
+		date: { year: 2019, month: 5, day: 1 },
+		timeline: [{ panoId: B, date: { year: 2021, month: 6, day: 1 } }],
+	});
+	const { state } = stateOf({ panoId: null }, { panos: { [A]: older }, coords: { "1,2": A } });
+	assert.equal(state, DEFAULT_STALE);
+});
+
+test("an unpinned row on an older official capture reports newer coverage and a stale default", () => {
 	const { state } = stateOf(
 		{ panoId: A },
 		{
@@ -361,7 +381,7 @@ test("an unpinned row on an older official capture reports it as applied", () =>
 			coords: { "1,2": A },
 		},
 	);
-	assert.equal(state, UPDATE_APPLIED);
+	assert.equal(state, NEWER | DEFAULT_STALE);
 });
 
 test("a stored pano that is not in the timeline is left alone", () => {

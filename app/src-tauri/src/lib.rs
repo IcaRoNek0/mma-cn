@@ -414,7 +414,7 @@ fn export_consts() -> Result<(), String> {
         ("LocationFlag", types::LocationFlags::ts_const()),
         ("PanoType", sv::schema::PanoType::ts_const()),
         ("RankingStrategy", sv::schema::RankingStrategy::ts_const()),
-        ("ValidationState", types::ValidationState::ts_const()),
+        ("ValidationFlag", types::ValidationFlag::ts_const()),
         ("SyncDirection", sync::SyncDirection::ts_const().unstable()),
         ("BUILTIN_FIELDS", TsConst::value(selections::BUILTIN_FIELDS)),
         (

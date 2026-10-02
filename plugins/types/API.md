@@ -659,30 +659,33 @@ SyncTrigger: {
 
 What started a sync pass.
 
-### ValidationState
+### ValidationFlag
 
-`stable` · since v0.11.0
+`stable` · unreleased
 
 ```ts
-ValidationState: {
-  /** The location's coverage checked out, with nothing to report. */
-  Ok: 0;
-  /** The location is pinned to a pano, and newer official coverage exists that it does not show. */
-  UpdateAvailable: 1;
-  /** Newer official coverage exists here, and the unpinned location already shows it. */
-  UpdateApplied: 2;
-  /** The location shows bad-camera coverage, but its timeline holds a better camera capture. */
-  GoodcamAvailable: 6;
+ValidationFlag: {
+  /** No findings: the location's coverage checked out. */
+  None: 0;
+  /** Official coverage newer than the location's stored pano exists. */
+  Newer: 1;
+  /** The location is pinned to a pano other than the one its coordinates load. */
+  OffDefault: 2;
+  /** The pano the location's coordinates load is not the newest capture there. */
+  DefaultStale: 4;
   /** The location's pinned pano no longer loads, though coverage still exists at its coordinates. */
-  PanoIdBroke: 4;
+  PanoIdBroke: 8;
   /** The coverage the location shows is unofficial. */
-  Unofficial: 5;
+  Unofficial: 16;
+  /** The location shows bad-camera coverage, but its timeline holds a better camera capture. */
+  GoodcamAvailable: 32;
   /** No coverage was found, neither the stored pano nor any within the search radius. */
-  NotFound: 3;
+  NotFound: 64;
 }
 ```
 
-Outcome of a Street View coverage check, as `validate` answers it per row.
+One finding of a Street View coverage check. `validate` answers each row with the
+findings that apply, combined into one number.
 
 ### VIRTUAL_FLAGS
 
@@ -3130,7 +3133,7 @@ SELECTIONS: {
   Uncommitted: SelectionDescriptor<"Uncommitted">;
   Manual: SelectionDescriptor<"Manual">;
   Duplicates: SelectionDescriptor<"Duplicates">;
-  ValidationState: SelectionDescriptor<"ValidationState">;
+  Validation: SelectionDescriptor<"Validation">;
   Reviewed: SelectionDescriptor<"Reviewed">;
   Intersection: SelectionDescriptor<"Intersection">;
   Union: SelectionDescriptor<"Union">;
@@ -3394,7 +3397,7 @@ Load the full rule bodies for the given `ids`.
 `unstable` · since v0.10.3
 
 ```ts
-MAP_LOCAL_TYPES: readonly ["Locations", "Manual", "ValidationState", "Reviewed"]
+MAP_LOCAL_TYPES: readonly ["Locations", "Manual", "Validation", "Reviewed"]
 ```
 
 ### saveCurrentSelections

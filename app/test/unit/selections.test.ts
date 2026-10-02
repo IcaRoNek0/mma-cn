@@ -47,7 +47,7 @@ const bare =
 	(list: Selection[]): Selection[] =>
 		op(list.map((selection) => ({ selection, ghosted: false }))).map((r) => r.selection);
 
-import { ValidationState } from "@/bindings.consts";
+import { ValidationFlag } from "@/bindings.consts";
 import type { ListedSelection, PolygonGeometry, Selection } from "@/bindings.gen";
 import { setSetting } from "@/store/settings";
 
@@ -1029,22 +1029,27 @@ describe("selectionDisplayName", () => {
 		expect(selectionDisplayName(sel)).toBe("Manual selection");
 	});
 
-	it("display name for ValidationState", () => {
+	it("display name for a Validation flag", () => {
 		const sel = buildSelection({
-			type: "ValidationState",
+			type: "Validation",
 			locations: [1],
-			state: ValidationState.NotFound,
+			flag: ValidationFlag.NotFound,
 		});
 		expect(selectionDisplayName(sel)).toBe("Not found");
 	});
 
-	it("display name for ValidationState PanoIdBroke", () => {
+	it("display name for a Validation with no flags", () => {
+		const sel = buildSelection({ type: "Validation", locations: [2], flag: ValidationFlag.None });
+		expect(selectionDisplayName(sel)).toBe("Valid location");
+	});
+
+	it("display name for the OffDefault Validation flag", () => {
 		const sel = buildSelection({
-			type: "ValidationState",
+			type: "Validation",
 			locations: [2],
-			state: ValidationState.PanoIdBroke,
+			flag: ValidationFlag.OffDefault,
 		});
-		expect(selectionDisplayName(sel)).toBe("Pano ID broke");
+		expect(selectionDisplayName(sel)).toBe("Pinned away from the default pano");
 	});
 
 	it("display name for Intersection", () => {
@@ -1115,7 +1120,7 @@ describe("SELECTIONS.locations", () => {
 			.filter(([, d]) => d.locations)
 			.map(([type]) => type)
 			.sort();
-		expect(carriers).toEqual(["Locations", "Manual", "Reviewed", "ValidationState"]);
+		expect(carriers).toEqual(["Locations", "Manual", "Reviewed", "Validation"]);
 	});
 });
 
