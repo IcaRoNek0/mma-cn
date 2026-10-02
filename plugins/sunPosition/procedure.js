@@ -24,9 +24,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../../map-making-app/plugins/sunPosition/node_modules/suncalc/suncalc.js
+// sunPosition/node_modules/suncalc/suncalc.js
 var require_suncalc = __commonJS({
-  "../../map-making-app/plugins/sunPosition/node_modules/suncalc/suncalc.js"(exports, module) {
+  "sunPosition/node_modules/suncalc/suncalc.js"(exports, module) {
     (function() {
       "use strict";
       var PI = Math.PI, sin = Math.sin, cos = Math.cos, tan = Math.tan, asin = Math.asin, atan = Math.atan2, acos = Math.acos, rad = PI / 180;
