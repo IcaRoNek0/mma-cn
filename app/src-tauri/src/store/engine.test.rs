@@ -112,7 +112,7 @@ fn a_no_op_edit_pushes_no_undo_entry_and_keeps_redo() {
     let mut store = setup_store_with(&[loc(1, 0.0, 0.0)]);
     store.apply_undoable(vec![], vec![loc(2, 0.0, 0.0)]);
     let entry = store.edits.edit().undo.pop().unwrap();
-    store.apply_edit_reverse(&entry);
+    store.apply_edit_reverse(&entry.entry);
     store.edits.edit().redo.push(entry);
     let rev = store.overlay.rev();
 
@@ -133,7 +133,7 @@ fn undo_of_a_page_keeps_the_overlay_sorted() {
     assert_eq!(store.get_loc_by_id(700).unwrap().lat, 5.0);
 
     let entry = store.edits.edit().undo.pop().unwrap();
-    store.apply_edit_reverse(&entry);
+    store.apply_edit_reverse(&entry.entry);
     let ids: Vec<u32> = store.overlay.adds.iter().map(|l| l.id).collect();
     assert_eq!(ids, (1..=2000).collect::<Vec<u32>>());
     assert_eq!(store.get_loc_by_id(700).unwrap().lat, 0.0);
@@ -532,9 +532,12 @@ fn undo_stack_capped_at_max() {
 #[test]
 fn redo_stack_cleared_on_new_edit() {
     let mut store = setup_store_with(&[]);
-    store.edits.edit().redo.push(EditEntry {
-        created: vec![],
-        removed: vec![],
+    store.edits.edit().redo.push(LoggedEdit {
+        seq: u64::MAX,
+        entry: EditEntry {
+            created: vec![],
+            removed: vec![],
+        },
     });
     assert!(!store.edits.redo.is_empty());
 
@@ -794,9 +797,12 @@ fn open_status_reflects_undo_redo() {
     assert_eq!(s.values.can_undo, Some(true));
     assert_eq!(s.values.can_redo, Some(false));
 
-    store.edits.edit().redo.push(EditEntry {
-        created: vec![],
-        removed: vec![],
+    store.edits.edit().redo.push(LoggedEdit {
+        seq: u64::MAX,
+        entry: EditEntry {
+            created: vec![],
+            removed: vec![],
+        },
     });
     let s = store.open_status();
     assert_eq!(s.values.can_undo, Some(true));
@@ -2692,7 +2698,7 @@ fn patch_field_values_rename_collision_merges_rows_in_one_undoable_edit() {
     );
 
     let entry = store.edits.edit().undo.pop().unwrap();
-    edit_and_finish(&mut store, &entry, false);
+    edit_and_finish(&mut store, &entry.entry, false);
     assert_eq!(store.get_loc_by_id(1).unwrap().tags, vec![a]);
     assert_eq!(store.get_loc_by_id(2).unwrap().tags, vec![a, b]);
 }
@@ -2814,7 +2820,7 @@ fn set_tags_lets_add_win_over_remove_and_never_churns_the_row_that_had_it() {
 
     let entry = store.edits.edit().undo.pop().unwrap();
     assert_eq!(
-        entry.created.iter().map(|l| l.id).collect::<Vec<_>>(),
+        entry.entry.created.iter().map(|l| l.id).collect::<Vec<_>>(),
         vec![2],
         "row 1 already had it, so it is not stripped and re-added"
     );
@@ -2862,7 +2868,7 @@ fn set_tags_undo_restores_membership() {
     assert!(store.get_loc_by_id(1).unwrap().tags.is_empty());
 
     let entry = store.edits.edit().undo.pop().unwrap();
-    edit_and_finish(&mut store, &entry, false);
+    edit_and_finish(&mut store, &entry.entry, false);
 
     assert_eq!(store.get_loc_by_id(1).unwrap().tags, vec![t]);
     assert_eq!(tag_count(&mut store, t), 1);
@@ -3057,7 +3063,7 @@ fn an_indexed_existence_filter_agrees_with_the_scan_through_every_edit() {
 
     for holders in [&[2, 3, 10][..], &[2, 10], &[1, 2, 10], &[1, 2]] {
         let entry = store.edits.edit().undo.pop().unwrap();
-        edit_and_finish(&mut store, &entry, false);
+        edit_and_finish(&mut store, &entry.entry, false);
         assert_existence_matches_scan(&mut store, "k", holders);
     }
 }
@@ -3110,7 +3116,7 @@ fn coverage_follows_the_rows_that_hold_each_field() {
     assert_eq!(extra_coverage(&mut store, &all), counts(&[("a", 2)]));
 
     let entry = store.edits.edit().undo.pop().unwrap();
-    edit_and_finish(&mut store, &entry, false);
+    edit_and_finish(&mut store, &entry.entry, false);
     assert_eq!(
         extra_coverage(&mut store, &all),
         counts(&[("a", 3), ("b", 1)])
@@ -3860,43 +3866,56 @@ fn selection_cell_segment_adapts_format() {
 
 #[test]
 fn history_max_id_spans_both_stacks_and_both_sides() {
+    let logged = |seq, created, removed| LoggedEdit {
+        seq,
+        entry: EditEntry { created, removed },
+    };
     let undo = vec![
-        EditEntry {
-            created: vec![loc(3, 0.0, 0.0)],
-            removed: vec![],
-        },
-        EditEntry {
-            created: vec![],
-            removed: vec![loc(112, 0.0, 0.0)],
-        },
+        logged(0, vec![loc(3, 0.0, 0.0)], vec![]),
+        logged(1, vec![], vec![loc(112, 0.0, 0.0)]),
     ];
-    let redo = vec![EditEntry {
-        created: vec![loc(7, 0.0, 0.0)],
-        removed: vec![loc(9, 0.0, 0.0)],
-    }];
+    let redo = vec![logged(2, vec![loc(7, 0.0, 0.0)], vec![loc(9, 0.0, 0.0)])];
     assert_eq!(history_max_id(&undo, &redo), 112);
     assert_eq!(history_max_id(&[], &[]), 0);
 }
 
 // Simulate "close map" (store_close_map + save_edit_history) and "reopen"
 // (store_open_map's delta/history load + next_id seeding) at the Store level,
-// using the same serialization roundtrips the app uses.
+// through the same delta bytes and history rows the app writes.
 fn close_and_reopen(store: &Store) -> Store {
+    let conn = history_db();
+    close_and_reopen_on(&conn, store)
+}
+
+fn history_db() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::store::storage::run_migrations_on(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO maps (id, name, settings, created_at, updated_at) VALUES ('m', '', '{}', '', '')",
+        [],
+    )
+    .unwrap();
+    conn
+}
+
+fn close_and_reopen_on(conn: &rusqlite::Connection, store: &Store) -> Store {
     let delta_bytes = overlay_delta_bytes(&store.overlay).unwrap();
-    let undo_bytes = rmp_serde::to_vec_named(&store.edits.undo).unwrap();
-    let redo_bytes = rmp_serde::to_vec_named(&store.edits.redo).unwrap();
+    save_edit_history(conn, "m", &store.edits).unwrap();
 
     let delta: Overlay = rmp_serde::from_slice(&delta_bytes).unwrap();
-    let undo: Vec<EditEntry> = rmp_serde::from_slice(&undo_bytes).unwrap();
-    let redo: Vec<EditEntry> = rmp_serde::from_slice(&redo_bytes).unwrap();
+    let edits = load_edit_history(conn, "m").unwrap();
 
     let mut reopened = Store::new();
     reopened.map_id = store.map_id.clone();
     reopened.batch = Some(empty_batch());
     reopened.overlay = Tracked::unsaved(delta);
-    reopened.next_id = seed_next_id(0, &reopened.overlay.adds, &undo, &redo);
+    reopened.next_id = seed_next_id(
+        0,
+        &reopened.overlay.adds,
+        history_max_id(&edits.undo, &edits.redo),
+    );
     reopened.alive_count = Tracked::new(reopened.overlay.adds.len());
-    reopened.edits = Tracked::new(EditStacks { undo, redo });
+    reopened.edits = Tracked::new(edits);
     reopened
 }
 
@@ -3927,14 +3946,92 @@ fn delete_loc(store: &mut Store, id: u32) {
 // store_undo / store_redo replay.
 fn press_undo(store: &mut Store) {
     let entry = store.edits.edit().undo.pop().unwrap();
-    store.apply_edit_reverse(&entry);
+    store.apply_edit_reverse(&entry.entry);
     store.edits.edit().redo.push(entry);
 }
 
 fn press_redo(store: &mut Store) {
     let entry = store.edits.edit().redo.pop().unwrap();
-    store.apply_edit_forward(&entry);
-    store.push_undo(entry);
+    store.apply_edit_forward(&entry.entry);
+    store.edits.edit().push_undo(entry);
+}
+
+fn stack_ids(edits: &[LoggedEdit]) -> Vec<(u64, Vec<u32>)> {
+    edits
+        .iter()
+        .map(|e| (e.seq, e.entry.created.iter().map(|l| l.id).collect()))
+        .collect()
+}
+
+#[test]
+fn history_survives_repeated_close_and_reopen_in_stack_order() {
+    let conn = history_db();
+    let mut store = setup_store_with(&[]);
+    store.map_id = Some("m".into());
+    for i in 0..5 {
+        click_add(&mut store, f64::from(i), 0.0);
+    }
+    press_undo(&mut store);
+    press_undo(&mut store);
+    let mut store = close_and_reopen_on(&conn, &store);
+    press_redo(&mut store);
+    let store = close_and_reopen_on(&conn, &store);
+
+    let undo = stack_ids(&store.edits.undo);
+    let redo = stack_ids(&store.edits.redo);
+    assert_eq!(
+        undo.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
+    assert_eq!(
+        redo,
+        vec![(4, vec![5])],
+        "the one edit still undone is on top of redo"
+    );
+    assert_eq!(stored_history_max_id(&conn, "m").unwrap(), 5);
+}
+
+#[test]
+fn a_close_writes_only_what_changed_since_the_last() {
+    let conn = history_db();
+    let mut store = setup_store_with(&[]);
+    for i in 0..3 {
+        click_add(&mut store, f64::from(i), 0.0);
+    }
+    save_edit_history(&conn, "m", &store.edits).unwrap();
+
+    let before = conn.total_changes();
+    save_edit_history(&conn, "m", &store.edits).unwrap();
+    assert_eq!(
+        conn.total_changes(),
+        before,
+        "an unchanged history writes nothing"
+    );
+
+    click_add(&mut store, 9.0, 0.0);
+    save_edit_history(&conn, "m", &store.edits).unwrap();
+    assert_eq!(conn.total_changes(), before + 1, "one new edit is one row");
+
+    press_undo(&mut store);
+    save_edit_history(&conn, "m", &store.edits).unwrap();
+    assert_eq!(conn.total_changes(), before + 2, "an undo moves one row");
+}
+
+#[test]
+fn edits_after_a_cleared_history_never_reuse_a_stored_number() {
+    let conn = history_db();
+    let mut store = setup_store_with(&[]);
+    click_add(&mut store, 0.0, 0.0);
+    click_add(&mut store, 1.0, 0.0);
+    save_edit_history(&conn, "m", &store.edits).unwrap();
+
+    let edits = store.edits.edit();
+    edits.undo.clear();
+    edits.redo.clear();
+    let id = click_add(&mut store, 2.0, 0.0);
+    let store = close_and_reopen_on(&conn, &store);
+
+    assert_eq!(stack_ids(&store.edits.undo), vec![(2, vec![id])]);
 }
 
 fn assert_bake_sorted(store: &mut Store) {
@@ -5681,8 +5778,8 @@ fn uploaded_add_matches_direct_add() {
         uploaded_store.edits.undo.len()
     );
     assert_eq!(
-        direct_store.edits.undo.last().unwrap().created,
-        uploaded_store.edits.undo.last().unwrap().created
+        direct_store.edits.undo.last().unwrap().entry.created,
+        uploaded_store.edits.undo.last().unwrap().entry.created
     );
 }
 

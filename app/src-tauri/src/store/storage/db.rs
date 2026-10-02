@@ -450,4 +450,16 @@ pub(super) const MIGRATIONS: &[(u32, &str)] = &[
             preferences TEXT NOT NULL
           );",
     ),
+    (
+        25,
+        "CREATE TABLE IF NOT EXISTS edit_entries (
+            map_id TEXT    NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+            seq    INTEGER NOT NULL,
+            stack  INTEGER NOT NULL,
+            max_id INTEGER NOT NULL,
+            entry  BLOB    NOT NULL,
+            PRIMARY KEY (map_id, seq)
+          );
+          DROP TABLE IF EXISTS edit_history;",
+    ),
 ];

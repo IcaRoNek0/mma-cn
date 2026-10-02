@@ -7,10 +7,53 @@ use std::time::Instant;
 
 pub(super) const MAX_UNDO_ENTRIES: usize = 1000;
 
+/// The undo and redo stacks. Undo holds ascending `seq`, redo descending, and every undo
+/// `seq` is below every redo `seq`, so the order of both is recoverable from `seq` alone.
 #[derive(Default)]
 pub(crate) struct EditStacks {
-    pub undo: Vec<EditEntry>,
-    pub redo: Vec<EditEntry>,
+    pub undo: Vec<LoggedEdit>,
+    pub redo: Vec<LoggedEdit>,
+    next_seq: u64,
+}
+
+/// An edit with the number it is stored under. Never reused within a map, so a stored
+/// row with a live `seq` always holds that same edit.
+pub(crate) struct LoggedEdit {
+    pub seq: u64,
+    pub entry: EditEntry,
+}
+
+impl EditStacks {
+    /// Stacks loaded from disk; new edits number after every stored one.
+    pub(crate) fn loaded(undo: Vec<LoggedEdit>, redo: Vec<LoggedEdit>) -> Self {
+        let next_seq = undo
+            .iter()
+            .chain(&redo)
+            .map(|e| e.seq + 1)
+            .max()
+            .unwrap_or(0);
+        Self {
+            undo,
+            redo,
+            next_seq,
+        }
+    }
+
+    /// Push a new edit onto the undo stack, capping at MAX_UNDO_ENTRIES. O(1) amortized.
+    pub(crate) fn record(&mut self, entry: EditEntry) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.push_undo(LoggedEdit { seq, entry });
+    }
+
+    /// Return an edit to the undo stack, as redo does, under the cap.
+    pub(crate) fn push_undo(&mut self, edit: LoggedEdit) {
+        self.undo.push(edit);
+        if self.undo.len() > MAX_UNDO_ENTRIES {
+            let excess = self.undo.len() - MAX_UNDO_ENTRIES;
+            self.undo.drain(..excess);
+        }
+    }
 }
 
 /// One undo/redo entry. Records the locations created and removed by a single user action.
@@ -24,27 +67,33 @@ pub(crate) struct EditEntry {
 
 /// Highest location id referenced anywhere in the undo/redo stacks. Used to seed
 /// `next_id` on map open so undo/redo replay can never collide with a fresh allocation.
-pub(crate) fn history_max_id(undo: &[EditEntry], redo: &[EditEntry]) -> u32 {
+pub(crate) fn history_max_id(undo: &[LoggedEdit], redo: &[LoggedEdit]) -> u32 {
     undo.iter()
-        .chain(redo.iter())
-        .flat_map(|e| e.created.iter().chain(e.removed.iter()))
-        .map(|l| l.id)
+        .chain(redo)
+        .map(|e| e.entry.max_id())
         .max()
         .unwrap_or(0)
+}
+
+impl EditEntry {
+    /// Highest location id this edit can re-materialize.
+    pub(crate) fn max_id(&self) -> u32 {
+        self.created
+            .iter()
+            .chain(&self.removed)
+            .map(|l| l.id)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// Open-time `next_id` seed. Must exceed every id the system can re-materialize:
 /// base rows, uncommitted overlay adds, and ids replayable from persisted undo/redo
 /// (replay resurrects locations with their original ids; re-allocating one would
 /// create a duplicate and break the strictly-sorted bake invariant).
-pub(crate) fn seed_next_id(
-    base_max: u32,
-    adds: &[Location],
-    undo: &[EditEntry],
-    redo: &[EditEntry],
-) -> u32 {
+pub(crate) fn seed_next_id(base_max: u32, adds: &[Location], history_max: u32) -> u32 {
     let max_add = adds.iter().map(|l| l.id).max().unwrap_or(0);
-    base_max.max(max_add).max(history_max_id(undo, redo)) + 1
+    base_max.max(max_add).max(history_max) + 1
 }
 
 impl Store {
@@ -141,13 +190,8 @@ impl Store {
         result
     }
 
-    /// Push an edit onto the undo stack, capping at MAX_UNDO_ENTRIES. O(1) amortized.
+    /// Push a new edit onto the undo stack.
     pub(crate) fn push_undo(&mut self, entry: EditEntry) {
-        let undo = &mut self.edits.edit().undo;
-        undo.push(entry);
-        if undo.len() > MAX_UNDO_ENTRIES {
-            let excess = undo.len() - MAX_UNDO_ENTRIES;
-            undo.drain(..excess);
-        }
+        self.edits.edit().record(entry);
     }
 }

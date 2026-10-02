@@ -705,7 +705,7 @@ fn fresh_full_chain_succeeds() {
     let expected = all_versions();
     assert_eq!(versions, expected);
 
-    for table in ["maps", "commits", "seen", "edit_history", "review_sessions"] {
+    for table in ["maps", "commits", "seen", "edit_entries", "review_sessions"] {
         assert!(
             table_exists(&conn, table),
             "{table} should exist after full chain"
@@ -819,7 +819,13 @@ fn every_prefix_upgrades_to_head() {
             )
             .unwrap();
         }
-        if k >= 3 {
+        if k >= 25 {
+            conn.execute(
+                "INSERT INTO edit_entries (map_id, seq, stack, max_id, entry) VALUES ('map1', 0, 0, 0, x'90')",
+                [],
+            )
+            .unwrap();
+        } else if k >= 3 {
             conn.execute(
                 "INSERT INTO edit_history (map_id, undo_stack, redo_stack) VALUES ('map1', '[]', '[]')",
                 [],
@@ -866,11 +872,16 @@ fn every_prefix_upgrades_to_head() {
                 "prefix k={k}: seen row must survive"
             );
         }
-        if k >= 3 {
+        if k >= 25 {
             assert_eq!(
-                count_rows(&conn, "edit_history"),
+                count_rows(&conn, "edit_entries"),
                 1,
-                "prefix k={k}: edit_history row must survive"
+                "prefix k={k}: edit_entries row must survive"
+            );
+        } else {
+            assert!(
+                !table_exists(&conn, "edit_history"),
+                "prefix k={k}: v25 retires the single-blob history"
             );
         }
 

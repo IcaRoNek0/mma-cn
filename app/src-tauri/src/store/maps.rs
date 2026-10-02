@@ -773,7 +773,7 @@ pub fn store_duplicate_map(
 /// Callers evict any live in-memory store first -- this only touches persistence.
 fn delete_map_data(conn: &Connection, id: &str) -> AppResult<bool> {
     let removed = conn.execute("DELETE FROM maps WHERE id = ?1", params![id])?;
-    conn.execute("DELETE FROM edit_history WHERE map_id = ?1", params![id])?;
+    conn.execute("DELETE FROM edit_entries WHERE map_id = ?1", params![id])?;
     conn.execute("DELETE FROM commits WHERE map_id = ?1", params![id])?;
 
     if let Ok(path) = storage::arrow_path(id) {

@@ -735,7 +735,7 @@ fn a_duplicate_is_an_independent_copy_without_the_originals_history() {
     .unwrap();
     conn.execute_batch(
         "INSERT INTO commits (id, map_id, location_count, created_at) VALUES ('c1', 'm1', 2, 'now');
-         INSERT INTO edit_history (map_id) VALUES ('m1');
+         INSERT INTO edit_entries (map_id, seq, stack, max_id, entry) VALUES ('m1', 0, 0, 0, x'90');
          INSERT INTO remote_mapping (provider, map_id, local_id, remote_id, hash) VALUES ('mm', 'm1', 1, 9, 'h');
          INSERT INTO sync_log (map_id, provider, started_at, entry) VALUES ('m1', 'mm', 0, '{}');
          INSERT INTO review_sessions (id, map_id, source_key, ordering, cursor_id, created_at, updated_at)
@@ -792,7 +792,7 @@ fn a_duplicate_is_an_independent_copy_without_the_originals_history() {
 
     for table in [
         "commits",
-        "edit_history",
+        "edit_entries",
         "remote_mapping",
         "sync_log",
         "review_sessions",

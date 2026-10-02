@@ -148,14 +148,14 @@ async fn open_claimed_map(
             0
         };
 
-        let (undo, redo) = load_edit_history(&map_id2)?;
+        let edits = load_edit_history(&storage::open_db()?, &map_id2)?;
 
         log::debug!("[store_open] TOTAL={}ms", t_total.elapsed().as_millis());
-        Ok::<_, AppError>((batch, mmap_handle, max_id, undo, redo, delta))
+        Ok::<_, AppError>((batch, mmap_handle, max_id, edits, delta))
     })
     .await??;
 
-    let (batch, mmap_handle, max_id, undo, redo, delta) = result;
+    let (batch, mmap_handle, max_id, edits, delta) = result;
 
     let mut store = Store::new();
     store.bump();
@@ -168,7 +168,11 @@ async fn open_claimed_map(
     if let Some(d) = delta {
         store.overlay = Tracked::unsaved(d);
     }
-    store.next_id = seed_next_id(max_id, &store.overlay.adds, &undo, &redo);
+    store.next_id = seed_next_id(
+        max_id,
+        &store.overlay.adds,
+        history_max_id(&edits.undo, &edits.redo),
+    );
 
     let LocationAggregates { alive, bounds } = store.scan_locations();
     store.alive_count = Tracked::new(alive);
@@ -189,7 +193,7 @@ async fn open_claimed_map(
         let extra = maps::MapExtra::from_json(&extra_str);
         store.field_defs = Tracked::new(extra.fields.unwrap_or_default());
     }
-    store.edits = Tracked::new(EditStacks { undo, redo });
+    store.edits = Tracked::new(edits);
 
     let status = store.open_status();
     let mut mgr = state.lock()?;
@@ -560,10 +564,10 @@ fn copy_to_map(
         }
 
         let t_hist = Instant::now();
-        let (undo, redo) = load_edit_history(&target_map_id)?;
+        let history_max = stored_history_max_id(&conn, &target_map_id)?;
         let hist_ms = t_hist.elapsed().as_millis();
         let base_max = existing.iter().map(|l| l.id).max().unwrap_or(0);
-        let next = seed_next_id(base_max, &[], &undo, &redo);
+        let next = seed_next_id(base_max, &[], history_max);
         for (loc, id) in fresh.iter_mut().zip(next..) {
             loc.id = id;
         }
@@ -730,14 +734,14 @@ pub async fn store_undo(
 ) -> AppResult<MutationResult> {
     with_store!(label, state, |store| {
         let _t = Instant::now();
-        let entry = store.edits.edit().undo.pop().ok_or("nothing to undo")?;
+        let edit = store.edits.edit().undo.pop().ok_or("nothing to undo")?;
         log::debug!(
             "[UNDO] stack_depth={} created={} removed={}",
             store.edits.undo.len(),
-            entry.created.len(),
-            entry.removed.len()
+            edit.entry.created.len(),
+            edit.entry.removed.len()
         );
-        let changes = store.apply_edit_reverse(&entry);
+        let changes = store.apply_edit_reverse(&edit.entry);
         log::debug!(
             "[UNDO] apply_edit={}ms changes: +{} ~{} -{}",
             _t.elapsed().as_millis(),
@@ -745,7 +749,7 @@ pub async fn store_undo(
             changes.updated.len(),
             changes.removed.len()
         );
-        store.edits.edit().redo.push(entry);
+        store.edits.edit().redo.push(edit);
         Ok(store.finish_mutation(&changes))
     })
 }
@@ -759,14 +763,14 @@ pub async fn store_redo(
 ) -> AppResult<MutationResult> {
     with_store!(label, state, |store| {
         let _t = Instant::now();
-        let entry = store.edits.edit().redo.pop().ok_or("nothing to redo")?;
+        let edit = store.edits.edit().redo.pop().ok_or("nothing to redo")?;
         log::debug!(
             "[REDO] stack_depth={} created={} removed={}",
             store.edits.redo.len(),
-            entry.created.len(),
-            entry.removed.len()
+            edit.entry.created.len(),
+            edit.entry.removed.len()
         );
-        let changes = store.apply_edit_forward(&entry);
+        let changes = store.apply_edit_forward(&edit.entry);
         log::debug!(
             "[REDO] apply_edit={}ms changes: +{} ~{} -{}",
             _t.elapsed().as_millis(),
@@ -774,7 +778,7 @@ pub async fn store_redo(
             changes.updated.len(),
             changes.removed.len()
         );
-        store.push_undo(entry);
+        store.edits.edit().push_undo(edit);
         Ok(store.finish_mutation(&changes))
     })
 }
