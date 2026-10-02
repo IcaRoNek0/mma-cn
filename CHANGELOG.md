@@ -1,3 +1,32 @@
+## v0.11.4 - 2026-10-01
+- Each map layer gets its own button beside the opacity slider
+- Validation reports every finding for a location instead of just one, and the validate dialog picks which categories to report, adding "pinned away from the default pano" and "default pano is not the newest"
+- Generator, heatmap, and Vali settings are saved with each map
+- New maps start from saved default preferences, set from the current map in Settings
+- Duplicate a map from the map list, or save the open one as a copy
+- Opening and closing large maps is much faster
+- Undoing an enrichment run takes one step instead of one per batch
+- The tag menu can remove only the clicked tag from the selection when several are selected
+- Empty tag folders keep their place in the tag order and can be reordered
+- Hotkeys work on non-Latin keyboard layouts
+- A map can create its GeoGuessr draft or map-making.app map instead of linking an existing one
+- The sync sidebar keeps a history of every sync pass
+- A map can follow a map file on disk or at a URL, taking its changes
+- Tags created by a sync pull take the source's color and order
+- The map generator imports and exports its regions and settings as one file, and can target a spacing instead of a count
+- Faster blue-line sampling
+- Faster group disambiguation on large maps
+- Selected markers get their own opacity on the layer slider
+- Vali editor UI updated to 3.2.1
+- Fixed the active marker not showing while markers are below full opacity
+- Fixed a press the map takes as a pan closing the polygon on the next click
+- Fixed Street View links that carry a Plus Code or no position at all failing to import
+- Fixed the first image added to a report not attaching
+- Fixed importing a Vali definition erroring
+- Fixed a modal returning to the wrong place after shrinking and growing back
+
+Upgrading clears existing undo histories once.
+
 ## v0.11.3 - 2026-09-28
 - The export dialog now can save three formats: GeoGuessr, map-making.app, or local
 - Map clicks can create a location, select only, or snap to the nearest location via map settings
