@@ -13,13 +13,6 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-/// Bytes written by a save; 0 when there was nothing to save.
-#[derive(serde::Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveResult {
-    pub saved_bytes: usize,
-}
-
 /// Load the uncommitted-delta sidecar. An unreadable delta is set aside as a
 /// `.corrupt` sibling - never left in place where the next autosave would
 /// overwrite it - and the user is warned via a `store-warning` event.
@@ -103,10 +96,6 @@ pub(crate) struct Unsaved {
 }
 
 impl Unsaved {
-    pub(crate) fn delta_len(&self) -> usize {
-        self.delta.as_ref().map_or(0, |d| d.value().len())
-    }
-
     /// Delta before history, so a crash between the two leaves history behind the data, never ahead of it.
     pub(crate) fn write(
         &self,
@@ -156,30 +145,6 @@ impl Store {
             self.edits.saved_at(edits.rev());
         }
     }
-}
-
-/// Write a map's dirty state: delta sidecar (if any), location and pending counts, and
-/// tags JSON (if any), for a map that is not open.
-pub(crate) fn persist_dirty(
-    map_id: &str,
-    delta_data: Option<Vec<u8>>,
-    alive: usize,
-    pending: CommitDiff,
-    tags_json: Option<String>,
-) -> AppResult<()> {
-    if let Some(delta_data) = delta_data {
-        let path = storage::arrow_delta_path(map_id)?;
-        storage::atomic_write_bytes(&path, &delta_data)?;
-    }
-    let conn = storage::open_db()?;
-    storage::set_map_counts(&conn, map_id, alive, pending)?;
-    if let Some(tags_json) = tags_json {
-        conn.execute(
-            "UPDATE maps SET tags = ?1 WHERE id = ?2",
-            rusqlite::params![tags_json, map_id],
-        )?;
-    }
-    Ok(())
 }
 
 fn stack_code(stack: Stack) -> i64 {

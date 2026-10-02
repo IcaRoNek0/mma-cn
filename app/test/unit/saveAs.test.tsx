@@ -16,7 +16,7 @@ vi.mock("@/lib/commands", () => ({
 		storeDuplicateMap: vi.fn(async (_id: string, name: string) => ({ id: "copy", name })),
 		storeUpdateMapMeta: vi.fn(async () => null),
 		storeListMaps: vi.fn(async () => []),
-		storeSaveDirty: vi.fn(async () => ({ savedBytes: 0 })),
+		storeSaveDirty: vi.fn(async () => null),
 		storeCloseMap: vi.fn(async () => null),
 		storeImportCancel: vi.fn(async () => null),
 	},

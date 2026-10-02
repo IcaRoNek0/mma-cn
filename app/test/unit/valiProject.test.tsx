@@ -16,7 +16,7 @@ vi.mock("@/lib/commands", () => ({
 	cmd: {
 		valiDataStatus: vi.fn(async () => []),
 		storeUpdateMapMeta: vi.fn(async () => null),
-		storeSaveDirty: vi.fn(async () => ({ savedBytes: 0 })),
+		storeSaveDirty: vi.fn(async () => null),
 	},
 }));
 

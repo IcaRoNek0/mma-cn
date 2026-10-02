@@ -610,7 +610,7 @@ this, never the contents of a result.
 
 ### SYNC_PROVIDERS
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 SYNC_PROVIDERS: {
@@ -630,7 +630,7 @@ Every sync provider: which way it carries changes, and what it keeps of a map.
 
 ### SyncDirection
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 SyncDirection: {
@@ -643,7 +643,7 @@ Which way a link carries changes.
 
 ### SyncTrigger
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 SyncTrigger: {
@@ -662,7 +662,7 @@ What started a sync pass.
 
 ### ValidationFlag
 
-`stable` · unreleased
+`stable` · since v0.11.4
 
 ```ts
 ValidationFlag: {
@@ -1490,7 +1490,7 @@ Remove a plugin from the registry.
 
 ### mapStorage
 
-`stable` · unreleased
+`stable` · since v0.11.4
 
 ```ts
 mapStorage(id: string): MapPluginStorage
@@ -4270,7 +4270,7 @@ The cached map list and its refresh.
 
 ### copyName
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 copyName(name: string): string
@@ -4310,7 +4310,7 @@ Permanently delete a map and all its data. Not undoable.
 
 ### duplicateMap
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 duplicateMap(id: string, name: string): Promise<MapMeta>
@@ -4924,7 +4924,7 @@ The parse error for `src`, or `null` when it parses.
 
 #### cmd.fileSourceProbe
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.fileSourceProbe(address: string): Promise<FileSource>
@@ -5106,7 +5106,7 @@ Manifests of every installed plugin.
 
 #### cmd.mapMakingCreateMap
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.mapMakingCreateMap(name: string): Promise<MmMapSummary>
@@ -5223,7 +5223,7 @@ Whether each of the points sits inside the polygon.
 
 #### cmd.polygonFill
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.polygonFill(polygon: PolygonGeometry): Promise<[number, number][][][]>
@@ -5774,7 +5774,7 @@ Returns groups of IDs, each with at least two members.
 
 #### cmd.storeDuplicateMap
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.storeDuplicateMap(id: string, name: string): Promise<MapMeta>
@@ -5897,7 +5897,7 @@ Fetch a single map's metadata by ID. Returns `null` if not found.
 
 #### cmd.storeGetMapDefaults
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.storeGetMapDefaults(): Promise<MapPreferences | null>
@@ -6230,7 +6230,7 @@ cmd.storeSample(selector: Selector, n: number): Promise<number[]>
 `unstable` · since v0.4.0
 
 ```ts
-cmd.storeSaveDirty(): Promise<SaveResult>
+cmd.storeSaveDirty(): Promise<null>
 ```
 
 Save uncommitted changes to disk. No-op when nothing has changed.
@@ -6348,7 +6348,7 @@ Set (or clear) the active location.
 
 #### cmd.storeSetMapDefaults
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.storeSetMapDefaults(preferences: MapPreferences | null): Promise<null>
@@ -6486,7 +6486,7 @@ Distinct values of `field` across the selected set, sorted.
 
 #### cmd.syncLogAppend
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.syncLogAppend(
@@ -6500,7 +6500,7 @@ Record a settled sync pass for a map. Only the most recent passes per provider a
 
 #### cmd.syncLogList
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 cmd.syncLogList(provider: string, mapId: string): Promise<SyncLogEntry[]>
@@ -7900,7 +7900,7 @@ The validation categories users pick from, over the flags a check answers.
 
 ### STANDARD_VALIDATION_CATEGORIES
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 STANDARD_VALIDATION_CATEGORIES: string[]
@@ -7908,7 +7908,7 @@ STANDARD_VALIDATION_CATEGORIES: string[]
 
 ### VALIDATION_CATEGORIES
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 VALIDATION_CATEGORIES: readonly ValidationCategory[]
@@ -7916,7 +7916,7 @@ VALIDATION_CATEGORIES: readonly ValidationCategory[]
 
 ### validationCategory
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 validationCategory(key: string): ValidationCategory | null
@@ -8570,7 +8570,7 @@ of work has elapsed.
 
 ### pickFiles
 
-`unstable` · unreleased
+`unstable` · since v0.11.4
 
 ```ts
 pickFiles(

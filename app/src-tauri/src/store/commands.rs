@@ -577,17 +577,16 @@ fn copy_to_map(
             Overlay::default()
         };
         delta.adds.extend(fresh);
-        let bytes = rmp_serde::to_vec_named(&delta)?;
-        let alive = existing.len() + copied as usize;
+        storage::atomic_write_bytes(&delta_path, &rmp_serde::to_vec_named(&delta)?)?;
         let mut pending = storage::map_pending(&conn, &target_map_id)?;
         pending.added += copied;
-        persist_dirty(
+        storage::set_map_counts(
+            &conn,
             &target_map_id,
-            Some(bytes),
-            alive,
+            existing.len() + copied as usize,
             pending,
-            Some(serialize_tags_json(&target_tags)),
         )?;
+        write_tags_json(&conn, &target_map_id, &target_tags)?;
         log::debug!(
             "[cmd] copy_to_map closed-target read={}ms history={}ms save={}ms total={}ms",
             read_ms,
@@ -609,7 +608,7 @@ fn copy_to_map(
 pub async fn store_save_dirty(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
-) -> AppResult<SaveResult> {
+) -> AppResult<()> {
     let _t = Instant::now();
     log::debug!("[cmd] store_save_dirty ENTER");
     // The snapshot carries the revision it serialized, so the store can be told exactly
@@ -620,12 +619,11 @@ pub async fn store_save_dirty(
         let store = mgr.store_for_window(&label.0)?;
         let map_id = store.map_id.clone().ok_or("no map open")?;
         let Some(unsaved) = store.unsaved()? else {
-            return Ok(SaveResult { saved_bytes: 0 });
+            return Ok(());
         };
         (map_id, unsaved)
     };
 
-    let size = unsaved.delta_len();
     let map_id2 = map_id.clone();
     let unsaved = task::spawn_blocking(move || {
         let delta_path = storage::arrow_delta_path(&map_id2)?;
@@ -645,11 +643,10 @@ pub async fn store_save_dirty(
     }
 
     log::debug!(
-        "[cmd] store_save_dirty total={}ms size={}",
-        _t.elapsed().as_millis(),
-        size
+        "[cmd] store_save_dirty total={}ms",
+        _t.elapsed().as_millis()
     );
-    Ok(SaveResult { saved_bytes: size })
+    Ok(())
 }
 
 /// Return the map's current location count, store version, and unsaved-change count.

@@ -17,7 +17,7 @@ vi.mock("@/store/mapList", () => ({
 vi.mock("@/lib/commands", () => ({
 	cmd: {
 		storeUpdateMapMeta: vi.fn(async () => null),
-		storeSaveDirty: vi.fn(async () => ({ savedBytes: 0 })),
+		storeSaveDirty: vi.fn(async () => null),
 	},
 }));
 vi.mock("@/plugins/generator/ui/SettingsPanel", () => ({ SettingsPanel: () => null }));

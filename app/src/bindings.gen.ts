@@ -153,7 +153,7 @@ export const commands = {
 	/**  Close the open map, saving unsaved changes first. */
 	storeCloseMap: () => __TAURI_INVOKE<null>("store_close_map"),
 	/**  Save uncommitted changes to disk. No-op when nothing has changed. */
-	storeSaveDirty: () => __TAURI_INVOKE<SaveResult>("store_save_dirty"),
+	storeSaveDirty: () => __TAURI_INVOKE<null>("store_save_dirty"),
 	/**  Copy locations already stored in this map into another map. */
 	storeCopyLocationsToMap: (targetMapId: string, selector: Selector) => __TAURI_INVOKE<CopyToMapResult>("store_copy_locations_to_map", { targetMapId, selector }),
 	/**
@@ -1777,11 +1777,6 @@ export type Rows = { kind: "inline"; locations: Location[] } | { kind: "file"; p
 export type RowsRun = {
 	rows: Location[],
 	failed: { [key in string]: number[] },
-};
-
-/**  Bytes written by a save; 0 when there was nothing to save. */
-export type SaveResult = {
-	savedBytes: number,
 };
 
 export type SavedSelection = {
