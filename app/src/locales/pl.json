@@ -1075,6 +1075,18 @@
 		"other": "Usuń z zaznaczenia ({n} lokalizacji)"
 	},
 	"Remove from toolbar": "Usuń z paska narzędzi",
+	"Remove only these {tags} tags from selection ({n} locations)": {
+		"one": "Usuń tylko te tagi z zaznaczenia (tagów: {tags}, {n} lokalizacja)",
+		"few": "Usuń tylko te tagi z zaznaczenia (tagów: {tags}, {n} lokalizacje)",
+		"many": "Usuń tylko te tagi z zaznaczenia (tagów: {tags}, {n} lokalizacji)",
+		"other": "Usuń tylko te tagi z zaznaczenia (tagów: {tags}, {n} lokalizacji)"
+	},
+	"Remove only this tag from selection ({n} locations)": {
+		"one": "Usuń tylko ten tag z zaznaczenia ({n} lokalizacja)",
+		"few": "Usuń tylko ten tag z zaznaczenia ({n} lokalizacje)",
+		"many": "Usuń tylko ten tag z zaznaczenia ({n} lokalizacji)",
+		"other": "Usuń tylko ten tag z zaznaczenia ({n} lokalizacji)"
+	},
 	"Remove separator": "Usuń separator",
 	"Remove this document's links from every tag": "Usuń linki do tego dokumentu ze wszystkich tagów",
 	"Remove this tag only ({n} locations)": {

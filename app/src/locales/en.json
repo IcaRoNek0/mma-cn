@@ -1021,6 +1021,14 @@
 		"other": "Remove from selection ({n} locations)"
 	},
 	"Remove from toolbar": "Remove from toolbar",
+	"Remove only these {tags} tags from selection ({n} locations)": {
+		"one": "Remove only these {tags} tags from selection ({n} location)",
+		"other": "Remove only these {tags} tags from selection ({n} locations)"
+	},
+	"Remove only this tag from selection ({n} locations)": {
+		"one": "Remove only this tag from selection ({n} location)",
+		"other": "Remove only this tag from selection ({n} locations)"
+	},
 	"Remove separator": "Remove separator",
 	"Remove this document's links from every tag": "Remove this document's links from every tag",
 	"Remove this tag only ({n} locations)": {

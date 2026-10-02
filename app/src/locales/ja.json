@@ -994,6 +994,12 @@
 		"other": "選択から削除（{n} 地点）"
 	},
 	"Remove from toolbar": "ツールバーから削除",
+	"Remove only these {tags} tags from selection ({n} locations)": {
+		"other": "この {tags} 個のタグのみ選択から削除（{n} 地点）"
+	},
+	"Remove only this tag from selection ({n} locations)": {
+		"other": "このタグのみ選択から削除（{n} 地点）"
+	},
 	"Remove separator": "区切りを削除",
 	"Remove this document's links from every tag": "このドキュメントへのリンクをすべてのタグから削除",
 	"Remove this tag only ({n} locations)": {

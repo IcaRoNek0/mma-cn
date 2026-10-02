@@ -1048,6 +1048,16 @@
 		"other": "Quitar de la selección ({n} ubicaciones)"
 	},
 	"Remove from toolbar": "Quitar de la barra de herramientas",
+	"Remove only these {tags} tags from selection ({n} locations)": {
+		"one": "Quitar solo estas {tags} etiquetas de la selección ({n} ubicación)",
+		"many": "Quitar solo estas {tags} etiquetas de la selección ({n} ubicaciones)",
+		"other": "Quitar solo estas {tags} etiquetas de la selección ({n} ubicaciones)"
+	},
+	"Remove only this tag from selection ({n} locations)": {
+		"one": "Quitar solo esta etiqueta de la selección ({n} ubicación)",
+		"many": "Quitar solo esta etiqueta de la selección ({n} ubicaciones)",
+		"other": "Quitar solo esta etiqueta de la selección ({n} ubicaciones)"
+	},
 	"Remove separator": "Quitar el separador",
 	"Remove this document's links from every tag": "Quitar los enlaces de este documento de todas las etiquetas",
 	"Remove this tag only ({n} locations)": {

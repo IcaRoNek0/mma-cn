@@ -994,6 +994,12 @@
 		"other": "从选择中移除（{n} 个位置）"
 	},
 	"Remove from toolbar": "从工具栏移除",
+	"Remove only these {tags} tags from selection ({n} locations)": {
+		"other": "仅从选择中移除这 {tags} 个标签（{n} 个位置）"
+	},
+	"Remove only this tag from selection ({n} locations)": {
+		"other": "仅从选择中移除此标签（{n} 个位置）"
+	},
 	"Remove separator": "移除分隔符",
 	"Remove this document's links from every tag": "从所有标签移除此文档的链接",
 	"Remove this tag only ({n} locations)": {

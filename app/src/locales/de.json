@@ -1021,6 +1021,14 @@
 		"other": "Aus Auswahl entfernen ({n} Standorte)"
 	},
 	"Remove from toolbar": "Aus Werkzeugleiste entfernen",
+	"Remove only these {tags} tags from selection ({n} locations)": {
+		"one": "Nur diese {tags} Tags aus Auswahl entfernen ({n} Standort)",
+		"other": "Nur diese {tags} Tags aus Auswahl entfernen ({n} Standorte)"
+	},
+	"Remove only this tag from selection ({n} locations)": {
+		"one": "Nur diesen Tag aus Auswahl entfernen ({n} Standort)",
+		"other": "Nur diesen Tag aus Auswahl entfernen ({n} Standorte)"
+	},
 	"Remove separator": "Trenner entfernen",
 	"Remove this document's links from every tag": "Links dieses Dokuments von allen Tags entfernen",
 	"Remove this tag only ({n} locations)": {

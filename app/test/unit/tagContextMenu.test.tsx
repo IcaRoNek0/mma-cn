@@ -112,6 +112,7 @@ describe("tag context menu", () => {
 		expect(items.map((i) => i.textContent)).toEqual([
 			"Remove 3 tags from all (9 locations)",
 			"Remove 3 tags from selection (0 locations)",
+			"Remove only this tag from selection (0 locations)",
 			"Rename 3 tags in selection (0 locations)",
 			"Recolor 3 tags...",
 		]);
@@ -177,6 +178,24 @@ describe("tag context menu", () => {
 		const fromSelection = items.find((i) => i.textContent?.includes("from selection"))!;
 		expect(fromSelection.textContent).toBe("Remove 3 tags from selection (0 locations)");
 		expect(fromSelection.hasAttribute("data-disabled")).toBe(true);
+	});
+
+	it("removes only the clicked tag from the rest of the selection", async () => {
+		h.selectedTagIds = new Set([4, 5, 6]);
+		h.active = [4, 5, 6].map((id) => buildSelection(tagSelector(id)));
+		const scope = {
+			type: "Union",
+			selections: [5, 6].map((id) => buildSelection(tagSelector(id))),
+		};
+		h.countIn.mockImplementation(async (s) =>
+			JSON.stringify(s) === JSON.stringify(all(any(tagSelector(4)), scope as never)) ? 3 : 0,
+		);
+		const items = await openMenu(node("c"));
+		const onlyThis = items.find(
+			(i) => i.textContent === "Remove only this tag from selection (3 locations)",
+		)!;
+		act(() => onlyThis.click());
+		expect(h.setTags).toHaveBeenCalledWith([], [4], scope);
 	});
 
 	it("removes the targets from the rest of the selection only", async () => {

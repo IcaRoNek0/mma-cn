@@ -49,19 +49,23 @@ function TagContextMenuItems({
 	const isFolder = !isLeafTag(node);
 	const selectedTagIds = useMapState(getSelectedTagIds);
 	const targets = useMemo(() => menuTargetTagIds(node, selectedTagIds), [node, selectedTagIds]);
-	const subtreeSize = new Set(node.subtreeTagIds).size;
-	const multi = targets.length > subtreeSize;
-	const [counts, setCounts] = useState({ total: 0, own: 0, inSel: 0 });
+	const nodeTargets = useMemo(() => [...new Set(node.subtreeTagIds)], [node]);
+	const multi = targets.length > nodeTargets.length;
+	const [counts, setCounts] = useState({ total: 0, own: 0, inSel: 0, nodeInSel: 0 });
 
 	useEffect(() => {
 		const carriers = any(...targets.map(tagSelector));
 		const scope = selectionWithout(targets);
+		const nodeScope = selectionWithout(nodeTargets);
 		void Promise.all([
 			query(carriers).count(),
 			tagId == null ? 0 : query(tagSelector(tagId)).count(),
 			scope.selections.length > 0 ? query(all(carriers, scope)).count() : 0,
-		]).then(([total, own, inSel]) => setCounts({ total, own, inSel }));
-	}, [tagId, targets]);
+			multi && nodeTargets.length > 0 && nodeScope.selections.length > 0
+				? query(all(any(...nodeTargets.map(tagSelector)), nodeScope)).count()
+				: 0,
+		]).then(([total, own, inSel, nodeInSel]) => setCounts({ total, own, inSel, nodeInSel }));
+	}, [tagId, targets, nodeTargets, multi]);
 
 	return (
 		<>
@@ -84,7 +88,7 @@ function TagContextMenuItems({
 									{ n: counts.total },
 								)}
 					</MenuItem>
-					{!multi && tagId != null && subtreeSize > 1 && (
+					{!multi && tagId != null && nodeTargets.length > 1 && (
 						<MenuItem tone="destructive" onClick={() => void deleteTags([tagId])}>
 							{t(
 								{
@@ -116,6 +120,29 @@ function TagContextMenuItems({
 									{ n: counts.inSel },
 								)}
 					</MenuItem>
+					{multi && nodeTargets.length > 0 && (
+						<MenuItem
+							tone="destructive"
+							disabled={counts.nodeInSel === 0}
+							onClick={() => void setTags([], nodeTargets, selectionWithout(nodeTargets))}
+						>
+							{nodeTargets.length > 1
+								? t(
+										{
+											one: "Remove only these {tags} tags from selection ({n} location)",
+											other: "Remove only these {tags} tags from selection ({n} locations)",
+										},
+										{ n: counts.nodeInSel, tags: nodeTargets.length },
+									)
+								: t(
+										{
+											one: "Remove only this tag from selection ({n} location)",
+											other: "Remove only this tag from selection ({n} locations)",
+										},
+										{ n: counts.nodeInSel },
+									)}
+						</MenuItem>
+					)}
 					<MenuItem
 						disabled={counts.inSel === 0}
 						onClick={() =>
