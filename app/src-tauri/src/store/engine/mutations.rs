@@ -174,12 +174,34 @@ pub(crate) fn apply_adds(store: &mut Store, mut locations: Vec<Location>) -> Mut
     store.apply_undoable(Vec::new(), locations)
 }
 
+/// How a patch batch lands in the undo history.
+pub(crate) enum UndoScope<'a> {
+    /// Not undoable.
+    Skip,
+    /// An entry of its own.
+    Entry,
+    /// One entry for a whole run: each batch joins the entry the tracker names while it
+    /// is still the newest edit, and points the tracker at the entry it recorded.
+    Run(&'a mut Option<u64>),
+}
+
+impl UndoScope<'_> {
+    /// `Entry` or `Skip`, from the wire's boolean.
+    pub(crate) fn entry_if(record_undo: bool) -> Self {
+        if record_undo {
+            UndoScope::Entry
+        } else {
+            UndoScope::Skip
+        }
+    }
+}
+
 /// Apply `{id, patch}` updates: overlay and undo. The one place a patch batch becomes a
 /// mutation -- every command that derives patches ends here.
 pub(crate) fn apply_updates(
     store: &mut Store,
     updates: &[Update<LocationPatch>],
-    record_undo: bool,
+    undo: UndoScope,
 ) -> MutationResult {
     let mut updated: Vec<(Location, Location)> = Vec::with_capacity(updates.len());
     for u in updates {
@@ -196,7 +218,12 @@ pub(crate) fn apply_updates(
     let mut result = store.finish_mutation(&changes);
     // Undo is recorded after the mutation is finished so the pairs move into the entry
     // instead of being cloned; report again so the stack change rides along.
-    if record_undo && store.record_update_undo(changes.updated) {
+    let recorded = match undo {
+        UndoScope::Skip => false,
+        UndoScope::Entry => store.record_update_undo(&mut None, changes.updated),
+        UndoScope::Run(group) => store.record_update_undo(group, changes.updated),
+    };
+    if recorded {
         store.report(&mut result);
     }
     result
@@ -489,7 +516,7 @@ pub(crate) fn apply_field_op(
     Ok(FieldOpResult {
         changed: plan.updates.len() as u32,
         failed: plan.failed,
-        mutation: apply_updates(store, &plan.updates, record_undo),
+        mutation: apply_updates(store, &plan.updates, UndoScope::entry_if(record_undo)),
     })
 }
 

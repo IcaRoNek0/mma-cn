@@ -344,7 +344,7 @@ pub fn update_locations(
     updates: &[Update<LocationPatch>],
     record_undo: bool,
 ) -> MutationResult {
-    apply_updates(store, updates, record_undo)
+    apply_updates(store, updates, UndoScope::entry_if(record_undo))
 }
 
 /// The index step every selector entry point runs before resolving.

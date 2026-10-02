@@ -1108,7 +1108,7 @@ fn noop_batch_is_removed_before_selection_and_render_work() {
         })
         .collect();
 
-    let result = apply_updates(&mut store, &updates, true);
+    let result = apply_updates(&mut store, &updates, UndoScope::Entry);
 
     assert_eq!(store.overlay.rev(), rev);
     assert_eq!(store.edits.undo_len(), undo_len);
@@ -3035,14 +3035,14 @@ fn an_indexed_existence_filter_agrees_with_the_scan_through_every_edit() {
         id: 1,
         patch: patch!(extra: raw_extra(r#"{"k":null}"#)),
     };
-    apply_updates(&mut store, &[drop_k], true);
+    apply_updates(&mut store, &[drop_k], UndoScope::Entry);
     assert_existence_matches_scan(&mut store, "k", &[2, 10]);
 
     let gain_k = Update {
         id: 3,
         patch: patch!(extra: raw_extra(r#"{"k":4}"#)),
     };
-    apply_updates(&mut store, &[gain_k], true);
+    apply_updates(&mut store, &[gain_k], UndoScope::Entry);
     assert_existence_matches_scan(&mut store, "k", &[2, 3, 10]);
 
     let two = store.get_loc_by_id(2).unwrap();
@@ -3092,7 +3092,7 @@ fn coverage_follows_the_rows_that_hold_each_field() {
         id: 2,
         patch: patch!(extra: raw_extra(r#"{"b":5}"#)),
     };
-    apply_updates(&mut store, &[gain_b], true);
+    apply_updates(&mut store, &[gain_b], UndoScope::Entry);
     assert_eq!(
         extra_coverage(&mut store, &all),
         counts(&[("a", 3), ("b", 1)])
@@ -4021,6 +4021,83 @@ fn a_reopened_history_reads_no_edit_until_undo_reaches_it() {
         .map(|(_, e)| e.seq)
         .collect();
     assert_eq!(read, vec![2], "only the undone edit was read");
+}
+
+fn page(store: &mut Store, group: &mut Option<u64>, id: u32, heading: f64) {
+    let updates = [Update {
+        id,
+        patch: patch!(heading: heading),
+    }];
+    apply_updates(store, &updates, UndoScope::Run(group));
+}
+
+#[test]
+fn a_grouped_run_undoes_as_one_step() {
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0), loc(2, 1.0, 0.0)]);
+    let mut group = None;
+    page(&mut store, &mut group, 1, 90.0);
+    page(&mut store, &mut group, 2, 180.0);
+
+    assert_eq!(store.edits.undo_len(), 1);
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 0.0);
+    assert_eq!(store.get_loc_by_id(2).unwrap().heading, 0.0);
+}
+
+#[test]
+fn a_row_a_run_touches_twice_undoes_to_its_state_before_the_run() {
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0)]);
+    let mut group = None;
+    page(&mut store, &mut group, 1, 90.0);
+    page(&mut store, &mut group, 1, 180.0);
+
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 180.0);
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 0.0);
+    press_redo(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 180.0);
+}
+
+#[test]
+fn an_edit_between_pages_splits_the_group() {
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0), loc(2, 1.0, 0.0)]);
+    let mut group = None;
+    page(&mut store, &mut group, 1, 90.0);
+    let user_edit = [Update {
+        id: 2,
+        patch: patch!(heading: 45.0),
+    }];
+    apply_updates(&mut store, &user_edit, UndoScope::Entry);
+    page(&mut store, &mut group, 1, 180.0);
+
+    assert_eq!(store.edits.undo_len(), 3);
+    undo_and_finish(&mut store);
+    assert_eq!(
+        store.get_loc_by_id(1).unwrap().heading,
+        90.0,
+        "the page after the user edit undoes alone"
+    );
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(2).unwrap().heading, 0.0);
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 0.0);
+}
+
+#[test]
+fn an_undo_mid_run_leaves_later_pages_as_their_own_step() {
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0)]);
+    let mut group = None;
+    page(&mut store, &mut group, 1, 90.0);
+    undo_and_finish(&mut store);
+    page(&mut store, &mut group, 1, 180.0);
+
+    assert_eq!(
+        (store.edits.undo_len(), store.edits.redo_len()),
+        (1, 0),
+        "the late page is a fresh entry and clears the undone one from redo"
+    );
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 0.0);
 }
 
 #[test]
@@ -5114,7 +5191,7 @@ fn apply_model_op(
             store.overlay_update(id, &patch!(heading: *heading, tags: tags.clone()));
             let new_loc = store.get_loc_by_id(id).unwrap();
             store.reindex(&[&old], &[&new_loc]);
-            store.record_update_undo([(old, new_loc.clone())]);
+            store.record_update_undo(&mut None, [(old, new_loc.clone())]);
             model.insert(id, new_loc);
         }
     }
@@ -5588,7 +5665,7 @@ fn new_extra_key_is_announced_in_the_same_result() {
                 ..Default::default()
             },
         }],
-        false,
+        UndoScope::Skip,
     );
     assert!(r
         .values

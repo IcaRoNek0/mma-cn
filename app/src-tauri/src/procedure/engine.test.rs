@@ -228,6 +228,7 @@ impl Harness {
                 Arc::new(Box::new(move |r| sink.lock().unwrap().push(r)))
             },
             neighbors: Arc::default(),
+            undo_group: Arc::default(),
         }
     }
 }
@@ -1123,6 +1124,7 @@ fn run_shape_reaches_the_host_fetch() {
         progress: Arc::new(Box::new(|_| {})),
         results: Arc::new(Box::new(|_| {})),
         neighbors: Arc::default(),
+        undo_group: Arc::default(),
     };
     run_provider(&ctx, &d).unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -1437,6 +1439,7 @@ fn every_procedure_call_receives_its_config() {
         progress: Arc::new(Box::new(|_| {})),
         results: Arc::new(Box::new(|_| {})),
         neighbors: Arc::default(),
+        undo_group: Arc::default(),
     };
     run_provider(&ctx, &d).unwrap();
 
@@ -1531,6 +1534,7 @@ fn a_real_js_procedure_reads_the_batch_as_json_rows() {
         progress: Arc::new(Box::new(|_| {})),
         results: Arc::new(Box::new(|_| {})),
         neighbors: Arc::default(),
+        undo_group: Arc::default(),
     };
     run_provider(&ctx, &decl("p", BatchMode::Chunk { size: 10 })).unwrap();
 
@@ -1608,6 +1612,7 @@ fn neighbors_answers_a_procedure_from_the_maps_rows() {
         progress: Arc::new(Box::new(|_| {})),
         results: Arc::new(Box::new(|_| {})),
         neighbors: Arc::default(),
+        undo_group: Arc::default(),
     };
     run_provider(&ctx, &decl("p", BatchMode::Chunk { size: 10 })).unwrap();
 
@@ -1632,6 +1637,7 @@ fn neighbors_over_handed_in_rows_sees_only_those_rows() {
         progress: Arc::new(Box::new(|_| {})),
         results: Arc::new(Box::new(|_| {})),
         neighbors: Arc::default(),
+        undo_group: Arc::default(),
     };
     run_provider(&ctx, &decl("p", BatchMode::Chunk { size: 10 })).unwrap();
 
@@ -1764,6 +1770,7 @@ fn engine_throughput_probe() {
             progress: Arc::new(Box::new(|_| {})),
             results: Arc::new(Box::new(|_| {})),
             neighbors: Arc::default(),
+            undo_group: Arc::default(),
         };
         let t = Instant::now();
         run_provider(&ctx, &d).unwrap();

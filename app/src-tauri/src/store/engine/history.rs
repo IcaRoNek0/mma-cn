@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::types::Location;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -51,7 +52,8 @@ impl EditStacks {
     }
 
     /// Record a new edit: it goes on top of undo, under the cap, and redo is gone.
-    pub(crate) fn record(&mut self, entry: EditEntry) {
+    /// Returns the `seq` it was stored under.
+    pub(crate) fn record(&mut self, entry: EditEntry) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
         self.push_undo(LoggedEdit {
@@ -59,6 +61,7 @@ impl EditStacks {
             entry: Some(entry),
         });
         self.redo.clear();
+        seq
     }
 
     fn push_undo(&mut self, edit: LoggedEdit) {
@@ -104,6 +107,27 @@ pub(crate) struct EditEntry {
 }
 
 impl EditEntry {
+    /// Fold update pairs in, keeping each row's first `removed` and newest `created`, so
+    /// undoing the entry restores what stood before its first touch of the row.
+    fn fold_updates(&mut self, pairs: Vec<(Location, Location)>) {
+        let mut at: HashMap<u32, usize> = self
+            .created
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.id, i))
+            .collect();
+        for (old, new) in pairs {
+            match at.entry(new.id) {
+                Entry::Occupied(e) => self.created[*e.get()] = new,
+                Entry::Vacant(v) => {
+                    v.insert(self.created.len());
+                    self.created.push(new);
+                    self.removed.push(old);
+                }
+            }
+        }
+    }
+
     /// Highest location id this edit can re-materialize.
     pub(crate) fn max_id(&self) -> u32 {
         self.created
@@ -125,21 +149,33 @@ pub(crate) fn seed_next_id(base_max: u32, adds: &[Location], history_max: u32) -
 }
 
 impl Store {
-    /// Push an undo entry for the changed (old != new) pairs and clear redo. Returns
-    /// whether anything was pushed.
+    /// Record the changed (old != new) pairs for undo: into the edit `group` names while
+    /// it is still the newest one, else as a new entry that `group` is pointed at. Any
+    /// edit or undo in between moves the group's entry off the top, so the next batch of
+    /// a grouped run starts fresh. Returns whether anything was recorded.
     pub(super) fn record_update_undo(
         &mut self,
+        group: &mut Option<u64>,
         updated: impl IntoIterator<Item = (Location, Location)>,
     ) -> bool {
-        let (changed_old, changed_new): (Vec<_>, Vec<_>) =
-            updated.into_iter().filter(|(o, n)| o != n).unzip();
-        if changed_old.is_empty() {
+        let changed: Vec<(Location, Location)> =
+            updated.into_iter().filter(|(o, n)| o != n).collect();
+        if changed.is_empty() {
             return false;
         }
-        self.push_undo(EditEntry {
-            created: changed_new,
-            removed: changed_old,
-        });
+        let edits = self.edits.edit();
+        if let Some(seq) = *group {
+            if let Some(top) = edits.undo.last_mut() {
+                if top.seq == seq {
+                    if let Some(entry) = top.entry.as_mut() {
+                        entry.fold_updates(changed);
+                        return true;
+                    }
+                }
+            }
+        }
+        let (removed, created): (Vec<_>, Vec<_>) = changed.into_iter().unzip();
+        *group = Some(edits.record(EditEntry { created, removed }));
         true
     }
 

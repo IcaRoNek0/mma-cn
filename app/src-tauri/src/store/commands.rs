@@ -315,7 +315,7 @@ pub async fn store_update_locations(
     let _t = Instant::now();
     with_store!(label, state, |store| {
         let n = updates.len();
-        let result = apply_updates(store, &updates, record_undo);
+        let result = apply_updates(store, &updates, UndoScope::entry_if(record_undo));
         log::debug!(
             "[cmd] store_update_locations n={} undo={} total={}ms",
             n,

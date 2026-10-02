@@ -8,7 +8,8 @@ use crate::net::fetch::{
 };
 use crate::selections::{self, neighborhood, Selector};
 use crate::store::engine::{
-    apply_updates, ExternalMutation, LocationPatch, Store, StoreState, Update, WindowLabel,
+    apply_updates, ExternalMutation, LocationPatch, Store, StoreState, UndoScope, Update,
+    WindowLabel,
 };
 use crate::sv::pano::{self, PanoAnswer, PanoQuery};
 use crate::types::wire_str_enum;
@@ -592,6 +593,8 @@ pub(crate) struct RunCtx<'a> {
     pub progress: Arc<ProgressSink>,
     pub results: Arc<ResultSink>,
     pub neighbors: Arc<NeighborCache>,
+    /// The undo entry every provider's pages share, so the whole run undoes as one step.
+    pub undo_group: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 impl RunCtx<'_> {
@@ -665,6 +668,7 @@ pub(crate) fn run_all(
     results: &Arc<ResultSink>,
 ) {
     let gates = producers(providers);
+    let undo_group = Arc::new(std::sync::Mutex::new(None));
     let (tx, rx) = mpsc::channel::<usize>();
     let mut pending: Vec<usize> = (0..providers.len()).collect();
     let mut done: Vec<bool> = vec![false; providers.len()];
@@ -681,6 +685,7 @@ pub(crate) fn run_all(
                 progress: progress.clone(),
                 results: results.clone(),
                 neighbors: Arc::default(),
+                undo_group: undo_group.clone(),
             };
             let tx = tx.clone();
             *running += 1;
@@ -974,9 +979,15 @@ fn deliver_page(ctx: &RunCtx, decl: &ProviderDecl, page: PageOutput) -> AppResul
         .collect();
     if !page.updates.is_empty() {
         let on_map = matches!(*ctx.rows, RunRows::Map { .. });
-        let result = ctx
-            .rows
-            .with_store(|store| Ok(apply_updates(store, &page.updates, on_map)))?;
+        let result = ctx.rows.with_store(|store| {
+            let mut group = ctx.undo_group.lock().unwrap();
+            let undo = if on_map {
+                UndoScope::Run(&mut group)
+            } else {
+                UndoScope::Skip
+            };
+            Ok(apply_updates(store, &page.updates, undo))
+        })?;
         if let RunRows::Map { map_id, .. } = &*ctx.rows {
             crate::emit_event(ExternalMutation {
                 result,
