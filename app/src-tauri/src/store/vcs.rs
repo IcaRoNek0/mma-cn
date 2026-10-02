@@ -124,6 +124,8 @@ pub async fn store_commit(
         engine::bake_and_save(store, &map_id)?;
 
         store.edits.edit().clear();
+        engine::save_edit_history(&conn, &map_id, &store.edits)?;
+        store.edits.mark_saved();
 
         // Clean overlay + existing parent (checkout/revert commit): capture the current
         // baked state to diff against the parent below.

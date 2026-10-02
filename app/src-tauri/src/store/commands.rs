@@ -615,27 +615,22 @@ pub async fn store_save_dirty(
     // The snapshot carries the revision it serialized, so the store can be told exactly
     // what disk holds once the write lands, however many edits arrived meanwhile.
     // (Value metadata is not here: it persists write-through at the edit.)
-    let (map_id, delta, alive, pending) = {
+    let (map_id, unsaved) = {
         let mut mgr = state.lock()?;
         let store = mgr.store_for_window(&label.0)?;
         let map_id = store.map_id.clone().ok_or("no map open")?;
-        if !store.overlay.is_unsaved() {
+        let Some(unsaved) = store.unsaved()? else {
             return Ok(SaveResult { saved_bytes: 0 });
-        }
-        let delta = overlay_delta_bytes(&store.overlay).map(|b| store.overlay.stamp(b))?;
-        (
-            map_id,
-            delta,
-            *store.alive_count,
-            store.overlay_diff_counts().into(),
-        )
+        };
+        (map_id, unsaved)
     };
 
-    let size = delta.value().len();
-    let delta_rev = delta.rev();
+    let size = unsaved.delta_len();
     let map_id2 = map_id.clone();
-    task::spawn_blocking(move || {
-        persist_dirty(&map_id2, Some(delta.into_value()), alive, pending, None)
+    let unsaved = task::spawn_blocking(move || {
+        let delta_path = storage::arrow_delta_path(&map_id2)?;
+        unsaved.write(&storage::open_db()?, &map_id2, &delta_path)?;
+        Ok::<_, AppError>(unsaved)
     })
     .await
     .unwrap_or_else(|e| Err(e.into()))?;
@@ -645,7 +640,7 @@ pub async fn store_save_dirty(
     let mut mgr = state.lock()?;
     if let Ok(store) = mgr.store_for_window(&label.0) {
         if store.map_id.as_deref() == Some(map_id.as_str()) {
-            store.overlay.saved_at(delta_rev);
+            store.saved(&unsaved);
         }
     }
 

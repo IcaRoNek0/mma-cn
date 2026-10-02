@@ -3893,15 +3893,19 @@ fn fetch_stored(seq: u64) -> AppResult<EditEntry> {
 // (store_open_map's delta/history load + next_id seeding) at the Store level,
 // through the same delta bytes and history rows the app writes.
 fn close_and_reopen(store: &Store) -> Store {
-    let delta_bytes = overlay_delta_bytes(&store.overlay).unwrap();
+    with_history_db(|conn| save_edit_history(conn, "m", &store.edits).unwrap());
+    reopen(store, &overlay_delta_bytes(&store.overlay).unwrap())
+}
+
+// store_open_map from `delta_bytes` and whatever history the database holds.
+fn reopen(store: &Store, delta_bytes: &[u8]) -> Store {
     let (edits, history_max) = with_history_db(|conn| {
-        save_edit_history(conn, "m", &store.edits).unwrap();
         (
             load_edit_history(conn, "m").unwrap(),
             stored_history_max_id(conn, "m").unwrap(),
         )
     });
-    let delta: Overlay = rmp_serde::from_slice(&delta_bytes).unwrap();
+    let delta: Overlay = rmp_serde::from_slice(delta_bytes).unwrap();
 
     let mut reopened = Store::new();
     reopened.map_id = store.map_id.clone();
@@ -3957,7 +3961,8 @@ fn newest_undo(store: &Store) -> EditEntry {
         .last()
         .unwrap();
     edit.entry
-        .clone()
+        .as_deref()
+        .cloned()
         .unwrap_or_else(|| fetch_stored(edit.seq).unwrap())
 }
 
@@ -3969,7 +3974,8 @@ fn stack_ids(store: &Store, stack: Stack) -> Vec<(u64, Vec<u32>)> {
         .map(|(_, e)| {
             let entry = e
                 .entry
-                .clone()
+                .as_deref()
+                .cloned()
                 .unwrap_or_else(|| fetch_stored(e.seq).unwrap());
             (e.seq, entry.created.iter().map(|l| l.id).collect())
         })
@@ -4002,6 +4008,70 @@ fn history_survives_repeated_close_and_reopen_in_stack_order() {
         with_history_db(|conn| stored_history_max_id(conn, "m").unwrap()),
         5
     );
+}
+
+// store_save_dirty, through the same snapshot and write.
+fn autosave(store: &mut Store, delta: &Path) {
+    let unsaved = store.unsaved().unwrap().unwrap();
+    with_history_db(|conn| unsaved.write(conn, "m", delta).unwrap());
+    store.saved(&unsaved);
+}
+
+fn live_ids(store: &mut Store) -> Vec<u32> {
+    let mut ids: Vec<u32> = store
+        .collect(&Selector::Everything)
+        .iter()
+        .map(|l| l.id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn a_kill_reopens_to_the_last_autosave_with_history_that_matches_it() {
+    let dir = TempDir::new("mma_test_kill_after_autosave");
+    let delta = dir.join("m_delta.bin");
+    let mut store = setup_store_with(&[]);
+    for i in 0..4 {
+        click_add(&mut store, f64::from(i), 0.0);
+    }
+    press_undo(&mut store);
+    autosave(&mut store, &delta);
+    let (ids, undo, redo) = (
+        live_ids(&mut store),
+        stack_ids(&store, Stack::Undo),
+        stack_ids(&store, Stack::Redo),
+    );
+    click_add(&mut store, 9.0, 0.0);
+
+    let mut store = reopen(&store, &fs::read(&delta).unwrap());
+    assert_eq!(live_ids(&mut store), ids);
+    assert_eq!(stack_ids(&store, Stack::Undo), undo);
+    assert_eq!(stack_ids(&store, Stack::Redo), redo);
+
+    press_redo(&mut store);
+    assert_eq!(live_ids(&mut store), vec![1, 2, 3, 4]);
+    for _ in 0..4 {
+        press_undo(&mut store);
+    }
+    assert_eq!(live_ids(&mut store), Vec::<u32>::new());
+}
+
+#[test]
+fn an_autosave_writes_a_history_change_that_moved_no_location() {
+    let dir = TempDir::new("mma_test_history_only_autosave");
+    let delta = dir.join("m_delta.bin");
+    let mut store = setup_store_with(&[]);
+    click_add(&mut store, 0.0, 0.0);
+    autosave(&mut store, &delta);
+
+    store.edits.edit().clear();
+    autosave(&mut store, &delta);
+    assert!(store.unsaved().unwrap().is_none());
+
+    let mut store = reopen(&store, &fs::read(&delta).unwrap());
+    assert_eq!(live_ids(&mut store), vec![1]);
+    assert_eq!((store.edits.undo_len(), store.edits.redo_len()), (0, 0));
 }
 
 #[test]

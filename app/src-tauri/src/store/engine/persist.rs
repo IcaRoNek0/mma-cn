@@ -46,25 +46,18 @@ pub(crate) fn load_delta(delta_path: &Path) -> Option<Overlay> {
 }
 
 pub(crate) fn flush_closed_store(map_id: &str, store: &Store) -> AppResult<()> {
-    {
-        if store.overlay.is_unsaved() {
-            // Persist uncommitted edits to the delta sidecar. The base file stays pinned
-            // at the last committed state -- it only advances on commit/checkout -- so the
-            // overlay remains a faithful changeset-since-last-commit for the next commit.
-            let bytes = overlay_delta_bytes(&store.overlay)?;
-            let path = storage::arrow_delta_path(map_id)?;
-            storage::atomic_write_bytes(&path, &bytes)?;
-        }
-        let count = *store.alive_count;
-        let conn = storage::open_db()?;
-        storage::set_map_counts(&conn, map_id, count, store.overlay_diff_counts().into())?;
-        save_edit_history(&conn, map_id, &store.edits)?;
-        log::debug!(
-            "[close_map] {map_id} flushed: undo={} redo={}",
-            store.edits.undo_len(),
-            store.edits.redo_len()
-        );
+    if let Some(unsaved) = store.unsaved()? {
+        unsaved.write(
+            &storage::open_db()?,
+            map_id,
+            &storage::arrow_delta_path(map_id)?,
+        )?;
     }
+    log::debug!(
+        "[close_map] {map_id} flushed: undo={} redo={}",
+        store.edits.undo_len(),
+        store.edits.redo_len()
+    );
     Ok(())
 }
 
@@ -100,8 +93,73 @@ pub(crate) fn read_full_state_from_disk(map_id: &str) -> AppResult<Vec<Location>
     Ok(locs)
 }
 
+/// What an open map owes disk: its delta and its undo history, each stamped with the
+/// revision it reflects, so edits made while the write runs stay unsaved.
+pub(crate) struct Unsaved {
+    delta: Option<At<Vec<u8>>>,
+    edits: Option<At<EditStacks>>,
+    alive: usize,
+    pending: CommitDiff,
+}
+
+impl Unsaved {
+    pub(crate) fn delta_len(&self) -> usize {
+        self.delta.as_ref().map_or(0, |d| d.value().len())
+    }
+
+    /// Delta before history, so a crash between the two leaves history behind the data, never ahead of it.
+    pub(crate) fn write(
+        &self,
+        conn: &Connection,
+        map_id: &str,
+        delta_path: &Path,
+    ) -> AppResult<()> {
+        if let Some(delta) = &self.delta {
+            storage::atomic_write_bytes(delta_path, delta.value())?;
+        }
+        storage::set_map_counts(conn, map_id, self.alive, self.pending)?;
+        if let Some(edits) = &self.edits {
+            save_edit_history(conn, map_id, edits.value())?;
+        }
+        Ok(())
+    }
+}
+
+impl Store {
+    /// The state disk lacks, or `None` when disk is current.
+    pub(crate) fn unsaved(&self) -> AppResult<Option<Unsaved>> {
+        if !self.overlay.is_unsaved() && !self.edits.is_unsaved() {
+            return Ok(None);
+        }
+        let delta = if self.overlay.is_unsaved() {
+            Some(self.overlay.stamp(overlay_delta_bytes(&self.overlay)?))
+        } else {
+            None
+        };
+        Ok(Some(Unsaved {
+            delta,
+            edits: self
+                .edits
+                .is_unsaved()
+                .then(|| self.edits.stamp((*self.edits).clone())),
+            alive: *self.alive_count,
+            pending: self.overlay_diff_counts().into(),
+        }))
+    }
+
+    /// Disk now holds `written`.
+    pub(crate) fn saved(&mut self, written: &Unsaved) {
+        if let Some(delta) = &written.delta {
+            self.overlay.saved_at(delta.rev());
+        }
+        if let Some(edits) = &written.edits {
+            self.edits.saved_at(edits.rev());
+        }
+    }
+}
+
 /// Write a map's dirty state: delta sidecar (if any), location and pending counts, and
-/// tags JSON (if any). Sync core shared by `store_save_dirty` and cross-map copy.
+/// tags JSON (if any), for a map that is not open.
 pub(crate) fn persist_dirty(
     map_id: &str,
     delta_data: Option<Vec<u8>>,
@@ -165,7 +223,7 @@ pub(crate) fn save_edit_history(
                     edit.seq as i64,
                     stack,
                     entry.max_id(),
-                    rmp_serde::to_vec_named(entry)?
+                    rmp_serde::to_vec_named(&**entry)?
                 ])?;
             }
             (None, None) => log::warn!(

@@ -4,6 +4,7 @@ use super::*;
 use crate::types::Location;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(super) const MAX_UNDO_ENTRIES: usize = 1000;
@@ -18,7 +19,7 @@ pub(crate) enum Stack {
 /// The undo and redo stacks. Undo holds ascending `seq`, redo descending, and every undo
 /// `seq` is below every redo `seq`, so the order of both is recoverable from `seq` alone.
 /// Only this module moves edits, which keeps that true.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct EditStacks {
     undo: Vec<LoggedEdit>,
     redo: Vec<LoggedEdit>,
@@ -28,9 +29,10 @@ pub(crate) struct EditStacks {
 /// An edit and the number it is stored under, never reused within a map, so a stored
 /// row with a live `seq` always holds that same edit. `entry` is `None` while the edit
 /// is only on disk.
+#[derive(Clone)]
 pub(crate) struct LoggedEdit {
     pub seq: u64,
-    pub entry: Option<EditEntry>,
+    pub entry: Option<Arc<EditEntry>>,
 }
 
 impl EditStacks {
@@ -58,7 +60,7 @@ impl EditStacks {
         self.next_seq += 1;
         self.push_undo(LoggedEdit {
             seq,
-            entry: Some(entry),
+            entry: Some(Arc::new(entry)),
         });
         self.redo.clear();
         seq
@@ -168,7 +170,7 @@ impl Store {
             if let Some(top) = edits.undo.last_mut() {
                 if top.seq == seq {
                     if let Some(entry) = top.entry.as_mut() {
-                        entry.fold_updates(changed);
+                        Arc::make_mut(entry).fold_updates(changed);
                         return true;
                     }
                 }
@@ -290,7 +292,7 @@ impl Store {
         };
         let entry = match edit.entry.take() {
             Some(entry) => entry,
-            None => fetch(edit.seq).inspect_err(|_| self.edits.edit().clear())?,
+            None => Arc::new(fetch(edit.seq).inspect_err(|_| self.edits.edit().clear())?),
         };
         let changes = match from {
             Stack::Undo => self.apply_edit_reverse(&entry),
