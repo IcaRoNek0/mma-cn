@@ -47,7 +47,6 @@ const bare =
 	(list: Selection[]): Selection[] =>
 		op(list.map((selection) => ({ selection, ghosted: false }))).map((r) => r.selection);
 
-import { ValidationFlag } from "@/bindings.consts";
 import type { ListedSelection, PolygonGeometry, Selection } from "@/bindings.gen";
 import { setSetting } from "@/store/settings";
 
@@ -1029,27 +1028,19 @@ describe("selectionDisplayName", () => {
 		expect(selectionDisplayName(sel)).toBe("Manual selection");
 	});
 
-	it("display name for a Validation flag", () => {
-		const sel = buildSelection({
-			type: "Validation",
-			locations: [1],
-			flag: ValidationFlag.NotFound,
-		});
+	it("display name for a Validation category", () => {
+		const sel = buildSelection({ type: "Validation", locations: [1], category: "notFound" });
 		expect(selectionDisplayName(sel)).toBe("Not found");
 	});
 
-	it("display name for a Validation with no flags", () => {
-		const sel = buildSelection({ type: "Validation", locations: [2], flag: ValidationFlag.None });
-		expect(selectionDisplayName(sel)).toBe("Valid location");
+	it("display name for a composed Validation category", () => {
+		const sel = buildSelection({ type: "Validation", locations: [2], category: "updateApplied" });
+		expect(selectionDisplayName(sel)).toBe("Coverage updated since last view");
 	});
 
-	it("display name for the OffDefault Validation flag", () => {
-		const sel = buildSelection({
-			type: "Validation",
-			locations: [2],
-			flag: ValidationFlag.OffDefault,
-		});
-		expect(selectionDisplayName(sel)).toBe("Pinned away from the default pano");
+	it("display name for an unknown Validation category is its key", () => {
+		const sel = buildSelection({ type: "Validation", locations: [2], category: "gone" });
+		expect(selectionDisplayName(sel)).toBe("gone");
 	});
 
 	it("display name for Intersection", () => {

@@ -35,6 +35,7 @@ import * as enrich from "@/lib/sv/enrich";
 import * as providers from "@/lib/sv/providers";
 import * as pinPano from "@/lib/sv/pinPano";
 import * as validate from "@/lib/sv/validate";
+import * as validationCategories from "@/lib/sv/validationCategories";
 import * as query from "@/lib/sv/query";
 import * as mapState from "@/lib/map/mapState";
 import * as sceneStore from "@/lib/render/sceneStore";
@@ -104,6 +105,8 @@ type ProvidersApi = typeof providers;
 type PinPanoApi = typeof pinPano;
 /** Coverage validation passes. @unstable */
 type ValidateApi = typeof validate;
+/** The validation categories users pick from, over the flags a check answers. @unstable */
+type ValidationCategoriesApi = typeof validationCategories;
 type QueryApi = typeof query;
 /** The embedded map host, its preferences, and click interceptors. @unstable */
 type MapStateApi = typeof mapState;
@@ -161,6 +164,7 @@ export interface MMA
 		ProvidersApi,
 		PinPanoApi,
 		ValidateApi,
+		ValidationCategoriesApi,
 		QueryApi,
 		MapStateApi,
 		SceneStoreApi,
@@ -210,6 +214,7 @@ const mma: MMA = {
 	...providers,
 	...pinPano,
 	...validate,
+	...validationCategories,
 	...query,
 	...mapState,
 	...sceneStore,

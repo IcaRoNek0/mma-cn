@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { addLocs, createLocation, useMap, withApi } from "./helpers";
 import type { Location } from "@/bindings.gen";
-import { LocationFlag, ValidationFlag } from "@/bindings.consts";
+import { LocationFlag } from "@/bindings.consts";
 
 const OFFICIAL_PANO = "-zrYsLR4Fh-cfJG_EMZ1-A";
 const OFFICIAL_COORDS = { lat: 52.10947502806108, lng: 34.90131410856584 };
@@ -12,23 +12,23 @@ function loc(overrides: Partial<Location> = {}): Location {
 	return createLocation({ lat: 0, lng: 0, ...overrides });
 }
 
-/** `validateLocations` over a scope, as [flag, ids] pairs (a Map cannot cross the bridge). */
-async function validate(ids: number[]): Promise<Map<number, number[]>> {
+/** `validateLocations` over a scope, as [category, ids] pairs (a Map cannot cross the bridge). */
+async function validate(ids: number[]): Promise<Map<string, number[]>> {
 	const pairs = (await withApi(async (api, locIds) => {
 		const grouped = await api.validateLocations({
 			type: "Locations",
 			locations: locIds,
 			name: null,
 		});
-		return [...grouped.flags.entries()];
-	}, ids)) as [number, number[]][];
+		return [...grouped.categories.entries()];
+	}, ids)) as [string, number[]][];
 	return new Map(pairs);
 }
 
-describe("Validation - coverage flags come back from the procedure", () => {
+describe("Validation - coverage categories come back from the procedure", () => {
 	useMap("validation");
 
-	it("groups every location under each flag the procedure answered with", async () => {
+	it("groups every location under each standard category it falls into", async () => {
 		const ids = await addLocs([
 			// Its pano resolves and the coordinate still finds the same one.
 			loc({ ...OFFICIAL_COORDS, panoId: OFFICIAL_PANO }),
@@ -40,12 +40,12 @@ describe("Validation - coverage flags come back from the procedure", () => {
 			loc({ ...OFFICIAL_COORDS, panoId: USER_PANO, flags: LocationFlag.LoadAsPanoId }),
 		]);
 
-		const byFlag = await validate(ids);
-		expect(byFlag.get(ValidationFlag.None)).toEqual([ids[0]]);
-		expect(byFlag.get(ValidationFlag.NotFound)).toEqual([ids[1]]);
-		expect(byFlag.get(ValidationFlag.PanoIdBroke)).toEqual([ids[2]]);
-		expect(byFlag.get(ValidationFlag.Unofficial)).toEqual([ids[3]]);
-		expect(byFlag.get(ValidationFlag.OffDefault)).toEqual([ids[3]]);
+		const byCategory = await validate(ids);
+		expect(byCategory.get("valid")).toEqual([ids[0]]);
+		expect(byCategory.get("notFound")).toEqual([ids[1]]);
+		expect(byCategory.get("panoIdBroke")).toEqual([ids[2]]);
+		expect(byCategory.get("unofficial")).toEqual([ids[3]]);
+		expect(byCategory.has("offDefault")).toBe(false);
 	});
 
 	it("writes nothing to the locations it validates", async () => {
@@ -55,8 +55,8 @@ describe("Validation - coverage flags come back from the procedure", () => {
 			return JSON.stringify({ panoId: l?.panoId, extra: l?.extra ?? null, mod: l?.modifiedAt });
 		}, ids[0]);
 
-		const byFlag = await validate(ids);
-		expect(byFlag.get(ValidationFlag.None)).toEqual([ids[0]]);
+		const byCategory = await validate(ids);
+		expect(byCategory.get("valid")).toEqual([ids[0]]);
 
 		const after = await withApi(async (api, id) => {
 			const l = await api.fetchLocation(id);
@@ -78,7 +78,7 @@ describe("Validation - coverage flags come back from the procedure", () => {
 				{ type: "Locations", locations: locIds, name: null },
 				{ onProgress: (done: number, total: number) => ticks.push([done, total]) },
 			);
-			const answered = new Set([...grouped.flags.values()].flat()).size;
+			const answered = new Set([...grouped.categories.values()].flat()).size;
 			return { answered, last: ticks.at(-1) ?? null };
 		}, ids)) as any;
 

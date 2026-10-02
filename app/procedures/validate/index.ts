@@ -1,7 +1,7 @@
 // Street View coverage validation. Run shape: metadata for the stored pano, a coordinate
 // lookup as comparison and fallback, then the unofficial, badcam and timeline checks. It
-// answers with the ValidationFlags that apply to each row and writes nothing -- the run
-// declares the collect sink.
+// answers each row with the ValidationFlags that apply and whether it is pinned, and writes
+// nothing -- the run declares the collect sink.
 //
 // The batch moves through three phases, each issuing every lookup it needs in one
 // `mma.panos`, so a batch of any size costs a fixed number of rounds.
@@ -9,6 +9,7 @@
 import type { ProcedureConfig } from "@/bindings.gen";
 import type { Location, Pano, PanoAnswer, Update } from "@/bindings.gen";
 import type { ValidateConfig } from "@/lib/sv/validate";
+import type { ValidationAnswer } from "@/lib/sv/validationCategories";
 import { capturedAfter, isOfficialPano, isUnofficial, pickCapture } from "@/lib/sv/panoId";
 import { SV_SEARCH_RADIUS } from "@/lib/sv/constants";
 import { isPinned } from "@/types";
@@ -29,6 +30,7 @@ interface RowState {
 	/** The pano the row shows: its stored pano, or the default when that does not load. */
 	data: Pano | null;
 	coordData: Pano | null;
+	pinned: boolean;
 	flags: number;
 }
 
@@ -40,7 +42,7 @@ function behindOwnTimeline(p: Pano): boolean {
 export function run(
 	rows: Location[],
 	cfg: ProcedureConfig<Partial<ValidateConfig>>,
-): Update<number>[] {
+): Update<ValidationAnswer>[] {
 	const radius = cfg.config?.radius ?? SV_SEARCH_RADIUS;
 	if (rows.length === 0 || mma.aborted()) return [];
 
@@ -62,7 +64,7 @@ export function run(
 		if (coordData !== null && !isUnofficial(coordData) && behindOwnTimeline(coordData)) {
 			flags |= ValidationFlag.DefaultStale;
 		}
-		return { row, data: stored ?? coordData, coordData, flags };
+		return { row, data: stored ?? coordData, coordData, pinned, flags };
 	});
 
 	const checked: RowState[] = [];
@@ -101,5 +103,5 @@ export function run(
 		if (defaultNewer || storedBehind) it.flags |= ValidationFlag.Newer;
 	}
 
-	return items.map((it) => ({ id: it.row.id, patch: it.flags }));
+	return items.map((it) => ({ id: it.row.id, patch: { flags: it.flags, pinned: it.pinned } }));
 }

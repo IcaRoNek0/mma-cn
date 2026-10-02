@@ -2724,7 +2724,7 @@ type Selector = {
 } | {
     type: "Validation";
     locations: number[];
-    flag: number;
+    category: string;
 } | {
     type: "Reviewed";
     locations: number[];
@@ -7085,14 +7085,16 @@ declare namespace pinPano {
 export interface ValidateConfig {
     radius: number;
 }
-/** What a validation run answered: the ids carrying each flag, and under
- *  `ValidationFlag.None` the ids with none, over the outcome every run reports. @unstable */
+/** What a validation run answered: the ids in each asked-for category that any location
+ *  fell into, keyed by category in table order, over the outcome every run reports. @unstable */
 export interface ValidationOutcome extends BatchOutcome {
-    flags: Map<ValidationFlag, number[]>;
+    categories: Map<string, number[]>;
 }
-/** Check that each location's Street View coverage still exists. @unstable */
+/** Check that each location's Street View coverage still exists, grouping the locations
+ *  into `categories` (keys of `VALIDATION_CATEGORIES`; the standard ones when omitted). @unstable */
 declare function validateLocations(selector: Selector, opts?: BulkOpts & {
     config?: Partial<ValidateConfig>;
+    categories?: readonly string[];
 }): Promise<ValidationOutcome>;
 
 /** @unstable */
@@ -7104,6 +7106,43 @@ declare const validate_validateLocations: typeof validateLocations;
 declare namespace validate {
   export { validate_validateLocations as validateLocations };
   export type { validate_ValidateConfig as ValidateConfig, validate_ValidationOutcome as ValidationOutcome };
+}
+
+/** What validation answers for one location: its `ValidationFlag`s, and whether it was
+ *  pinned when checked. @unstable */
+export interface ValidationAnswer {
+    flags: number;
+    pinned: boolean;
+}
+/** A group of validated locations a user can ask for: a single flag, or a combination of
+ *  flags and pinned state. @unstable */
+export interface ValidationCategory {
+    key: string;
+    label: string;
+    /** Asked for unless the user says otherwise. */
+    standard: boolean;
+    test: (answer: ValidationAnswer) => boolean;
+}
+/** @unstable */
+declare const VALIDATION_CATEGORIES: readonly ValidationCategory[];
+/** @unstable */
+declare const STANDARD_VALIDATION_CATEGORIES: string[];
+/** The category a key names, or null for one this version does not know. @unstable */
+declare function validationCategory(key: string): ValidationCategory | null;
+
+/** @unstable */
+declare const validationCategories_STANDARD_VALIDATION_CATEGORIES: typeof STANDARD_VALIDATION_CATEGORIES;
+/** @unstable */
+declare const validationCategories_VALIDATION_CATEGORIES: typeof VALIDATION_CATEGORIES;
+/** @unstable */
+export type validationCategories_ValidationAnswer = ValidationAnswer;
+/** @unstable */
+export type validationCategories_ValidationCategory = ValidationCategory;
+/** @unstable */
+declare const validationCategories_validationCategory: typeof validationCategory;
+declare namespace validationCategories {
+  export { validationCategories_STANDARD_VALIDATION_CATEGORIES as STANDARD_VALIDATION_CATEGORIES, validationCategories_VALIDATION_CATEGORIES as VALIDATION_CATEGORIES, validationCategories_validationCategory as validationCategory };
+  export type { validationCategories_ValidationAnswer as ValidationAnswer, validationCategories_ValidationCategory as ValidationCategory };
 }
 
 export interface SearchOpts {
@@ -7917,6 +7956,8 @@ export type ProvidersApi = typeof providers;
 export type PinPanoApi = typeof pinPano;
 /** Coverage validation passes. @unstable */
 export type ValidateApi = typeof validate;
+/** The validation categories users pick from, over the flags a check answers. @unstable */
+export type ValidationCategoriesApi = typeof validationCategories;
 export type QueryApi = typeof query;
 /** The embedded map host, its preferences, and click interceptors. @unstable */
 export type MapStateApi = typeof mapState;
@@ -7938,7 +7979,7 @@ export type TypesApi = typeof types;
 /** General-purpose helpers. @unstable */
 export type UtilApi = typeof util;
 /** The global `MMA` object (also `window.MMA`). */
-interface MMA extends ConstsApi, StoreApi, SelectionOpsApi, SelectionActionsApi, SavedSelectionsApi, SettingsApi, ImportStagingApi, CommitDiffApi, SelectorPickApi, MapListApi, ReviewApi, CommandsApi, TauriApi, RegistryApi, PluginHostApi, MarketplaceApi, PluginStorageApi, ScopeApi, PluginEventsApi, ExternalsApi, SidecarApi, UiApi, FieldDefsApi, FieldDefRegistryApi, FieldProjectionsApi, ProceduresApi, SeenApi, SeenRecorderApi, PanoApi, EnrichApi, ProvidersApi, PinPanoApi, ValidateApi, QueryApi, MapStateApi, SceneStoreApi, ScenePositionsApi, ColorApi, ToastApi, JobsApi, UseJobApi, TestApi, TypesApi, UtilApi, LegacyApi {
+interface MMA extends ConstsApi, StoreApi, SelectionOpsApi, SelectionActionsApi, SavedSelectionsApi, SettingsApi, ImportStagingApi, CommitDiffApi, SelectorPickApi, MapListApi, ReviewApi, CommandsApi, TauriApi, RegistryApi, PluginHostApi, MarketplaceApi, PluginStorageApi, ScopeApi, PluginEventsApi, ExternalsApi, SidecarApi, UiApi, FieldDefsApi, FieldDefRegistryApi, FieldProjectionsApi, ProceduresApi, SeenApi, SeenRecorderApi, PanoApi, EnrichApi, ProvidersApi, PinPanoApi, ValidateApi, ValidationCategoriesApi, QueryApi, MapStateApi, SceneStoreApi, ScenePositionsApi, ColorApi, ToastApi, JobsApi, UseJobApi, TestApi, TypesApi, UtilApi, LegacyApi {
 }
 
 declare global {

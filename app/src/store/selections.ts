@@ -13,7 +13,7 @@ import { hexToRgb, hslToRgb, type RGB } from "@/lib/util/color";
 import { getFieldDef, fieldValueLabel } from "@/lib/data/fieldDefRegistry";
 import { formatDistance, localDateTime, utcDateTime } from "@/lib/util/format";
 import { isVariant, toggle, unionTuple, type Variant } from "@/types/util";
-import { ValidationFlag } from "@/bindings.consts";
+import { validationCategory } from "@/lib/sv/validationCategories";
 import { getSettings } from "@/store/settings";
 import { dayMonthFmt } from "@/lib/util/format";
 import { t, msg } from "@/lib/i18n";
@@ -280,8 +280,11 @@ export const SELECTIONS: { [K in Selector["type"]]: SelectionDescriptor<K> } = {
 		locations: ownLocations,
 	},
 	Validation: {
-		key: (s) => `validation:${s.flag}`,
-		label: (s) => t(validationFlagLabel(s.flag as ValidationFlag)),
+		key: (s) => `validation:${s.category}`,
+		label: (s) => {
+			const category = validationCategory(s.category);
+			return category ? t(category.label) : s.category;
+		},
 		locations: ownLocations,
 	},
 	Reviewed: {
@@ -765,25 +768,4 @@ function tagDisplayName(tagId: number, tagNames?: Record<number, string>): strin
 	if (name != null) return displayTagName(name);
 	// Not a tag on this map: a saved rule still knows what it was called where it was saved.
 	return tagNames?.[tagId] ?? String(tagId);
-}
-
-function validationFlagLabel(flag: ValidationFlag): string {
-	switch (flag) {
-		case ValidationFlag.None:
-			return msg("Valid location");
-		case ValidationFlag.Newer:
-			return msg("Newer coverage than the stored pano");
-		case ValidationFlag.OffDefault:
-			return msg("Pinned away from the default pano");
-		case ValidationFlag.DefaultStale:
-			return msg("Default pano is not the newest");
-		case ValidationFlag.NotFound:
-			return msg("Not found");
-		case ValidationFlag.PanoIdBroke:
-			return msg("Pano ID broke");
-		case ValidationFlag.Unofficial:
-			return msg("Unofficial");
-		case ValidationFlag.GoodcamAvailable:
-			return msg("Badcam, but good coverage available");
-	}
 }

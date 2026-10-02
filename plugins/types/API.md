@@ -50,6 +50,7 @@ Every member of the global `MMA` object (also `window.MMA`), grouped by surface.
 - [Providers](#providers)
 - [PinPano](#pinpano)
 - [Validate](#validate)
+- [ValidationCategories](#validationcategories)
 - [MapState](#mapstate)
 - [SceneStore](#scenestore)
 - [ScenePositions](#scenepositions)
@@ -7885,11 +7886,43 @@ validateLocations(
   selector: Selector,
   opts?: BulkOpts & {
     config?: Partial<ValidateConfig>;
+    categories?: readonly string[];
   },
 ): Promise<ValidationOutcome>
 ```
 
-Check that each location's Street View coverage still exists.
+Check that each location's Street View coverage still exists, grouping the locations
+into `categories` (keys of `VALIDATION_CATEGORIES`; the standard ones when omitted).
+
+## ValidationCategories
+
+The validation categories users pick from, over the flags a check answers.
+
+### STANDARD_VALIDATION_CATEGORIES
+
+`unstable` · unreleased
+
+```ts
+STANDARD_VALIDATION_CATEGORIES: string[]
+```
+
+### VALIDATION_CATEGORIES
+
+`unstable` · unreleased
+
+```ts
+VALIDATION_CATEGORIES: readonly ValidationCategory[]
+```
+
+### validationCategory
+
+`unstable` · unreleased
+
+```ts
+validationCategory(key: string): ValidationCategory | null
+```
+
+The category a key names, or null for one this version does not know.
 
 ## MapState
 

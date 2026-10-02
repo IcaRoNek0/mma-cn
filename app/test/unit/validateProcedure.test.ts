@@ -53,6 +53,8 @@ const CFG = { fields: [], force: false, config: null };
 describe("validate procedure", () => {
 	it("treats a flagged row with no pano id as unpinned", () => {
 		const { out } = withHost(() => mod.run([row("")], CFG));
-		expect(out).toEqual([{ id: 1, patch: ValidationFlag.GoodcamAvailable }]);
+		expect(out).toEqual([
+			{ id: 1, patch: { flags: ValidationFlag.GoodcamAvailable, pinned: false } },
+		]);
 	});
 });

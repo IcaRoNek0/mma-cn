@@ -123,11 +123,13 @@ function runProcedure(
 		aborted: () => requests() >= abortAfter,
 	};
 
-	const answers = run(rows.map(toRow), { fields: [], force: false, config });
-	for (const a of answers) {
-		assert.equal(typeof a.patch, "number", "an answer is a bare set of ValidationFlags");
+	const raw = run(rows.map(toRow), { fields: [], force: false, config });
+	for (const a of raw) {
+		assert.deepEqual(Object.keys(a.patch).sort(), ["flags", "pinned"]);
+		assert.equal(typeof a.patch.flags, "number");
 	}
-	return { answers, metaCalls, coordCalls, progress, hostCalls };
+	const answers = raw.map((a) => ({ id: a.id, patch: a.patch.flags }));
+	return { answers, raw, metaCalls, coordCalls, progress, hostCalls };
 }
 
 /** One row at (1, 2), with the state of a single answer. */
@@ -400,6 +402,21 @@ test("a stored pano that is not in the timeline is left alone", () => {
 });
 
 // --- Batch behaviour ---
+
+test("an answer says whether its row was pinned", () => {
+	const { raw } = runProcedure(
+		[
+			{ id: 1, lat: 1, lng: 2, panoId: A },
+			{ id: 2, lat: 1, lng: 2, panoId: A, flags: PINNED },
+			{ id: 3, lat: 1, lng: 2, panoId: null, flags: PINNED },
+		],
+		{ panos: { [A]: meta(A) }, coords: { "1,2": A } },
+	);
+	assert.deepEqual(
+		raw.map((a) => a.patch.pinned),
+		[false, true, false],
+	);
+});
 
 test("every row is answered in order, once", () => {
 	const rows = [

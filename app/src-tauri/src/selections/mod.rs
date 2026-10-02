@@ -61,7 +61,7 @@ pub enum Selector {
     },
     Validation {
         locations: Vec<u32>,
-        flag: u8,
+        category: String,
     },
     #[serde(rename_all = "camelCase")]
     Reviewed {

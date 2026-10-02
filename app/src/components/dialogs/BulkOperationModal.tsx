@@ -31,8 +31,12 @@ import {
 } from "@/lib/data/fieldDefRegistry";
 import { cmd } from "@/lib/commands";
 import { useMapSetting } from "@/store/useMapSetting";
-import { CapturePick, ValidationFlag } from "@/bindings.consts";
+import { CapturePick } from "@/bindings.consts";
 import { validateLocations } from "@/lib/sv/validate";
+import {
+	STANDARD_VALIDATION_CATEGORIES,
+	VALIDATION_CATEGORIES,
+} from "@/lib/sv/validationCategories";
 import { enrichAll, type EnrichOutcome } from "@/lib/sv/enrich";
 import { getEnrichFieldOptions, getDefaultEnrichKeys, isFieldEnabled } from "@/lib/data/fieldDefs";
 import { bulkPinToPano } from "@/lib/sv/pinPano";
@@ -116,25 +120,47 @@ async function readTargetInfo(selector: Selector): Promise<TargetInfo> {
 // ---------------------------------------------------------------------------
 
 function ValidateSetup({ picker, onReady }: SetupProps) {
+	const [asked, setAsked] = useState<ReadonlySet<string>>(
+		() => new Set(STANDARD_VALIDATION_CATEGORIES),
+	);
+	const toggle = (key: string, on: boolean) =>
+		setAsked((prev) => {
+			const next = new Set(prev);
+			if (on) next.add(key);
+			else next.delete(key);
+			return next;
+		});
 	return (
 		<div className="modal__stack">
 			<SelectorPicker ctl={picker} />
+			{VALIDATION_CATEGORIES.map((c) => (
+				<Checkbox
+					key={c.key}
+					checked={asked.has(c.key)}
+					onChange={(e) => toggle(c.key, e.target.checked)}
+				>
+					{t(c.label)}
+				</Checkbox>
+			))}
 			<DialogActions
 				cancel
 				primary={{
 					label: t("Start"),
+					disabled: asked.size === 0,
 					onClick: () =>
 						onReady(async ({ selector, signal, onProgress }) => {
-							const result = await validateLocations(selector, { signal, onProgress });
-							const batch = Object.values(ValidationFlag)
-								.filter((flag) => (result.flags.get(flag)?.length ?? 0) > 0)
-								.map((flag) => ({
-									type: "Validation" as const,
-									locations: result.flags.get(flag)!,
-									flag,
-								}));
+							const result = await validateLocations(selector, {
+								signal,
+								onProgress,
+								categories: [...asked],
+							});
+							const batch = [...result.categories].map(([category, locations]) => ({
+								type: "Validation" as const,
+								locations,
+								category,
+							}));
 							if (batch.length > 0) void applySelectionUpdate(addSelection(...batch));
-							const n = new Set(batch.flatMap((b) => b.locations)).size;
+							const n = result.succeeded;
 							return {
 								outcome: result,
 								doneMessage: t(
