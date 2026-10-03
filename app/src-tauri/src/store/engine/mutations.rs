@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 
 /// Semantic description of what a mutation changed, independent of any consumer.
-/// `finish_mutation` derives both the render delta and the selection sync from it -
+/// `finish_mutation` derives both the render frame and the selection sync from it -
 /// one source of truth, two projections. `updated` carries `(old, new)` so the
 /// render side can detect cell moves / pos-heading patches and the selection side
 /// can re-test membership.
@@ -60,12 +60,12 @@ pub struct EngineValues {
 
 /// What one change did to the open map.
 // `values` are merged into the JS state mirror (an untouched slice keeps its reference and its
-// subscribers sleep); `delta` and `selection_sync` are applied once to the render buffers.
+// subscribers sleep). The markers change through the render frame stamped with `version`.
 #[derive(serde::Serialize, Clone, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationResult {
+    /// The map version this change brought the map to.
     pub version: u64,
-    pub delta: RenderDelta,
     pub selection_sync: Option<SelectionSync>,
     pub values: EngineValues,
 }
@@ -151,14 +151,27 @@ impl Store {
     }
 }
 
+/// A batch of new locations added to the open map.
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Added {
+    pub mutation: MutationResult,
+    /// The id the first location was given; the rest follow it in order.
+    pub first_id: u32,
+}
+
 /// Allocate IDs for `locations`, insert them, and record the undo entry. The one place a
 /// batch of new locations becomes a mutation -- every add path (direct IPC, uploaded chunks)
 /// ends here, so they cannot drift in what they record.
-pub(crate) fn apply_adds(store: &mut Store, mut locations: Vec<Location>) -> MutationResult {
+pub(crate) fn apply_adds(store: &mut Store, mut locations: Vec<Location>) -> Added {
+    let first_id = store.next_id;
     for loc in &mut locations {
         loc.id = store.alloc_id();
     }
-    store.apply_undoable(Vec::new(), locations)
+    Added {
+        mutation: store.apply_undoable(Vec::new(), locations),
+        first_id,
+    }
 }
 
 /// How a patch batch lands in the undo history.

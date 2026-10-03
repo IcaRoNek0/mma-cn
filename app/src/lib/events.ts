@@ -8,20 +8,11 @@ import type {
 	Update,
 	LocationPatch_Deserialize,
 	MapMeta,
-	RenderDelta,
 	Selection,
 } from "@/bindings.gen";
-import type { SelectedIds, SelCellEntry } from "@/lib/render/CellManager";
-import type { RGB } from "@/lib/util/color";
 
 /** Phantom helper: captures a payload type at the value level without a real value. */
 const event = <T>() => null as T;
-
-export interface SelectionBitmaskPayload {
-	selColors: RGB[];
-	cellEntries: SelCellEntry[];
-	setIds: (ids: SelectedIds) => void;
-}
 
 const EVENT_DEFS = {
 	"location:add": event<Location[]>(),
@@ -39,12 +30,6 @@ const EVENT_DEFS = {
 	"map:close": event<void>(),
 	/** @unstable */
 	"store:changed": event<void>(),
-	/** @unstable */
-	"render:delta": event<RenderDelta>(),
-	/** The scene must be loaded again from scratch. @unstable */
-	"render:reset": event<void>(),
-	/** @unstable */
-	"render:selection": event<SelectionBitmaskPayload>(),
 	"map-list:changed": event<void>(),
 	/** @unstable */
 	"saved-selections:changed": event<void>(),

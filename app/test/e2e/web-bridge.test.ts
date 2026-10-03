@@ -2,7 +2,8 @@
  * The web-serve HTTP bridge (`--web` only; excluded from the native suite).
  *
  * These surfaces have no desktop equivalent -- natively, Tauri serves custom schemes and
- * delivers events itself. Only the browser build goes through `/__scheme/` and `/__events`,
+ * delivers events and channel messages itself. Only the browser build goes through
+ * `/__scheme/`, `/__events` and `/__channel/`,
  * and nothing else asserts on them: the rest of the web suite exercises the relay
  * incidentally at best, so a regression there can pass ~46 of 47 tests.
  */
@@ -18,6 +19,13 @@ import {
 	waitForReady,
 } from "./helpers";
 import { setFaults } from "./parityDriver";
+
+/** Markers this tab's scene holds, once it has applied every frame sent so far. */
+const sceneTotal = () =>
+	withApi(async (api) => {
+		await api.sceneReached((await api.cmd.storeGetSummary()).version);
+		return api.getScene().totalCount;
+	});
 
 describe("Web bridge", () => {
 	let mapId: string;
@@ -153,6 +161,18 @@ describe("Web bridge", () => {
 		});
 	});
 
+	describe("render frames (/__channel/)", () => {
+		it("draws the scene and every edit through the channel", async () => {
+			const before = await sceneTotal();
+			expect(before).toBe(await getLocCount());
+			const [id] = await addLocs([createLocation({ lat: 42.5, lng: -76.5 })]);
+			expect(id).toBeGreaterThan(0);
+			expect(await sceneTotal()).toBe(before + 1);
+			await withApi(async (api, gone) => api.removeLocations(new Set([gone])), id);
+			expect(await sceneTotal()).toBe(before);
+		});
+	});
+
 	it("answers other commands while a slow one is still running", async () => {
 		const pano = "-zrYsLR4Fh-cfJG_EMZ1-A";
 		// One transient failure makes the lookup sit out the engine's retry backoff.
@@ -196,9 +216,11 @@ describe("Web bridge", () => {
 			const other = await createAndOpenMap("web-bridge-other");
 			await addLocs([0, 1, 2].map((i) => createLocation({ lat: 10 + i, lng: 20 + i })));
 			expect(await getLocCount()).toBe(3);
+			expect(await sceneTotal()).toBe(3);
 
 			await browser.switchToWindow(first);
 			expect(await getLocCount()).toBe(2);
+			expect(await sceneTotal()).toBe(2);
 
 			await browser.switchToWindow(second);
 			await closeMap();

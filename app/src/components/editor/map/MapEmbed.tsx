@@ -249,7 +249,7 @@ export function MapEmbed({
 		};
 	}, [hostKind]);
 
-	// The editor map drives the single scene engine (delta/selection/active subscriptions)
+	// The editor map drives the single scene engine.
 	useEffect(() => startSceneEngine(), []);
 
 	// Full (re)load on open and on marker-style change; clear when the map isn't ready.

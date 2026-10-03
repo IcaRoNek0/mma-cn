@@ -9,9 +9,11 @@
 //!                             bundle boots in a browser (defines `__TAURI_INTERNALS__`)
 //!   - `GET/POST /__scheme/<name>/...` -> handlers the app registered via
 //!                             [`register_scheme`] (the only app-facing hook)
+//!   - `GET  /__channel/<id>` -> one channel message's bytes, announced over `/__events`
 //!
-//! The app only ever: enables this plugin, and registers its custom URI schemes
-//! through [`register_scheme`]. Everything else is generic.
+//! The app only ever: enables this plugin, registers its custom URI schemes through
+//! [`register_scheme`], and installs [`forward_channel`] as its channel interceptor.
+//! Everything else is generic.
 
 #![allow(
     clippy::doc_overindented_list_items,
@@ -20,11 +22,12 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
-use tauri::ipc::{CallbackFn, InvokeBody, InvokeError, InvokeResponse};
+use tauri::ipc::{CallbackFn, InvokeBody, InvokeError, InvokeResponse, InvokeResponseBody};
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::webview::InvokeRequest;
 use tauri::{AppHandle, Manager, Runtime, Webview, WebviewUrl, WebviewWindowBuilder};
@@ -99,9 +102,34 @@ where
 // events: no event name is hardcoded — the app passes the serialized payload.
 // ---------------------------------------------------------------------------
 
-fn event_clients() -> &'static Mutex<Vec<Sender<Vec<u8>>>> {
-    static CLIENTS: OnceLock<Mutex<Vec<Sender<Vec<u8>>>>> = OnceLock::new();
+/// Every open event stream, with the client it belongs to.
+fn event_clients() -> &'static Mutex<Vec<(String, Sender<Vec<u8>>)>> {
+    static CLIENTS: OnceLock<Mutex<Vec<(String, Sender<Vec<u8>>)>>> = OnceLock::new();
     CLIENTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Channel message bytes waiting for their client to fetch them, by id.
+fn channel_payloads() -> &'static Mutex<HashMap<u64, (String, Vec<u8>)>> {
+    static PAYLOADS: OnceLock<Mutex<HashMap<u64, (String, Vec<u8>)>>> = OnceLock::new();
+    PAYLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Send one SSE frame to every stream whose client `to` accepts, pruning streams that are
+/// gone. Returns whether any stream took it.
+fn send_frame(frame: &[u8], to: impl Fn(&str) -> bool) -> bool {
+    let Ok(mut clients) = event_clients().lock() else {
+        return false;
+    };
+    let mut sent = false;
+    clients.retain(|(label, tx)| {
+        if !to(label) {
+            return true;
+        }
+        let alive = tx.send(frame.to_vec()).is_ok();
+        sent |= alive;
+        alive
+    });
+    sent
 }
 
 // Each page load is a client with its own hidden webview, so state the app keys by
@@ -182,6 +210,10 @@ fn release_client<R: Runtime>(handle: AppHandle<R>, label: String) {
         }
         streams.remove(&label);
     }
+    channel_payloads()
+        .lock()
+        .unwrap()
+        .retain(|_, (client, _)| *client != label);
     for handler in release_handlers().read().unwrap().iter() {
         handler(&label);
     }
@@ -194,18 +226,53 @@ fn release_client<R: Runtime>(handle: AppHandle<R>, label: String) {
 /// browser is connected — always the case on desktop, so the app can call this
 /// unconditionally from its emit chokepoint.
 pub fn forward_event(event: &str, payload: serde_json::Value) {
-    let Ok(mut clients) = event_clients().lock() else {
-        return;
-    };
-    if clients.is_empty() {
-        return;
-    }
     let frame = format!(
         "data: {}\n\n",
         serde_json::json!({ "event": event, "payload": payload })
-    )
-    .into_bytes();
-    clients.retain(|tx| tx.send(frame.clone()).is_ok());
+    );
+    send_frame(frame.as_bytes(), |_| true);
+}
+
+/// The app's channel interceptor: a message for a client's webview goes to that client's
+/// browser tab instead. The tab learns of it over its event stream and runs the channel's
+/// callback with it, fetching raw bytes from `/__channel/<id>` first. The index the
+/// channel numbers its messages with keeps them in order however the fetches land.
+pub fn forward_channel<R: Runtime>(
+    webview: &Webview<R>,
+    callback: CallbackFn,
+    index: usize,
+    body: &InvokeResponseBody,
+) -> bool {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let client = webview.label().to_string();
+    let (announce, payload) = match body {
+        InvokeResponseBody::Json(json) => (
+            serde_json::json!({
+                "callback": callback.0,
+                "index": index,
+                "message": serde_json::from_str::<serde_json::Value>(json).unwrap_or_default(),
+            }),
+            None,
+        ),
+        InvokeResponseBody::Raw(bytes) => {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            channel_payloads()
+                .lock()
+                .unwrap()
+                .insert(id, (client.clone(), bytes.clone()));
+            (
+                serde_json::json!({ "callback": callback.0, "index": index, "data": id }),
+                Some(id),
+            )
+        }
+    };
+    let frame = format!("data: {}\n\n", serde_json::json!({ "channel": announce }));
+    if !send_frame(frame.as_bytes(), |label| label == client) {
+        if let Some(id) = payload {
+            channel_payloads().lock().unwrap().remove(&id);
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +368,7 @@ fn handle_request<R: Runtime>(handle: &AppHandle<R>, mut req: tiny_http::Request
             return;
         };
         let (tx, rx) = channel::<Vec<u8>>();
-        event_clients().lock().unwrap().push(tx);
+        event_clients().lock().unwrap().push((label.clone(), tx));
         *client_streams()
             .lock()
             .unwrap()
@@ -309,6 +376,25 @@ fn handle_request<R: Runtime>(handle: &AppHandle<R>, mut req: tiny_http::Request
             .or_default() += 1;
         stream_events(req, rx);
         release_client(handle.clone(), label);
+        return;
+    }
+
+    if let Some(id) = path.strip_prefix("/__channel/") {
+        let client = client_label(header_value(&req, CLIENT_HEADER).as_deref());
+        let payload = id.parse::<u64>().ok().and_then(|id| {
+            let mut payloads = channel_payloads().lock().unwrap();
+            let owned = payloads
+                .get(&id)
+                .is_some_and(|(owner, _)| client.as_ref() == Some(owner));
+            owned.then(|| payloads.remove(&id)).flatten()
+        });
+        let resp = match payload {
+            Some((_, bytes)) => {
+                Response::from_data(bytes).with_header(ct_header("application/octet-stream"))
+            }
+            None => Response::from_string("no such message").with_status_code(404),
+        };
+        let _ = req.respond(resp);
         return;
     }
 

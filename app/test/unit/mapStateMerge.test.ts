@@ -28,7 +28,6 @@ const result = (
 	over: Partial<MutationResult> = {},
 ): MutationResult => ({
 	version: 0,
-	delta: { added: [], updated: [], removed: [] },
 	selectionSync: null,
 	values: {
 		locationCount: null,
@@ -111,9 +110,7 @@ describe("applyMutation merge semantics", () => {
 
 	it("selectionSync refreshes selectionCounts", async () => {
 		await mutate(() =>
-			Promise.resolve(
-				result({}, { selectionSync: { counts: { "tag:1": 7 }, bitmask: null, selectedCount: 7 } }),
-			),
+			Promise.resolve(result({}, { selectionSync: { counts: { "tag:1": 7 }, selectedCount: 7 } })),
 		);
 		expect(getMapState().selectionCounts).toEqual({ "tag:1": 7 });
 	});

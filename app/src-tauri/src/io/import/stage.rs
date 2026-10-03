@@ -247,7 +247,7 @@ pub async fn store_import_paste_preview(
     .await?
 }
 
-/// Combined result of an editor import: the mutation delta (for render pipeline)
+/// Combined result of an editor import: the mutation it made
 /// plus import-specific metadata.
 #[derive(serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

@@ -8,7 +8,7 @@ import {
 	type MarkerBuf,
 } from "@/lib/render/markerLayer";
 import { CellManager } from "@/lib/render/CellManager";
-import { delta, entry, paint } from "./fixtures/renderFixtures";
+import { applyDelta, delta, entry, paint } from "./fixtures/renderFixtures";
 import SDFMarkerLayer from "@/lib/render/sdf-marker-layer/SDFMarkerLayer";
 import { TranslucentGroupLayer } from "@/lib/render/translucentGroup";
 import type { MarkerStyle } from "@/types";
@@ -27,7 +27,8 @@ function build(style: MarkerStyle, group: string | null) {
 
 const seeded = () => {
 	const cm = new CellManager();
-	cm.applyDelta(
+	applyDelta(
+		cm,
 		delta({
 			added: [
 				entry("a", 1, 10, 20, 0, paint([255, 0, 0])),

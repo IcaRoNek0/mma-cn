@@ -3,7 +3,7 @@ import type { Tag, TagPatch } from "@/types";
 import type { WorkArea, MaybeLocation } from "@/types";
 import { isVirtualLocation, isImportPreview, locId, applyLocationPatch } from "@/types";
 import { LocationFlag } from "@/bindings.consts";
-import type { Location, MapMeta, FieldDef, StoreStatus, CountBy } from "@/bindings.gen";
+import type { Added, Location, MapMeta, FieldDef, StoreStatus, CountBy } from "@/bindings.gen";
 import { listen } from "@tauri-apps/api/event";
 import { cmd } from "@/lib/commands";
 import type {
@@ -30,7 +30,8 @@ import type {
 	StoreWarning,
 } from "@/bindings.gen";
 import type { MergeWinner } from "@/bindings.consts";
-import { SelectedIds, decodeSelectionBitmask, type ReadonlyIdSet } from "@/lib/render/CellManager";
+import { SelectedIds, type ReadonlyIdSet } from "@/lib/render/CellManager";
+import { clearScene, loadScene, sceneReached } from "@/lib/render/sceneStore";
 import { refreshPolygonFills } from "@/lib/render/polygonFills";
 import { resetImportState } from "./importStaging";
 import { resetCommitDiffState, resetCommitDiffCounts } from "./commitDiff";
@@ -355,7 +356,7 @@ function resetMapState() {
 
 	clearEditState();
 
-	emitEvent("render:reset");
+	clearScene();
 	resetEngineState();
 	emitEvent("store:changed");
 }
@@ -497,26 +498,12 @@ function applyMutation(r: MutationResult) {
 	emitEvent("store:changed");
 }
 
-/** Decode a selection bitmask and draw it on the map. @unstable */
-export function emitBitmask(bytes: number[]) {
-	const { selColors, cellEntries } = decodeSelectionBitmask(bytes);
-	emitEvent("render:selection", {
-		selColors,
-		cellEntries,
-		setIds: (ids) => {
-			setState({ selectedLocationIds: ids });
-		},
-	});
-}
-
 function applySelectionSync(sync: SelectionSync) {
 	setState({ selectionCounts: sync.counts });
-	if (sync.bitmask) emitBitmask(sync.bitmask);
 }
 
 const EMPTY_MUTATION: MutationResult = {
 	version: 0,
-	delta: { added: [], updated: [], removed: [] },
 	selectionSync: null,
 	values: {
 		locationCount: null,
@@ -528,8 +515,9 @@ const EMPTY_MUTATION: MutationResult = {
 	},
 };
 
-/** Run a mutation, apply its result to the map, and schedule a save. A result that wraps its
- *  mutation comes back whole; `empty` is its answer when no map is open. @unstable */
+/** Run a mutation, wait for the scene to draw it, apply its result to the map, and schedule a
+ *  save. A result that wraps its mutation comes back whole; `empty` is its answer when no map
+ *  is open. `sceneReached(version)` then tells what the change did to the markers. @unstable */
 export function mutate(fn: () => Promise<MutationResult>): Promise<MutationResult>;
 export function mutate<R extends { mutation: MutationResult }>(
 	fn: () => Promise<R>,
@@ -544,7 +532,7 @@ export async function mutate<R extends MutationResult | { mutation: MutationResu
 	const answer: MutationResult | { mutation: MutationResult } = r;
 	const m = "mutation" in answer ? answer.mutation : answer;
 	await inflightPersist;
-	emitEvent("render:delta", m.delta);
+	await sceneReached(m.version);
 	applyMutation(m);
 	scheduleSave();
 	return r;
@@ -557,7 +545,7 @@ const ADD_CHUNK = 5000;
 
 /** Stage `locs` as chunked JSON in an upload session, then commit them in one mutation.
  *  Only one chunk is serialized at a time, so peak memory is O(chunk), not O(batch). */
-async function addViaUpload(locs: Location[]): Promise<MutationResult> {
+async function addViaUpload(locs: Location[]): Promise<Added> {
 	const session = await cmd.storeUploadBegin();
 	try {
 		for (let i = 0, n = 0; i < locs.length; i += ADD_CHUNK, n++) {
@@ -580,13 +568,12 @@ async function addViaUpload(locs: Location[]): Promise<MutationResult> {
 export async function addLocations(locs: Location[]) {
 	if (locs.length === 0) return;
 	const t = trace("add");
-	const r = await mutate(() =>
-		locs.length > ADD_CHUNK ? addViaUpload(locs) : cmd.storeAddLocations(locs),
+	const r = await mutate(
+		() => (locs.length > ADD_CHUNK ? addViaUpload(locs) : cmd.storeAddLocations(locs)),
+		{ mutation: EMPTY_MUTATION, firstId: 0 },
 	);
-	t.end({ delta: `+${r.delta.added.length} -${r.delta.removed.length}` });
-	for (let i = 0; i < r.delta.added.length && i < locs.length; i++) {
-		locs[i].id = r.delta.added[i].id;
-	}
+	t.end({ added: locs.length });
+	if (state.map) locs.forEach((l, i) => (l.id = r.firstId + i));
 	emitEvent("location:add", locs);
 }
 
@@ -721,10 +708,10 @@ export async function syncSelections() {
 		refreshPolygonFills(state.selectionList),
 	]);
 	t.step("ipc");
-	applySelectionSync(result);
-	emitEvent("store:changed");
+	await sceneReached(result.version);
 	t.step("apply");
-	t.end({ selected: result.selectedCount });
+	applyMutation(result);
+	t.end({ selected: result.selectionSync?.selectedCount });
 	emitEvent("selection:change", getActiveSelections());
 }
 
@@ -824,10 +811,11 @@ export async function mergeDuplicates(distance: number) {
  */
 export async function pruneDuplicates(selector: Selector, distance: number): Promise<number> {
 	if (!state.map) return 0;
-	const r = await mutate(() =>
+	const before = state.locationCount;
+	await mutate(() =>
 		cmd.storePruneDuplicates(selector, distance, state.map?.settings.duplicateScore ?? null),
 	);
-	return r.delta.removed.length;
+	return before - state.locationCount;
 }
 
 let virtualIdSeq = 0;
@@ -1078,8 +1066,8 @@ export function setTags(add: number[], remove: number[], selector: Selector) {
 async function undoRedo(which: () => Promise<MutationResult>) {
 	try {
 		const r = await mutate(which);
-		if (state.activeLocationId && r.delta.removed.some((e) => e.id === state.activeLocationId))
-			setWorkArea("overview");
+		const { removed } = await sceneReached(r.version);
+		if (state.activeLocationId && removed.includes(state.activeLocationId)) setWorkArea("overview");
 	} catch (e) {
 		log.debug(`[${which.name}] nothing or failed:`, e);
 	}
@@ -1146,7 +1134,7 @@ export async function checkoutCommit(commitId: string) {
 	applyOpenedMap(map, openResult);
 	applyMutation(commitResult.status);
 
-	emitEvent("render:reset");
+	void loadScene();
 	emitEvent("store:changed");
 	await invalidateMapList();
 }

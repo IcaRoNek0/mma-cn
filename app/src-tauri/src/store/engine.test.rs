@@ -11,6 +11,7 @@ use crate::test_util::Fx;
 use crate::test_util::TempDir;
 use crate::test_util::{loc, patch};
 use crate::types::RawExtra;
+use frame::tests::Captured;
 use proptest::collection;
 use proptest::prelude::ProptestConfig;
 use proptest::strategy::Strategy;
@@ -607,39 +608,93 @@ fn tag_counts_survive_undo_redo_cycle() {
 }
 
 // -----------------------------------------------------------------------
-// Render delta
+// Render frames
 // -----------------------------------------------------------------------
 
-#[test]
-fn delta_has_added_entry_for_new_location() {
-    let l = loc(1, 10.0, 20.0);
-    let mut store = setup_store_with(&[]);
-    let entry = EditEntry {
-        created: vec![l],
-        removed: vec![],
-    };
-    let delta = store.apply_edit_forward(&entry);
-    assert_eq!(delta.added.len(), 1);
-    assert_eq!(delta.added[0].id, 1);
-    assert_eq!(delta.removed.len(), 0);
+/// One row a frame adds or patches, flattened across cells. `key` is the id for an add
+/// and the row's index within its cell for a patch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FrameRow {
+    cell: u8,
+    key: u32,
+    lng: f32,
+    lat: f32,
+    angle: f32,
+    sel: u32,
+}
+
+fn frame_rows(cells: &[CellFrame], patches: bool) -> Vec<FrameRow> {
+    cells
+        .iter()
+        .flat_map(|c| {
+            let r = if patches { &c.patch } else { &c.add };
+            (0..r.len()).map(move |i| FrameRow {
+                cell: c.cell,
+                key: r.key[i],
+                lng: r.pos[2 * i],
+                lat: r.pos[2 * i + 1],
+                angle: r.angle[i],
+                sel: r.sel[i],
+            })
+        })
+        .collect()
+}
+
+fn added(cells: &[CellFrame]) -> Vec<FrameRow> {
+    frame_rows(cells, false)
+}
+
+fn patched(cells: &[CellFrame]) -> Vec<FrameRow> {
+    frame_rows(cells, true)
+}
+
+/// Every removal as `(cell, index)`.
+fn removed(cells: &[CellFrame]) -> Vec<(u8, u32)> {
+    cells
+        .iter()
+        .flat_map(|c| c.remove.iter().map(move |&i| (c.cell, i)))
+        .collect()
+}
+
+/// Watch `store` as a window would, capturing every frame it sends.
+fn watch(store: &mut Store) -> Captured {
+    let frames = Captured::default();
+    store.frames.insert("test".into(), frames.sink());
+    frames
 }
 
 #[test]
-fn delta_has_removed_entry_for_deleted_location() {
+fn a_new_location_is_added_to_its_cell() {
+    let mut store = setup_store_with(&[]);
+    let entry = EditEntry {
+        created: vec![loc(1, 10.0, 20.0)],
+        removed: vec![],
+    };
+    let changes = store.apply_edit_forward(&entry);
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
+    let rows = added(&cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, 1);
+    assert_eq!(rows[0].cell, render_cell_idx(10.0, 20.0));
+    assert!(removed(&cells).is_empty());
+}
+
+#[test]
+fn a_deleted_location_is_removed_from_its_cell() {
     let l = loc(1, 10.0, 20.0);
     let mut store = setup_store_with(slice::from_ref(&l));
     let entry = EditEntry {
         created: vec![],
         removed: vec![l],
     };
-    let delta = store.apply_edit_forward(&entry);
-    assert_eq!(delta.removed.len(), 1);
-    assert_eq!(delta.removed[0].id, 1);
-    assert_eq!(delta.added.len(), 0);
+    let changes = store.apply_edit_forward(&entry);
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
+    assert_eq!(removed(&cells), vec![(render_cell_idx(10.0, 20.0), 0)]);
+    assert!(added(&cells).is_empty());
 }
 
 #[test]
-fn delta_has_one_move_entry_for_moved_location() {
+fn a_moved_location_leaves_its_old_cell_and_joins_the_new_one() {
     let old = loc(1, 10.0, 20.0);
     let new = loc(1, -80.0, -170.0); // far enough to cross render cells
     let mut store = setup_store_with(slice::from_ref(&old));
@@ -650,19 +705,18 @@ fn delta_has_one_move_entry_for_moved_location() {
         removed: vec![old],
     };
     let changes = store.apply_edit_forward(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
 
-    assert!(delta.removed.is_empty(), "a move is not a removal");
-    assert_eq!(delta.added.len(), 1);
-    let from = delta.added[0]
-        .moved_from
-        .as_ref()
-        .expect("carries the slot it vacated");
-    assert_eq!(from.id, 1);
+    assert_eq!(removed(&cells), vec![(render_cell_idx(10.0, 20.0), 0)]);
+    let rows = added(&cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, 1);
+    assert_eq!(rows[0].cell, render_cell_idx(-80.0, -170.0));
+    assert!(patched(&cells).is_empty(), "the add states the row in full");
 }
 
 #[test]
-fn delta_add_uses_configured_marker_color() {
+fn an_unselected_add_is_drawn_by_the_base_layer() {
     let mut store = setup_store_with(&[loc(1, 10.0, 20.0)]);
     store.render.marker_color = [10, 20, 30];
 
@@ -671,11 +725,12 @@ fn delta_add_uses_configured_marker_color() {
         removed: vec![],
     };
     let changes = store.apply_edit_forward(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
 
-    assert_eq!(delta.added.len(), 1);
+    let rows = added(&cells);
+    assert_eq!(rows.len(), 1);
     assert_eq!(
-        delta.added[0].sel, None,
+        rows[0].sel, NO_SEL,
         "unselected, so the base layer draws it"
     );
 }
@@ -686,7 +741,7 @@ fn delta_add_uses_configured_marker_color() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn samey_location_skips_render_delta() {
+fn samey_location_skips_render_frame() {
     let old = loc(1, 10.0, 20.0);
     let mut new = loc(1, 10.0, 20.0);
     new.pitch = 45.0; // non-render field
@@ -698,15 +753,12 @@ fn samey_location_skips_render_delta() {
         removed: vec![old],
     };
     let changes = store.apply_edit_forward(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
 
-    assert_eq!(
-        delta.added.len(),
-        0,
+    assert!(
+        Frame::cells_of(cells).is_empty(),
         "no re-render needed for pitch/zoom change"
     );
-    assert_eq!(delta.removed.len(), 0);
-    assert_eq!(delta.updated.len(), 0);
 }
 
 #[test]
@@ -720,16 +772,16 @@ fn samey_location_with_heading_change_does_rerender() {
         removed: vec![old],
     };
     let changes = store.apply_edit_forward(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
 
     // heading change in the same cell => in-place render patch
     assert_eq!(
-        delta.updated.len(),
+        patched(&cells).len(),
         1,
         "heading change requires a render patch"
     );
-    assert_eq!(delta.added.len(), 0);
-    assert_eq!(delta.removed.len(), 0);
+    assert!(added(&cells).is_empty());
+    assert!(removed(&cells).is_empty());
 }
 
 #[test]
@@ -743,10 +795,10 @@ fn samey_location_with_lat_change_does_rerender() {
         removed: vec![old],
     };
     let changes = store.apply_edit_forward(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
 
     assert!(
-        delta.added.len() + delta.removed.len() + delta.updated.len() > 0,
+        !Frame::cells_of(cells).is_empty(),
         "lat change requires re-render"
     );
 }
@@ -959,9 +1011,7 @@ fn bounds_wide_span_stays_non_crossing() {
 fn cell_add_and_lookup() {
     let mut store = setup_store_with(&[]);
     store.cell_add_render(24, 1); // 24 = 's' in BASE32
-    let (cell, idx) = store.cell_lookup(1).unwrap();
-    assert_eq!(cell, "s");
-    assert_eq!(idx, 0);
+    assert_eq!(store.cell_lookup(1), Some((24, 0)));
 }
 
 #[test]
@@ -969,9 +1019,7 @@ fn cell_remove_returns_correct_info() {
     let mut store = setup_store_with(&[]);
     store.cell_add_render(24, 1);
     store.cell_add_render(24, 2);
-    let removal = store.cell_remove_render(1).unwrap();
-    assert_eq!(removal.id, 1);
-    assert_eq!(removal.cell, "s");
+    assert_eq!(store.cell_remove_render(1), Some((24, 0)));
     assert!(store.cell_lookup(2).is_some());
 }
 
@@ -1108,13 +1156,12 @@ fn noop_batch_is_removed_before_selection_and_render_work() {
         })
         .collect();
 
+    let frames = watch(&mut store);
     let result = apply_updates(&mut store, &updates, UndoScope::Entry);
 
     assert_eq!(store.overlay.rev(), rev);
     assert_eq!(store.edits.undo_len(), undo_len);
-    assert!(result.delta.added.is_empty());
-    assert!(result.delta.updated.is_empty());
-    assert!(result.delta.removed.is_empty());
+    assert!(frames.last().cells.is_empty());
     assert!(result.selection_sync.is_none());
 }
 
@@ -1171,8 +1218,7 @@ fn cell_swap_remove_maintains_correct_indices() {
     store.cell_add_render(24, 20);
     store.cell_add_render(24, 30);
 
-    let removal = store.cell_remove_render(10).unwrap();
-    assert_eq!(removal.cell_index, 0);
+    assert_eq!(store.cell_remove_render(10), Some((24, 0)));
 
     let (_, idx30) = store.cell_lookup(30).unwrap();
     assert_eq!(idx30, 0, "id 30 should have been swapped into slot 0");
@@ -1190,8 +1236,7 @@ fn cell_swap_remove_last_element() {
     store.cell_add_render(24, 10);
     store.cell_add_render(24, 20);
 
-    let removal = store.cell_remove_render(20).unwrap();
-    assert_eq!(removal.cell_index, 1);
+    assert_eq!(store.cell_remove_render(20), Some((24, 1)));
 
     let (_, idx10) = store.cell_lookup(10).unwrap();
     assert_eq!(idx10, 0, "id 10 should be undisturbed");
@@ -1249,14 +1294,14 @@ fn multiple_undo_redo_cycles_consistent() {
 }
 
 // -----------------------------------------------------------------------
-// derive_render_delta (updates)
+// derive_cell_frames (updates)
 // -----------------------------------------------------------------------
 
-fn render_delta_for_update(store: &mut Store, id: u32, patch: LocationPatch) -> RenderDelta {
+fn cell_frames_for_update(store: &mut Store, id: u32, patch: LocationPatch) -> [CellFrame; 32] {
     let old = store.get_loc_by_id(id).unwrap();
     store.overlay_update(id, &patch);
     let new_loc = store.get_loc_by_id(id).unwrap();
-    store.derive_render_delta(
+    store.derive_cell_frames(
         &ChangeSet {
             updated: vec![(old, new_loc)],
             ..Default::default()
@@ -1266,55 +1311,101 @@ fn render_delta_for_update(store: &mut Store, id: u32, patch: LocationPatch) -> 
 }
 
 #[test]
-fn update_delta_heading_only_produces_patch() {
+fn update_heading_only_produces_patch() {
     let l = loc_with_heading(1, 10.0, 20.0, 0.0);
     let mut store = setup_store_with(&[l]);
-    let delta = render_delta_for_update(&mut store, 1, patch!(heading: 90.0));
-    assert!(delta.added.is_empty());
-    assert!(delta.removed.is_empty());
-    assert_eq!(delta.updated.len(), 1);
-    assert_eq!(delta.updated[0].heading, Some(0.0));
-    assert!(delta.updated[0].lat.is_none());
+    let cells = cell_frames_for_update(&mut store, 1, patch!(heading: 90.0));
+    assert!(added(&cells).is_empty());
+    assert!(removed(&cells).is_empty());
+    let rows = patched(&cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].angle, 0.0, "pin markers point nowhere");
+    assert_eq!(
+        (rows[0].lng, rows[0].lat),
+        (20.0, 10.0),
+        "a patch restates the row in full"
+    );
 }
 
 #[test]
-fn update_delta_same_cell_position_produces_patch() {
+fn update_same_cell_position_produces_patch() {
     let l = loc(1, 10.0, 20.0);
     let mut store = setup_store_with(&[l]);
     // small position change that stays in the same render cell
-    let delta = render_delta_for_update(&mut store, 1, patch!(lat: 10.001));
+    let cells = cell_frames_for_update(&mut store, 1, patch!(lat: 10.001));
     // should be an in-place patch, not a cell migration
-    assert_eq!(delta.updated.len(), 1);
-    assert!(delta.added.is_empty());
+    assert_eq!(patched(&cells).len(), 1);
+    assert!(added(&cells).is_empty());
 }
 
 #[test]
-fn update_delta_cross_cell_position_produces_one_move() {
+fn update_cross_cell_position_moves_the_row() {
     let l = loc(1, 10.0, 20.0);
     let mut store = setup_store_with(&[l]);
     // large position change that crosses render cells
-    let delta = render_delta_for_update(&mut store, 1, patch!(lat: -80.0, lng: -170.0));
-    assert!(delta.removed.is_empty(), "a move is not a removal");
-    assert_eq!(delta.added.len(), 1, "new cell entry added");
-    assert!(delta.updated.is_empty());
-
-    let e = &delta.added[0];
-    let from = e.moved_from.as_ref().expect("carries the slot it vacated");
-    assert_eq!(from.id, 1);
+    let cells = cell_frames_for_update(&mut store, 1, patch!(lat: -80.0, lng: -170.0));
+    let gone = removed(&cells);
+    let rows = added(&cells);
+    assert_eq!(gone.len(), 1, "the old cell loses the row");
+    assert_eq!(rows.len(), 1, "the new cell gains it");
+    assert_eq!(rows[0].key, 1);
+    assert!(patched(&cells).is_empty());
     assert_ne!(
-        from.cell, e.cell,
+        gone[0].0, rows[0].cell,
         "the vacated slot is in the cell it left, not the one it joined"
     );
 }
 
 #[test]
-fn update_delta_tags_only_produces_empty_delta() {
+fn update_tags_only_produces_no_cell_change() {
     let l = loc_with_tags(1, 10.0, 20.0, vec![10]);
     let mut store = setup_store_with(&[l]);
-    let delta = render_delta_for_update(&mut store, 1, patch!(tags: vec![20]));
-    assert!(delta.added.is_empty());
-    assert!(delta.removed.is_empty());
-    assert!(delta.updated.is_empty());
+    let cells = cell_frames_for_update(&mut store, 1, patch!(tags: vec![20]));
+    assert!(Frame::cells_of(cells).is_empty());
+}
+
+#[test]
+fn a_patch_index_counts_a_later_move_out_of_its_cell() {
+    // Rows 1, 2, 3 share a cell. Row 3 turns (a patch at its slot) and row 2 then leaves the
+    // cell, which swap-removes row 3 into row 2's slot. The patch must name the slot row 3
+    // ends up in, whatever order the changeset lists the two edits in.
+    let rows = [
+        loc_with_heading(1, 10.0, 20.0, 0.0),
+        loc_with_heading(2, 10.001, 20.0, 0.0),
+        loc_with_heading(3, 10.002, 20.0, 0.0),
+    ];
+    let mut store = setup_store_with(&rows);
+    let ci = render_cell_idx(10.0, 20.0);
+    assert_eq!(
+        store.render.cells[ci as usize].as_ref().unwrap().id_order,
+        [1, 2, 3]
+    );
+
+    let turned = Location {
+        heading: 90.0,
+        ..rows[2].clone()
+    };
+    let moved = Location {
+        lat: -80.0,
+        lng: -170.0,
+        ..rows[1].clone()
+    };
+    let cells = store.derive_cell_frames(
+        &ChangeSet {
+            updated: vec![(rows[2].clone(), turned), (rows[1].clone(), moved)],
+            ..Default::default()
+        },
+        &HashSet::new(),
+    );
+
+    let order = &store.render.cells[ci as usize].as_ref().unwrap().id_order;
+    assert_eq!(order, &[1, 3]);
+    let patch = patched(&cells);
+    assert_eq!(patch.len(), 1);
+    assert_eq!(
+        order[patch[0].key as usize], 3,
+        "the patch lands on the row it restates"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1674,50 +1765,53 @@ fn overlay_consistency_remove_clears_patches() {
 }
 
 #[test]
-fn render_buffer_format_matches_js_parser() {
+fn the_scene_frame_adds_every_row_once() {
     let l1 = loc_with_heading(1, 48.8, 2.35, 90.0);
     let l2 = loc(2, -33.8, 151.2);
     let mut store = setup_store_with(&[l1, l2]);
     store.bake_overlay();
 
-    let req = RenderRequest {
-        west: -180.0,
-        south: -90.0,
-        east: 180.0,
-        north: 90.0,
-        selected_ids: None,
-        marker_style: "pin".into(),
-        marker_color: None,
-    };
-    let buf = build_cell_render_buffers(&mut store, &req);
-    assert!(!buf.is_empty());
+    let frame = store.scene_frame();
 
-    // Parse the binary format the same way JS does
-    let cell_count = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-    assert!(cell_count > 0, "should have at least one cell");
+    assert_eq!(frame.kind, FrameKind::REPLACE);
+    assert_eq!(frame.version, store.version);
+    let mut ids: Vec<u32> = added(&frame.cells).iter().map(|r| r.key).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, [1, 2]);
+    assert!(removed(&frame.cells).is_empty() && patched(&frame.cells).is_empty());
+    assert!(frame.palette.is_empty(), "no selections active");
+    assert_eq!(frame.selection, None, "every add states its own selection");
+}
 
-    let mut offset = 4usize;
-    let mut total_locs = 0u32;
-    for _ in 0..cell_count {
-        let _cell_char = buf[offset];
-        let count = u32::from_le_bytes(buf[offset + 1..offset + 5].try_into().unwrap());
-        // header + 3 alignment pad bytes
-        offset += 8;
-        // ids: count * 4 bytes
-        offset += count as usize * 4;
-        // positions: count * 2 * 4 bytes
-        offset += count as usize * 2 * 4;
-        // visible: count bytes + pad to 4
-        offset += count as usize + (4 - count as usize % 4) % 4;
-        // angles: count * 4 bytes
-        offset += count as usize * 4;
-        total_locs += count;
+#[test]
+fn the_scene_frame_order_is_the_render_cell_order() {
+    // Picking resolves a slot through `id_order`, so the slots the page fills from the
+    // scene frame must be exactly that order.
+    let locs: Vec<Location> = (1..=6)
+        .map(|id| {
+            loc(
+                id,
+                f64::from(id) * 20.0 - 60.0,
+                f64::from(id) * 50.0 - 170.0,
+            )
+        })
+        .collect();
+    let mut store = setup_store_with(&locs);
+    store.bake_overlay();
+    store.overlay_update(2, &patch!(lat: 10.0, lng: 20.0));
+    store.overlay_remove(&[locs[3].clone()]);
+
+    let frame = store.scene_frame();
+
+    for c in &frame.cells {
+        let order = &store.render.cells[c.cell as usize]
+            .as_ref()
+            .unwrap()
+            .id_order;
+        assert_eq!(&c.add.key, order, "cell {}", c.cell);
     }
-    assert_eq!(total_locs, 2, "should have 2 locations total");
-
-    // Selection overlay: u32 count
-    let sel_count = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-    assert_eq!(sel_count, 0, "no selections active");
+    let total: usize = frame.cells.iter().map(|c| c.add.len()).sum();
+    assert_eq!(total, store.render.total_len());
 }
 
 #[test]
@@ -1727,31 +1821,14 @@ fn arrow_render_angle_is_negated_heading() {
     let l1 = loc_with_heading(1, 48.8, 2.35, 90.0);
     let mut store = setup_store_with(&[l1]);
     store.bake_overlay();
+    store.render.arrow_style = true;
 
-    let req = RenderRequest {
-        west: -180.0,
-        south: -90.0,
-        east: 180.0,
-        north: 90.0,
-        selected_ids: None,
-        marker_style: "arrow".into(),
-        marker_color: None,
-    };
-    let buf = build_cell_render_buffers(&mut store, &req);
-
-    // Walk to the single cell's angles segment:
-    // [u32 cells][u8 char][u32 count][3 pad][ids][positions][visible][pad to 4][angles]
-    let cell_count = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-    assert_eq!(cell_count, 1);
-    let mut offset = 4usize;
-    let count = u32::from_le_bytes(buf[offset + 1..offset + 5].try_into().unwrap()) as usize;
-    assert_eq!(count, 1);
-    offset += 8;
-    offset += count * 4; // ids
-    offset += count * 2 * 4; // positions
-    offset += count + (4 - count % 4) % 4; // visible + pad
-    let angle = f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-    assert_eq!(angle, -90.0, "arrow angle must be the negated heading");
+    let rows = added(&store.scene_frame().cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].angle, -90.0,
+        "arrow angle must be the negated heading"
+    );
 }
 
 #[test]
@@ -1774,12 +1851,12 @@ fn f32_render_truncation_matches_grid() {
         added: vec![l],
         ..Default::default()
     };
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
 
-    assert_eq!(delta.added.len(), 1);
-    let entry = &delta.added[0];
-    assert_eq!(entry.lat, lat as f32, "lat must be f32-truncated");
-    assert_eq!(entry.lng, lng as f32, "lng must be f32-truncated");
+    let rows = added(&cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].lat, lat as f32, "lat must be f32-truncated");
+    assert_eq!(rows[0].lng, lng as f32, "lng must be f32-truncated");
 }
 
 #[test]
@@ -1791,17 +1868,17 @@ fn f32_render_truncation_applies_to_position_patches() {
     store.overlay_update(1, &patch!(lat: new_lat, lng: new_lng));
     let old = loc(1, 10.0, 20.0);
     let new_loc = store.get_loc_by_id(1).unwrap();
-    let delta = store.derive_render_delta(
+    let cells = store.derive_cell_frames(
         &ChangeSet {
             updated: vec![(old, new_loc)],
             ..Default::default()
         },
         &HashSet::new(),
     );
-    assert_eq!(delta.updated.len(), 1);
-    let patch = &delta.updated[0];
-    assert_eq!(patch.lat.unwrap(), new_lat as f32);
-    assert_eq!(patch.lng.unwrap(), new_lng as f32);
+    let rows = patched(&cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].lat, new_lat as f32);
+    assert_eq!(rows[0].lng, new_lng as f32);
 }
 
 #[test]
@@ -1809,7 +1886,7 @@ fn cell_render_id_order_matches_after_swap_remove_sequence() {
     // This test verifies the Rust side of the critical invariant:
     // after a sequence of adds and removes, CellRender.id_order[i]
     // must match what JS's CellBuffer.ids[i] would be after the same
-    // sequence of applyDelta calls. Both use swap-remove.
+    // sequence of applied frames. Both use swap-remove.
     let mut store = setup_store_with(&[]);
     store.cell_add_render(24, 10);
     store.cell_add_render(24, 20);
@@ -1855,15 +1932,16 @@ fn undo_delete_readds_render_entry() {
         removed: vec![l.clone()],
     };
     let changes = store.apply_edit_forward(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
-    assert_eq!(delta.removed.len(), 1);
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
+    assert_eq!(removed(&cells).len(), 1);
     assert!(store.cell_lookup(1).is_none());
 
     // Undo delete
     let changes = store.apply_edit_reverse(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
-    assert_eq!(delta.added.len(), 1);
-    assert_eq!(delta.added[0].id, 1);
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
+    let rows = added(&cells);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, 1);
     assert!(
         store.cell_lookup(1).is_some(),
         "render entry must be restored after undo delete"
@@ -1883,15 +1961,15 @@ fn undo_delete_multiple_then_readd_renders_correctly() {
         removed: vec![l1.clone(), l2.clone()],
     };
     let changes = store.apply_edit_forward(&entry);
-    store.derive_render_delta(&changes, &HashSet::new());
+    store.derive_cell_frames(&changes, &HashSet::new());
     assert!(store.cell_lookup(1).is_none());
     assert!(store.cell_lookup(2).is_none());
     assert!(store.cell_lookup(3).is_some());
 
     // Undo
     let changes = store.apply_edit_reverse(&entry);
-    let delta = store.derive_render_delta(&changes, &HashSet::new());
-    assert_eq!(delta.added.len(), 2);
+    let cells = store.derive_cell_frames(&changes, &HashSet::new());
+    assert_eq!(added(&cells).len(), 2);
     assert!(store.cell_lookup(1).is_some());
     assert!(store.cell_lookup(2).is_some());
     assert!(store.cell_lookup(3).is_some());
@@ -2087,7 +2165,7 @@ fn selection_bitmask_fixture_path() -> PathBuf {
 }
 
 /// Generator, not an assertion. `cargo test emit_selection_bitmask_fixture -- --ignored`
-/// rewrites `app/test/unit/fixtures/selection-bitmask.bin`, which `emitBitmask.test.ts`
+/// rewrites `app/test/unit/fixtures/selection-bitmask.bin`, which `selectionBitmask.test.ts`
 /// decodes.
 #[test]
 #[ignore]
@@ -2107,14 +2185,13 @@ fn the_selection_bitmask_fixture_matches_the_serializer() {
     assert_eq!(on_disk, selection_bitmask_fixture());
 }
 
-/// Generator, not an assertion. `cargo test emit_render_fixture -- --ignored` rewrites
-/// `app/test/unit/fixtures/render-buffer.bin`, which `cellManager.test.ts` parses.
-///
-/// Scene: 4 locations in 3 cells (d: id 3, r: id 2, u: ids 1 and 4), arrow style, and
-/// two selections -- "a" [255,0,0] over ids 1 and 4, "b" [0,0,255] over id 2.
-#[test]
-#[ignore]
-fn emit_render_fixture() {
+/// The frames behind `app/test/unit/fixtures/render-frame.bin`, as a window watching from
+/// the start receives them: the scene, then one edit. Arrow style, 4 locations in 3 cells
+/// (d: id 3, r: id 2, u: ids 1 and 4), selections "a" [255,0,0] over ids 1 and 4 and
+/// "b" [0,0,255] over id 2. The edit removes id 1, adds id 5 in `u` and id 6 in `d`,
+/// moves id 2 from `r` to `u` and turns id 4; a union selection makes it a full resolve,
+/// so the patch frame carries a selection section too.
+fn render_frame_fixture() -> Vec<u8> {
     let locs = vec![
         loc_with_heading(1, 48.8, 2.35, 90.0),
         loc_with_heading(2, -33.8, 151.2, 180.0),
@@ -2125,28 +2202,308 @@ fn emit_render_fixture() {
     store.bake_overlay();
     push_resolved(&mut store, "a", [255, 0, 0], &[1, 4]);
     push_resolved(&mut store, "b", [0, 0, 255], &[2]);
-    for id in [1, 2, 4] {
-        store.selections.ids.insert(id);
-    }
-
-    let req = RenderRequest {
-        west: -180.0,
-        south: -90.0,
-        east: 180.0,
-        north: 90.0,
-        selected_ids: None,
-        marker_style: "arrow".into(),
-        marker_color: None,
+    store.selections.resolved[1].sel.selector = Selector::Union {
+        selections: vec![Selection {
+            key: "b0".into(),
+            color: [0, 0, 255],
+            selector: Selector::Manual { locations: vec![2] },
+        }],
     };
-    let buf = build_cell_render_buffers(&mut store, &req);
+    store.selections.ids = store.selections.live_ids();
 
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/unit/fixtures");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("render-buffer.bin"), &buf).unwrap();
+    let frames = Captured::default();
+    let req = RenderRequest {
+        marker_style: "arrow".into(),
+        ..RenderRequest::default()
+    };
+    store.subscribe_frames("fixture".into(), frames.sink(), &req);
+
+    let changes = store.apply_edit(
+        vec![locs[0].clone(), locs[1].clone(), locs[3].clone()],
+        vec![
+            loc_with_heading(2, 48.85, 2.3, 180.0),
+            loc_with_heading(4, 48.9, 2.4, 135.0),
+            loc_with_heading(5, 48.7, 2.2, 10.0),
+            loc_with_heading(6, 40.6, -74.1, 20.0),
+        ],
+    );
+    store.finish_mutation(&changes);
+
+    let mut out = Vec::new();
+    for bytes in frames.bytes() {
+        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&bytes);
+    }
+    out
+}
+
+fn render_frame_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/unit/fixtures/render-frame.bin")
+}
+
+/// Generator, not an assertion. `cargo test emit_render_frame_fixture -- --ignored`
+/// rewrites `app/test/unit/fixtures/render-frame.bin`: each frame is prefixed with its
+/// u32 byte length. `cellManager.test.ts` applies them.
+#[test]
+#[ignore]
+fn emit_render_frame_fixture() {
+    let path = render_frame_fixture_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, render_frame_fixture()).unwrap();
+}
+
+/// The committed fixture is what the encoder writes today.
+/// If either side drifts, one of the two suites goes red.
+#[test]
+fn the_render_frame_fixture_matches_the_encoder() {
+    let on_disk = fs::read(render_frame_fixture_path())
+        .expect("fixture; regenerate with `cargo test emit_render_frame_fixture -- --ignored`");
+    assert_eq!(on_disk, render_frame_fixture());
+}
+
+/// The page's cells after applying `frames` in order, the way `CellManager.apply` does:
+/// a replace starts over, each removal swap-removes, adds append, patches must land inside.
+fn replay(frames: &[Frame]) -> [Vec<u32>; 32] {
+    let mut cells: [Vec<u32>; 32] = array::from_fn(|_| Vec::new());
+    for frame in frames {
+        if frame.kind == FrameKind::REPLACE {
+            cells = array::from_fn(|_| Vec::new());
+        }
+        for c in &frame.cells {
+            let ids = &mut cells[c.cell as usize];
+            for &i in &c.remove {
+                ids.swap_remove(i as usize);
+            }
+            ids.extend(&c.add.key);
+            for &i in &c.patch.key {
+                assert!((i as usize) < ids.len(), "patch {i} past cell {}", c.cell);
+            }
+        }
+    }
+    cells
+}
+
+fn render_order(store: &Store) -> [Vec<u32>; 32] {
+    array::from_fn(|ci| {
+        store.render.cells[ci]
+            .as_ref()
+            .map(|cr| cr.id_order.clone())
+            .unwrap_or_default()
+    })
 }
 
 #[test]
-fn render_buffer_with_selection_overlay() {
+fn replayed_frames_rebuild_the_render_cell_order() {
+    // Picking reads a slot through `id_order`, so the page's slots must match it exactly
+    // after any run of edits: removals, adds, cross-cell moves and in-place patches mixed
+    // in one changeset, in whatever order the changeset lists them.
+    let mut seed = 0x2545_f491_u64;
+    let mut next = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let spot = |r: u64| {
+        (
+            f64::from((r % 7) as u32) * 25.0 - 80.0,
+            f64::from((r % 11) as u32) * 30.0 - 160.0,
+        )
+    };
+    let locs: Vec<Location> = (1..=40)
+        .map(|id| {
+            let (lat, lng) = spot(u64::from(id) * 7919);
+            loc(id, lat, lng)
+        })
+        .collect();
+    let mut store = setup_store_with(&locs);
+    store.bake_overlay();
+    let frames = Captured::default();
+    store.subscribe_frames("page".into(), frames.sink(), &RenderRequest::default());
+
+    for round in 0..60 {
+        let alive: Vec<Location> = store.collect(&Selector::Everything);
+        let mut remove = Vec::new();
+        let mut create = Vec::new();
+        for l in &alive {
+            match next(6) {
+                0 => remove.push(l.clone()),
+                1 => {
+                    let (lat, lng) = spot(next(1_000));
+                    remove.push(l.clone());
+                    create.push(Location {
+                        lat,
+                        lng,
+                        ..l.clone()
+                    });
+                }
+                2 => {
+                    remove.push(l.clone());
+                    create.push(Location {
+                        heading: l.heading + 10.0,
+                        ..l.clone()
+                    });
+                }
+                _ => {}
+            }
+        }
+        for _ in 0..next(5) {
+            let (lat, lng) = spot(next(1_000));
+            create.push(loc(store.alloc_id(), lat, lng));
+        }
+        let changes = store.apply_edit(remove, create);
+        store.finish_mutation(&changes);
+        assert_eq!(
+            replay(&frames.frames()),
+            render_order(&store),
+            "round {round}"
+        );
+    }
+}
+
+#[test]
+fn every_mutation_sends_one_frame_stamped_with_its_version() {
+    let mut store = setup_store_with(&[loc(1, 10.0, 20.0)]);
+    let frames = watch(&mut store);
+
+    let changes = store.apply_edit(Vec::new(), vec![loc(2, 30.0, 40.0)]);
+    let moved = store.finish_mutation(&changes);
+    // A change that moves no row still answers the page's wait for its version.
+    let quiet = store.finish_mutation(&ChangeSet::default());
+
+    let sent = frames.frames();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].version, moved.version);
+    assert_eq!(sent[1].version, quiet.version);
+    assert!(sent.iter().all(|f| f.kind == FrameKind::PATCH));
+    assert!(sent[1].cells.is_empty());
+}
+
+#[test]
+fn subscribing_sends_the_scene_to_every_watching_window() {
+    // The scene rebuild reorders the render cells, so a window already watching must get
+    // the new order too, or its slots would stop matching `id_order`.
+    let mut store = setup_store_with(&[loc(1, 10.0, 20.0), loc(2, 10.0, 20.0)]);
+    store.bake_overlay();
+    let (a, b) = (Captured::default(), Captured::default());
+    store.subscribe_frames("a".into(), a.sink(), &RenderRequest::default());
+    store.subscribe_frames("b".into(), b.sink(), &RenderRequest::default());
+
+    assert_eq!(a.frames().len(), 2);
+    assert_eq!(b.frames().len(), 1);
+    assert_eq!(a.last(), b.last());
+    assert_eq!(b.last().kind, FrameKind::REPLACE);
+}
+
+#[test]
+fn a_store_replacing_another_draws_its_scene_for_the_windows_watching_the_old_one() {
+    let mut old = setup_store_with(&[loc(1, 10.0, 20.0)]);
+    let watcher = Captured::default();
+    old.subscribe_frames("a".into(), watcher.sink(), &RenderRequest::default());
+    let mut new = setup_store_with(&[loc(1, 10.0, 20.0), loc(2, -30.0, -40.0)]);
+
+    new.adopt_watchers(old);
+
+    let frame = watcher.last();
+    assert_eq!(frame.kind, FrameKind::REPLACE);
+    assert_eq!(frame.version, new.version);
+    let ids: usize = frame.cells.iter().map(|c| c.add.key.len()).sum();
+    assert_eq!(ids, 2, "the new store's rows, not the old one's");
+    new.apply_undoable(vec![], vec![loc(3, 0.0, 0.0)]);
+    assert_eq!(
+        watcher.last().kind,
+        FrameKind::PATCH,
+        "later edits reach it too"
+    );
+}
+
+#[test]
+fn an_add_reports_the_id_its_first_location_was_given() {
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0)]);
+    store.next_id = 2;
+    let added = apply_adds(&mut store, vec![loc(0, 1.0, 1.0), loc(0, 2.0, 2.0)]);
+    let ids: Vec<u32> = store
+        .collect(&Selector::Everything)
+        .iter()
+        .filter(|l| l.lat > 0.5)
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(ids, vec![added.first_id, added.first_id + 1]);
+}
+
+#[test]
+fn a_selection_change_restates_every_cell_and_keeps_the_bounds() {
+    let mut store = setup_store_with(&[loc(1, 10.0, 20.0), loc(2, -30.0, -40.0)]);
+    store.bake_overlay();
+    let bounds = store.cached_bounds();
+    let frames = watch(&mut store);
+    push_resolved(&mut store, "a", [255, 0, 0], &[2]);
+    store.selections.ids = store.selections.live_ids();
+
+    let result = store.finish_selection_change();
+
+    let frame = frames.last();
+    assert_eq!(frame.version, result.version);
+    assert!(frame.cells.is_empty(), "no row moved");
+    assert_eq!(frame.palette, [[255, 0, 0]]);
+    let section = frame.selection.expect("every cell's membership restated");
+    assert_eq!(section, store.selection_section());
+    assert_eq!(result.selection_sync.expect("counts").selected_count, 1);
+    assert!(
+        store.bounds.peek().unwrap().current(store.version),
+        "a selection change moves no row, so the bounds carry over"
+    );
+    assert_eq!(store.cached_bounds(), bounds);
+}
+
+#[test]
+fn unbinding_a_window_stops_its_frames() {
+    let mut mgr = StoreManager::new();
+    mgr.stores.insert("map-a".into(), setup_store_with(&[]));
+    mgr.window_map.insert("win-1".into(), "map-a".into());
+    mgr.window_map.insert("win-2".into(), "map-a".into());
+    let (one, two) = (Captured::default(), Captured::default());
+    let store = mgr.store_for_map("map-a").unwrap();
+    store.frames.insert("win-1".into(), one.sink());
+    store.frames.insert("win-2".into(), two.sink());
+
+    mgr.unbind_window("win-1");
+    mgr.store_for_map("map-a")
+        .unwrap()
+        .finish_mutation(&ChangeSet::default());
+
+    assert!(
+        one.bytes().is_empty(),
+        "the closed window hears nothing more"
+    );
+    assert_eq!(two.bytes().len(), 1);
+}
+
+#[test]
+fn the_render_frame_fixture_covers_every_section() {
+    let bytes = render_frame_fixture();
+    let mut frames = Vec::new();
+    let mut off = 0;
+    while off < bytes.len() {
+        let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+        frames.push(frame::tests::decode(&bytes[off + 4..off + 4 + len]));
+        off += 4 + len;
+    }
+    let [scene, edit] = frames.as_slice() else {
+        panic!("the scene and one edit");
+    };
+    assert_eq!(scene.kind, FrameKind::REPLACE);
+    assert_eq!(edit.kind, FrameKind::PATCH);
+    assert_eq!(edit.palette, [[255, 0, 0], [0, 0, 255]]);
+    assert!(!removed(&edit.cells).is_empty());
+    let moved_in = added(&edit.cells).iter().any(|r| r.key == 2);
+    assert!(moved_in, "the move lands in its new cell");
+    assert!(!patched(&edit.cells).is_empty());
+    assert!(edit.selection.is_some(), "the union forces a full resolve");
+}
+
+#[test]
+fn the_scene_frame_states_each_rows_selection() {
     let l1 = loc(1, 10.0, 20.0);
     let l2 = loc(2, 30.0, 40.0);
     let mut store = setup_store_with(&[l1, l2]);
@@ -2154,35 +2511,19 @@ fn render_buffer_with_selection_overlay() {
     push_resolved(&mut store, "manual", [255, 0, 0], &[1]);
     store.selections.ids.insert(1);
 
-    let req = RenderRequest {
-        west: -180.0,
-        south: -90.0,
-        east: 180.0,
-        north: 90.0,
-        selected_ids: None,
-        marker_style: "pin".into(),
-        marker_color: None,
-    };
-    let buf = build_cell_render_buffers(&mut store, &req);
+    let frame = store.scene_frame();
 
-    // Skip to selection overlay
-    let cell_count = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-    let mut offset = 4usize;
-    for _ in 0..cell_count {
-        let count = u32::from_le_bytes(buf[offset + 1..offset + 5].try_into().unwrap()) as usize;
-        // header+pad + ids + positions + visible+pad + angles
-        offset += 8 + count * 4 + count * 2 * 4 + count + (4 - count % 4) % 4 + count * 4;
-    }
-    let sel_count = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-    assert_eq!(sel_count, 1, "one selected location");
+    assert_eq!(frame.palette, [[255, 0, 0]]);
+    let mut sel: Vec<(u32, u32)> = added(&frame.cells).iter().map(|r| (r.key, r.sel)).collect();
+    sel.sort_unstable();
+    assert_eq!(sel, [(1, 0), (2, NO_SEL)]);
 }
 
 #[test]
-fn render_buffer_ships_selection_index_per_entry() {
+fn the_scene_frame_tags_each_row_with_its_drawing_selection() {
     // Ids alternate between the two selections, so batch order and selection order
-    // disagree. The buffer ships entries in emission order, each tagged with the
-    // selection that draws it; JS sorts by that tag in `CellManager.load`, which is
-    // where the z-order between overlapping markers is decided.
+    // disagree. Each row carries the selection that draws it; the page orders its overlay
+    // by that index, which is where the z-order between overlapping markers is decided.
     let locs: Vec<_> = (1..=4).map(|id| loc(id, 10.0, 20.0)).collect();
     let mut store = setup_store_with(&locs);
     store.bake_overlay();
@@ -2192,39 +2533,14 @@ fn render_buffer_ships_selection_index_per_entry() {
         store.selections.ids.insert(id);
     }
 
-    let req = RenderRequest {
-        west: -180.0,
-        south: -90.0,
-        east: 180.0,
-        north: 90.0,
-        selected_ids: None,
-        marker_style: "pin".into(),
-        marker_color: None,
-    };
-    let buf = build_cell_render_buffers(&mut store, &req);
-
-    let cell_count = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-    let mut offset = 4usize;
-    for _ in 0..cell_count {
-        let count = u32::from_le_bytes(buf[offset + 1..offset + 5].try_into().unwrap()) as usize;
-        offset += 8 + count * 4 + count * 2 * 4 + count + (4 - count % 4) % 4 + count * 4;
-    }
-    let n = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
-    assert_eq!(n, 4, "every location is selected");
-    offset += 4;
-    // positions, colors, angles, then ids and the selection indices.
-    let ids_at = offset + n * 8 + n * 4 + n * 4;
-    let sel_at = ids_at + n * 4;
-    let read = |at: usize, i: usize| {
-        u32::from_le_bytes(buf[at + i * 4..at + i * 4 + 4].try_into().unwrap())
-    };
-    let sel: Vec<u32> = (0..n).map(|i| read(sel_at, i)).collect();
-    let ids: Vec<u32> = (0..n).map(|i| read(ids_at, i)).collect();
-    assert_eq!(ids, vec![1, 2, 3, 4], "emission order");
+    let rows = added(&store.scene_frame().cells);
+    let ids: Vec<u32> = rows.iter().map(|r| r.key).collect();
+    let sel: Vec<u32> = rows.iter().map(|r| r.sel).collect();
+    assert_eq!(ids, vec![1, 2, 3, 4], "batch order");
     assert_eq!(
         sel,
         vec![0, 1, 0, 1],
-        "each entry tagged with its drawing selection"
+        "each row tagged with its drawing selection"
     );
 }
 
@@ -2237,10 +2553,10 @@ fn paint_for_uses_last_matching_selection() {
     }
     store.selections.ids.insert(1);
 
-    let paint = store.selections.paint_for(1).expect("id 1 is selected");
-    assert_eq!(paint.color, [0, 0, 255], "last selection wins");
     // The index is what the overlay orders by, so it must name the winning selection.
-    assert_eq!(paint.idx, 1, "index of the winning selection");
+    let paint = store.selections.paint_for(1).expect("id 1 is selected");
+    assert_eq!(paint, 1, "last selection wins");
+    assert_eq!(store.selections.palette()[paint as usize], [0, 0, 255]);
     assert!(store.selections.paint_for(2).is_none(), "unselected id");
 }
 
@@ -2259,9 +2575,11 @@ fn paint_map_matches_paint_for() {
 
     let map = store.selections.paint_map();
     for id in 1..=4 {
-        let bulk = map.get(&id).map(|p| (p.idx, p.color));
-        let single = store.selections.paint_for(id).map(|p| (p.idx, p.color));
-        assert_eq!(bulk, single, "id {id}");
+        assert_eq!(
+            map.get(&id).copied(),
+            store.selections.paint_for(id),
+            "id {id}"
+        );
     }
 }
 
@@ -3300,6 +3618,7 @@ fn a_ghosted_selection_is_recounted_by_a_mutation_but_never_selected_or_drawn() 
     add_tag_selection(&mut store, 2, [0, 255, 0]);
 
     let after = loc_with_tags(1, 10.0, 20.0, vec![1, 2]);
+    let frames = watch(&mut store);
     let result = store.finish_mutation(&ChangeSet {
         updated: vec![(l1, after)],
         ..Default::default()
@@ -3309,13 +3628,16 @@ fn a_ghosted_selection_is_recounted_by_a_mutation_but_never_selected_or_drawn() 
     assert_eq!(sync.counts["tag:1"], 1, "the ghosted selection is counted");
     assert_eq!(sync.counts["tag:2"], 1);
     assert_eq!(sync.selected_count, 1, "only the live selection selects");
+    let frame = frames.last();
     assert_eq!(
-        result.delta.updated[0].sel,
-        Some(SelPaint {
-            idx: 0,
-            color: [0, 255, 0]
-        }),
+        patched(&frame.cells)[0].sel,
+        0,
         "the paint index counts live selections only"
+    );
+    assert_eq!(
+        frame.palette,
+        [[0, 255, 0]],
+        "the palette holds live selections only"
     );
 }
 
@@ -3339,10 +3661,9 @@ fn a_full_resolve_counts_a_ghosted_selection_and_keeps_it_out_of_the_selected_se
         1,
         "only the live selection selects"
     );
-    let sync = store.build_selection_bitmask();
-    assert_eq!(sync.selected_count, 1);
+    assert_eq!(store.selection_sync().selected_count, 1);
     assert_eq!(
-        u32::from_le_bytes(sync.bitmask.unwrap()[0..4].try_into().unwrap()),
+        u32::from_le_bytes(store.selection_section()[0..4].try_into().unwrap()),
         1,
         "the bitmask carries live selections only"
     );
@@ -3392,6 +3713,7 @@ fn incremental_membership_change_ships_no_bitmask() {
     let mut store = setup_store_with(slice::from_ref(&l1));
     insert_tag(&mut store, 1, 0);
     add_tag_selection(&mut store, 1, [255, 0, 0]);
+    let frames = watch(&mut store);
 
     let result = store.finish_mutation(&ChangeSet {
         updated: vec![(l1, loc_with_tags(1, 10.0, 20.0, vec![1]))],
@@ -3399,23 +3721,20 @@ fn incremental_membership_change_ships_no_bitmask() {
     });
 
     let sync = result.selection_sync.expect("counts still sync");
-    assert!(
-        sync.bitmask.is_none(),
-        "the incremental path carries membership on the render delta, not a bitmask"
-    );
     assert_eq!(sync.selected_count, 1);
+    let frame = frames.last();
     assert_eq!(
-        result.delta.updated.len(),
+        frame.selection, None,
+        "the incremental path carries membership on the rows, not a bitmask"
+    );
+    let rows = patched(&frame.cells);
+    assert_eq!(
+        rows.len(),
         1,
         "membership rides on a patch for the row that changed"
     );
-    assert_eq!(
-        result.delta.updated[0].sel,
-        Some(SelPaint {
-            idx: 0,
-            color: [255, 0, 0]
-        })
-    );
+    assert_eq!(rows[0].sel, 0);
+    assert_eq!(frame.palette, [[255, 0, 0]]);
 }
 
 #[test]
@@ -3437,12 +3756,12 @@ fn full_resolve_ships_a_bitmask_for_every_cell() {
         Vec::new(),
         (3..=103).map(|id| loc(id, 10.0, 20.0)).collect(),
     );
-    let result = store.finish_mutation(&changes);
+    let frames = watch(&mut store);
+    store.finish_mutation(&changes);
 
-    let buf = result
-        .selection_sync
-        .unwrap()
-        .bitmask
+    let buf = frames
+        .last()
+        .selection
         .expect("full resolve rebuilds the whole bitmask");
     assert_eq!(
         bitmask_cell_chars(&buf).len(),
@@ -3459,30 +3778,27 @@ fn membership_delta_reports_gained_on_tag_add() {
 
     // Add tag 1 to location 1
     let with_tag = loc_with_tags(1, 10.0, 20.0, vec![1]);
-    let result = store.finish_mutation(&ChangeSet {
+    let frames = watch(&mut store);
+    store.finish_mutation(&ChangeSet {
         updated: vec![(l1, with_tag)],
         ..Default::default()
     });
 
-    // The row gained a selection without moving, so it ships as a coordinate-free patch.
-    let p = result
-        .delta
-        .updated
+    // The row gained a selection without moving, so it ships as a patch restating it.
+    let frame = frames.last();
+    let p = *patched(&frame.cells)
         .iter()
-        .find(|p| p.sel.is_some())
+        .find(|p| p.sel != NO_SEL)
         .expect("a row that joins a selection must state it");
     assert_eq!(
-        p.sel,
-        Some(SelPaint {
-            idx: 0,
-            color: [255, 0, 0]
-        }),
+        frame.palette[p.sel as usize],
+        [255, 0, 0],
         "the selection colour"
     );
     assert_eq!(
-        (p.lng, p.lat, p.heading),
-        (None, None, None),
-        "nothing moved, so only the selection state is stated"
+        (p.lng, p.lat, p.angle),
+        (20.0, 10.0, 0.0),
+        "nothing moved, so the patch restates where the row already is"
     );
 }
 
@@ -3496,27 +3812,29 @@ fn membership_delta_reports_lost_on_tag_remove() {
     assert!(store.selections.ids.contains(1), "starts selected");
 
     let untagged = loc_with_tags(1, 10.0, 20.0, vec![]);
-    let result = store.finish_mutation(&ChangeSet {
+    let frames = watch(&mut store);
+    store.finish_mutation(&ChangeSet {
         updated: vec![(tagged, untagged)],
         ..Default::default()
     });
 
     assert!(!store.selections.ids.contains(1), "left the selection");
+    let rows = patched(&frames.last().cells);
     assert_eq!(
-        result.delta.updated.len(),
+        rows.len(),
         1,
         "a row that leaves a selection must be restored to the base layer"
     );
     assert_eq!(
-        result.delta.updated[0].sel, None,
+        rows[0].sel, NO_SEL,
         "no selection, so the base layer draws it again"
     );
 }
 
 #[test]
 fn removed_selected_location_leaves_no_patch() {
-    // A deleted row has no cell left to patch; JS drops it from the overlay via
-    // `delta.removed`, so emitting a patch for it would dangle.
+    // A deleted row has no cell left to patch; the page drops it from the overlay with
+    // its removal, so emitting a patch for it would dangle.
     let l1 = loc_with_tags(1, 10.0, 20.0, vec![1]);
     let l2 = loc_with_tags(2, 10.001, 20.001, vec![1]);
     let mut store = setup_store_with(&[l1, l2]);
@@ -3524,17 +3842,20 @@ fn removed_selected_location_leaves_no_patch() {
     add_tag_selection(&mut store, 1, [255, 0, 0]);
     store.resolve_selection_membership();
 
-    let result = store.finish_mutation(&ChangeSet {
+    let frames = watch(&mut store);
+    store.finish_mutation(&ChangeSet {
         removed: vec![loc_with_tags(1, 10.0, 20.0, vec![1])],
         ..Default::default()
     });
 
+    let frame = frames.last();
     assert!(
-        result.delta.updated.is_empty(),
+        patched(&frame.cells).is_empty(),
         "no patch for a row that no longer has a cell"
     );
-    assert!(
-        result.delta.removed.iter().any(|r| r.id == 1),
+    assert_eq!(
+        removed(&frame.cells),
+        [(render_cell_idx(10.0, 20.0), 0)],
         "the removal itself is what drops it from the overlay"
     );
     assert!(!store.selections.ids.contains(1));
@@ -3555,37 +3876,30 @@ fn leaving_winning_selection_restates_survivors_paint() {
     store.resolve_selection_membership();
     assert_eq!(
         store.selections.paint_for(1),
-        Some(SelPaint {
-            idx: 1,
-            color: [0, 0, 255]
-        }),
+        Some(1),
         "the later selection wins while the row is in both"
     );
 
     let only_first = loc_with_tags(1, 10.0, 20.0, vec![1]);
-    let result = store.finish_mutation(&ChangeSet {
+    let frames = watch(&mut store);
+    store.finish_mutation(&ChangeSet {
         updated: vec![(both, only_first)],
         ..Default::default()
     });
 
+    let frame = frames.last();
+    let rows = patched(&frame.cells);
     assert_eq!(
-        result.delta.updated.len(),
+        rows.len(),
         1,
         "leaving the winner while staying selected must still ship a patch"
     );
-    let p = &result.delta.updated[0];
+    assert_eq!(rows[0].sel, 0, "the surviving selection's paint");
+    assert_eq!(frame.palette[0], [255, 0, 0]);
     assert_eq!(
-        p.sel,
-        Some(SelPaint {
-            idx: 0,
-            color: [255, 0, 0]
-        }),
-        "the surviving selection's paint"
-    );
-    assert_eq!(
-        (p.lng, p.lat, p.heading),
-        (None, None, None),
-        "nothing moved, so only the selection state is stated"
+        (rows[0].lng, rows[0].lat),
+        (20.0, 10.0),
+        "nothing moved, so the patch restates where the row already is"
     );
 }
 
@@ -3602,27 +3916,25 @@ fn membership_delta_no_patch_when_nothing_changed() {
         heading: 90.0,
         ..l1.clone()
     };
-    let result = store.finish_mutation(&ChangeSet {
+    let frames = watch(&mut store);
+    store.finish_mutation(&ChangeSet {
         updated: vec![(l1, updated)],
         ..Default::default()
     });
 
     // The heading moved, so a patch ships — but it restates the unchanged selection.
-    assert_eq!(result.delta.updated.len(), 1);
+    let rows = patched(&frames.last().cells);
+    assert_eq!(rows.len(), 1);
     assert_eq!(
-        result.delta.updated[0].sel,
-        Some(SelPaint {
-            idx: 0,
-            color: [255, 0, 0]
-        }),
+        rows[0].sel, 0,
         "a patch always states the row's current selection state"
     );
 }
 
 #[test]
-fn selected_row_moving_across_cells_ships_as_one_move() {
-    // A cross-cell move ships as a single added entry carrying the slot it vacated, so JS
-    // can move the overlay entry with the row instead of guessing from a removed/added pair.
+fn selected_row_moving_across_cells_keeps_its_selection() {
+    // A cross-cell move leaves the old cell and joins the new one in the same frame, and
+    // the add restates the row's selection, so its overlay entry follows it.
     let l1 = loc_with_tags(1, 10.0, 20.0, vec![1]);
     let mut store = setup_store_with(slice::from_ref(&l1));
     insert_tag(&mut store, 1, 1);
@@ -3640,31 +3952,24 @@ fn selected_row_moving_across_cells_ships_as_one_move() {
         render_cell_idx(-30.0, -40.0),
         "test requires a cross-cell move"
     );
-    let result = store.finish_mutation(&ChangeSet {
+    let frames = watch(&mut store);
+    store.finish_mutation(&ChangeSet {
         updated: vec![(l1, moved)],
         ..Default::default()
     });
 
-    assert!(
-        !result.delta.removed.iter().any(|r| r.id == 1),
-        "a move is not a removal"
-    );
-    let added = result
-        .delta
-        .added
-        .iter()
-        .find(|e| e.id == 1)
-        .expect("re-added in the new cell");
+    let frame = frames.last();
     assert_eq!(
-        added.sel,
-        Some(SelPaint {
-            idx: 0,
-            color: [255, 0, 0]
-        }),
-        "still selected"
+        removed(&frame.cells),
+        [(render_cell_idx(10.0, 20.0), 0)],
+        "the old cell loses the row"
     );
-    let from = added.moved_from.as_ref().expect("carries the vacated slot");
-    assert_eq!(from.id, 1);
+    let row = *added(&frame.cells)
+        .iter()
+        .find(|r| r.key == 1)
+        .expect("re-added in the new cell");
+    assert_eq!(row.cell, render_cell_idx(-30.0, -40.0));
+    assert_eq!(row.sel, 0, "still selected");
 }
 
 // -----------------------------------------------------------------------
@@ -5768,9 +6073,13 @@ fn new_extra_key_is_announced_in_the_same_result() {
     let mut store = setup_store_with(&[]);
     let r = apply_adds(&mut store, vec![loc_with_extra(1, r#"{"zz":1}"#)]);
     assert!(store.field_defs.contains_key("zz"));
-    assert!(r.values.field_defs.is_some_and(|d| d.contains_key("zz")));
+    assert!(r
+        .mutation
+        .values
+        .field_defs
+        .is_some_and(|d| d.contains_key("zz")));
     let r = apply_adds(&mut store, vec![loc_with_extra(2, r#"{"zz":2}"#)]);
-    assert!(r.values.field_defs.is_none());
+    assert!(r.mutation.values.field_defs.is_none());
 
     let r = apply_updates(
         &mut store,
@@ -5952,8 +6261,11 @@ fn stage_chunks(chunks: &[Vec<Location>]) -> String {
     session
 }
 
-fn added_ids(result: &MutationResult) -> Vec<u32> {
-    result.delta.added.iter().map(|a| a.id).collect()
+/// Ids the last frame added, ascending: allocation order, which is staged order.
+fn added_ids(frames: &Captured) -> Vec<u32> {
+    let mut ids: Vec<u32> = added(&frames.last().cells).iter().map(|r| r.key).collect();
+    ids.sort_unstable();
+    ids
 }
 
 #[test]
@@ -5977,9 +6289,10 @@ fn uploaded_add_echoes_ids_in_staged_order() {
         vec![loc(0, 3.0, 3.0)],
     ]);
     let uploaded = export::read_uploaded_chunks::<Location>(&session).unwrap();
-    let result = apply_adds(&mut store, uploaded);
+    let frames = watch(&mut store);
+    apply_adds(&mut store, uploaded);
 
-    let ids = added_ids(&result);
+    let ids = added_ids(&frames);
     assert_eq!(ids.len(), 3);
     assert!(ids.windows(2).all(|w| w[1] == w[0] + 1));
     for (id, lat) in ids.iter().zip([1.0, 2.0, 3.0]) {

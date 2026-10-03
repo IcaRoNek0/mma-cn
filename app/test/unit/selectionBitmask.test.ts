@@ -1,24 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { emitBitmask } from "@/store/useMapStore";
-import { subscribe } from "@/lib/events";
-import type { RGB } from "@/lib/util/color";
-import type { SelCellEntry } from "@/lib/render/CellManager";
-
-/** Capture what emitBitmask emits for a wire message. */
-function decode(bytes: number[]): { selColors: RGB[]; cellEntries: SelCellEntry[] } {
-	let captured: { selColors: RGB[]; cellEntries: SelCellEntry[] } = {
-		selColors: [],
-		cellEntries: [],
-	};
-	const unsub = subscribe("render:selection", ({ selColors, cellEntries }) => {
-		captured = { selColors, cellEntries };
-	});
-	emitBitmask(bytes);
-	unsub();
-	return captured;
-}
+import { decodeSelectionBitmask } from "@/lib/render/CellManager";
 
 // `selection-bitmask.bin` is written by the Rust serializer (store/engine.test.rs,
 // `emit_selection_bitmask_fixture`), which also describes the scene. Decoding the real
@@ -27,10 +10,10 @@ function decode(bytes: number[]): { selColors: RGB[]; cellEntries: SelCellEntry[
 // If either side drifts, one of the two suites goes red.
 const fixturePath = fileURLToPath(new URL("./fixtures/selection-bitmask.bin", import.meta.url));
 
-describe("emitBitmask wire decode", () => {
+describe("selection section wire decode", () => {
 	// Skips until the generator has been run, so a checkout without the artifact stays green.
 	it.skipIf(!existsSync(fixturePath))("decodes the bitmask binary Rust emits", () => {
-		const { selColors, cellEntries } = decode(Array.from(readFileSync(fixturePath)));
+		const { selColors, cellEntries } = decodeSelectionBitmask(readFileSync(fixturePath));
 
 		// 300 selections: the count is a u32, so it no longer wraps the way a u8 header did
 		// (300 % 256 = 44) and desyncs every following offset.
@@ -63,8 +46,8 @@ describe("emitBitmask wire decode", () => {
 		if (rB.kind === "mask") expect(Array.from(rB.mask)).toEqual([0b101]);
 	});
 
-	it("emits nothing for a buffer holding no cells", () => {
-		const { selColors, cellEntries } = decode([0, 0, 0, 0, 0]);
+	it("decodes nothing from a section holding no cells", () => {
+		const { selColors, cellEntries } = decodeSelectionBitmask(new Uint8Array(5));
 		expect(selColors).toEqual([]);
 		expect(cellEntries).toEqual([]);
 	});

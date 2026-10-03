@@ -1,12 +1,12 @@
-//! Cell render buffers: geohash binning, the wire format JS parses into `CellManager`, and the per-mutation deltas.
+//! Render cells: geohash binning, the selection membership wire format, and the frames each mutation projects onto the cells.
 
 use super::*;
-use crate::store::arrow;
 use crate::store::arrow::Columns;
 use roaring::RoaringBitmap;
 use std::array;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use tauri::ipc::Channel;
 
 /// Standard base-32 alphabet (Gustavo Niemeyer geohash variant); render cells are
 /// keyed by its first character.
@@ -42,11 +42,6 @@ pub(crate) fn render_cell_idx(lat: f64, lng: f64) -> u8 {
         even = !even;
     }
     ch
-}
-
-/// Convert a cell index (0-31) back to its single-character base-32 key.
-pub(super) fn cell_key_from_idx(idx: u8) -> String {
-    String::from(BASE32[idx as usize] as char)
 }
 
 /// Reverse lookup: parse a single-character cell key to its 0-31 index.
@@ -203,70 +198,6 @@ impl RenderState {
     }
 }
 
-/// Marker changes after an edit: added, updated, and removed markers.
-// Every entry states the row's resulting selection state, so applying a delta is idempotent
-// and the base cells and the selection overlay cannot drift apart.
-#[derive(serde::Serialize, Clone, Default, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct RenderDelta {
-    pub added: Vec<RenderEntry>,
-    pub updated: Vec<RenderPatchEntry>,
-    pub removed: Vec<CellRemoval>,
-}
-
-/// The selection drawing a row: its colour, and its index in `SelectionState::resolved`.
-/// The index is the draw order - a later selection overdraws an earlier one - so the
-/// overlay can be ordered by it instead of by whatever order rows happen to arrive in.
-/// Every marker sits at z=0 in one deck.gl layer, so buffer order is the only z there is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct SelPaint {
-    pub idx: u32,
-    pub color: [u8; 3],
-}
-
-/// A marker appended to a render cell: position, heading, and selection state.
-#[derive(serde::Serialize, Clone, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct RenderEntry {
-    pub cell: String,
-    pub id: u32,
-    pub lng: f32,
-    pub lat: f32,
-    pub heading: f32,
-    /// The selection drawing this marker, or `null` when no selection does.
-    pub sel: Option<SelPaint>,
-    /// The slot this row vacated when it crossed cells. Present only for a move, so JS
-    /// mirrors the swap-remove and carries the overlay entry across instead of inferring
-    /// a move from an unrelated removed/added pair.
-    pub moved_from: Option<CellRemoval>,
-}
-
-/// Update to an existing marker within its cell. Position and heading are `null` when
-/// unchanged; `sel` always states the row's current selection state, so a membership
-/// change with no movement is just a patch with no coordinates.
-#[derive(serde::Serialize, Clone, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct RenderPatchEntry {
-    pub cell: String,
-    pub cell_index: usize,
-    pub lng: Option<f32>,
-    pub lat: Option<f32>,
-    pub heading: Option<f32>,
-    pub sel: Option<SelPaint>,
-}
-
-/// A marker removed from a render cell.
-// JS must move the last element into `cell_index` and pop the array to mirror the Rust-side
-// swap-remove.
-#[derive(serde::Serialize, Clone, Default, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct CellRemoval {
-    pub cell: String,
-    pub cell_index: usize,
-    pub id: u32,
-}
-
 /// Parameters for a full marker rebuild. `markerStyle` ("arrow" or "pin") decides whether
 /// headings are drawn.
 // The bounding box fields are unused: there is no viewport culling.
@@ -282,198 +213,6 @@ pub struct RenderRequest {
     pub marker_color: Option<[u8; 3]>,
 }
 
-/// Build the full render binary: single linear pass over all alive locations, partitioned into
-/// 32 geohash cells. Also rebuilds render_cells index and selection overlay. O(N).
-pub(crate) fn build_cell_render_buffers(store: &mut Store, req: &RenderRequest) -> Vec<u8> {
-    let _t = Instant::now();
-    let b = match &store.batch {
-        Some(b) => b,
-        None if store.overlay.adds.is_empty() => return Vec::new(),
-        None => {
-            let empty = arrow::locations_to_batch(&[]);
-            store.batch = Some(empty);
-            store.batch.as_ref().unwrap()
-        }
-    };
-    let batch_n = b.num_rows();
-    let lats = Columns::lat(b);
-    let lngs = Columns::lng(b);
-    let ids_col = Columns::id(b);
-    let headings = Columns::heading(b);
-    let has_dead = !store.overlay.dead.is_empty();
-    let has_patches = !store.overlay.patches.is_empty();
-
-    let selected_set: &RoaringBitmap = &store.selections.ids;
-    let paint_map = store.selections.paint_map();
-    let active_id = store.selections.active_id;
-    let arrow_style = req.marker_style == "arrow";
-
-    // 32 cells indexed by render_cell_idx (0-31). Base markers all draw in the one marker
-    // colour, which JS hands the layer as a constant, so the only per-marker colour fact
-    // here is visibility. The selection overlay below genuinely varies and ships RGBA.
-    struct CellOut {
-        ids: Vec<u32>,
-        positions: Vec<f32>,
-        visible: Vec<u8>,
-        angles: Vec<f32>,
-    }
-    const NONE: Option<CellOut> = None;
-    let mut cells: [Option<CellOut>; 32] = [NONE; 32];
-
-    // Selection overlay: selected entries rendered as a separate colored layer. `sel_idx`
-    // is the drawing selection's index, which JS orders the entries by on load and keeps
-    // them ordered by as later edits add and drop entries.
-    struct SelOverlay {
-        ids: Vec<u32>,
-        positions: Vec<f32>,
-        colors: Vec<u8>,
-        angles: Vec<f32>,
-        sel_idx: Vec<u32>,
-    }
-    let mut sel_ov = SelOverlay {
-        ids: Vec::new(),
-        positions: Vec::new(),
-        colors: Vec::new(),
-        angles: Vec::new(),
-        sel_idx: Vec::new(),
-    };
-
-    {
-        let mut emit = |id: u32, lat: f64, lng: f64, heading: f64| {
-            let ci = render_cell_idx(lat, lng) as usize;
-            let out = cells[ci].get_or_insert_with(|| CellOut {
-                ids: Vec::new(),
-                positions: Vec::new(),
-                visible: Vec::new(),
-                angles: Vec::new(),
-            });
-            out.positions.push(lng as f32);
-            out.positions.push(lat as f32);
-            let angle = if arrow_style { -(heading as f32) } else { 0.0 };
-            // Hidden when the selection overlay or the active highlight is drawing it instead.
-            let hidden = selected_set.contains(id) || active_id == Some(id);
-            out.visible.push(if hidden { 0 } else { 255 });
-            out.angles.push(angle);
-            out.ids.push(id);
-            if let Some(&SelPaint {
-                idx,
-                color: [r, g, b],
-            }) = paint_map.get(&id)
-            {
-                sel_ov.positions.push(lng as f32);
-                sel_ov.positions.push(lat as f32);
-                sel_ov.colors.extend_from_slice(&[r, g, b, 255]);
-                sel_ov.angles.push(angle);
-                sel_ov.ids.push(id);
-                sel_ov.sel_idx.push(idx);
-            }
-        };
-
-        for i in 0..batch_n {
-            let id = ids_col.value(i);
-            if has_dead && store.overlay.dead.contains(id) {
-                continue;
-            }
-            let (lat, lng, heading) = if has_patches {
-                if let Some(p) = store.overlay.patches.get(&id) {
-                    (p.lat, p.lng, p.heading)
-                } else {
-                    (lats.value(i), lngs.value(i), headings.value(i))
-                }
-            } else {
-                (lats.value(i), lngs.value(i), headings.value(i))
-            };
-            emit(id, lat, lng, heading);
-        }
-        for loc in &store.overlay.adds {
-            emit(loc.id, loc.lat, loc.lng, loc.heading);
-        }
-    }
-
-    // Rebuild per-cell render tracking
-    store.render.cells = [const { None }; 32];
-    store.render.id_to_cell_idx.clear();
-    let mut total_count = 0usize;
-    let mut non_empty = 0u32;
-    for (ci, cell) in cells.iter().enumerate() {
-        let Some(out) = cell else {
-            continue;
-        };
-        let mut cr = CellRender {
-            id_order: Vec::with_capacity(out.ids.len()),
-            id_to_index: HashMap::new(),
-        };
-        for (i, &id) in out.ids.iter().enumerate() {
-            cr.id_to_index.insert(id, i);
-            cr.id_order.push(id);
-            store.ensure_id_to_cell_capacity(id);
-            store.render.id_to_cell_idx[id as usize] = ci as u8;
-        }
-        total_count += out.ids.len();
-        non_empty += 1;
-        store.render.cells[ci] = Some(cr);
-    }
-
-    // Serialize: u32 cell_count, per cell:
-    //   [1 byte geohash char][u32 count][3 pad][u32[] ids][f32[] positions][u8[] visible][pad to 4][f32[] angles]
-    // Arrays sit 4-byte aligned within the buffer so JS wraps them as views without copying.
-    let body_cap: usize = (0..32)
-        .filter_map(|ci| cells[ci].as_ref())
-        .map(|o| {
-            8 + o.ids.len() * 4 + o.positions.len() * 4 + o.visible.len() + 3 + o.angles.len() * 4
-        })
-        .sum();
-    let sel_cap = if sel_ov.ids.is_empty() {
-        0
-    } else {
-        sel_ov.positions.len() * 4
-            + sel_ov.colors.len()
-            + sel_ov.angles.len() * 4
-            + sel_ov.ids.len() * 4
-            + sel_ov.sel_idx.len() * 4
-    };
-    let mut buf = Vec::with_capacity(4 + body_cap + 4 + sel_cap);
-    buf.extend_from_slice(&non_empty.to_le_bytes());
-    for ci in 0..32 {
-        let Some(out) = &cells[ci] else {
-            continue;
-        };
-        let count = out.ids.len() as u32;
-        buf.push(BASE32[ci]);
-        buf.extend_from_slice(&count.to_le_bytes());
-        buf.extend_from_slice(&[0u8; 3]);
-        // cast_slice = native-endian; all supported targets are little-endian like the JS side.
-        buf.extend_from_slice(bytemuck::cast_slice(&out.ids));
-        buf.extend_from_slice(bytemuck::cast_slice(&out.positions));
-        buf.extend_from_slice(&out.visible);
-        buf.extend_from_slice(&[0u8; 3][..(4 - out.visible.len() % 4) % 4]);
-        buf.extend_from_slice(bytemuck::cast_slice(&out.angles));
-    }
-
-    // Selection overlay, in emission order. `selIdx` is the z key: JS sorts by it on load,
-    // the same way it does after every delta, so the ordering lives in one implementation.
-    // [u32 count][f32[] positions][u8[] colors][f32[] angles][u32[] ids][u32[] selIdx]
-    let sel_count = sel_ov.ids.len() as u32;
-    buf.extend_from_slice(&sel_count.to_le_bytes());
-    if sel_count > 0 {
-        buf.extend_from_slice(bytemuck::cast_slice(&sel_ov.positions));
-        buf.extend_from_slice(&sel_ov.colors);
-        buf.extend_from_slice(bytemuck::cast_slice(&sel_ov.angles));
-        buf.extend_from_slice(bytemuck::cast_slice(&sel_ov.ids));
-        buf.extend_from_slice(bytemuck::cast_slice(&sel_ov.sel_idx));
-    }
-
-    log::debug!(
-        "[cmd] build_cell_render_buffers total={}ms cells={} points={} sel_overlay={} bytes={}",
-        _t.elapsed().as_millis(),
-        non_empty,
-        total_count,
-        sel_count,
-        buf.len()
-    );
-    buf
-}
-
 impl Store {
     /// Render angle for a heading. Only arrow markers point anywhere.
     pub(super) fn render_angle(&self, heading: f64) -> f32 {
@@ -484,86 +223,188 @@ impl Store {
         }
     }
 
-    /// Project the changeset onto render cells, returning the render delta and keeping
-    /// `render_cells` / `id_to_cell_idx` in sync. This is the single place cell
-    /// membership is mutated for adds / removes / moves.
-    ///
-    /// `membership_changed` carries the ids whose selection membership moved, so a row that
-    /// changed selection without moving still gets a patch stating its new state.
-    pub(super) fn derive_render_delta(
+    /// Start sending `label` every render frame, beginning with the whole scene. The scene
+    /// rebuild reorders every cell, so every watching window gets the replace frame.
+    pub(crate) fn subscribe_frames(
         &mut self,
-        changes: &ChangeSet,
-        membership_changed: &HashSet<u32>,
-    ) -> RenderDelta {
-        let mut delta = RenderDelta {
-            added: Vec::with_capacity(changes.added.len()),
-            updated: Vec::with_capacity(changes.updated.len()),
-            removed: Vec::with_capacity(changes.removed.len()),
+        label: String,
+        sink: Channel<FrameBytes>,
+        req: &RenderRequest,
+    ) {
+        self.render.arrow_style = req.marker_style == "arrow";
+        if let Some(mc) = req.marker_color {
+            self.render.marker_color = mc;
+        }
+        self.frames.insert(label, sink);
+        let frame = self.scene_frame();
+        self.frames.send(&frame);
+    }
+
+    /// Take over the windows `replaced` was drawing for, sending them this store's scene.
+    pub(crate) fn adopt_watchers(&mut self, replaced: Store) {
+        self.render.arrow_style = replaced.render.arrow_style;
+        self.render.marker_color = replaced.render.marker_color;
+        self.frames = replaced.frames;
+        let frame = self.scene_frame();
+        self.frames.send(&frame);
+    }
+
+    /// Rebuild the render cells from every alive location in one pass and return the frame
+    /// that draws them from scratch: every row an add, stating the selection painting it. O(N).
+    pub(crate) fn scene_frame(&mut self) -> Frame {
+        let t = Instant::now();
+        let mut cells: [CellFrame; 32] = array::from_fn(|ci| CellFrame {
+            cell: ci as u8,
+            ..CellFrame::default()
+        });
+        let paint = self.selections.paint_map();
+        let arrow_style = self.render.arrow_style;
+        let mut emit = |id: u32, lat: f64, lng: f64, heading: f64| {
+            let angle = if arrow_style { -(heading as f32) } else { 0.0 };
+            let sel = paint.get(&id).copied().unwrap_or(NO_SEL);
+            cells[render_cell_idx(lat, lng) as usize]
+                .add
+                .push(id, lng, lat, angle, sel);
         };
-
-        for loc in &changes.removed {
-            if let Some(removal) = self.cell_remove_render(loc.id) {
-                delta.removed.push(removal);
-            }
-        }
-
-        for loc in &changes.added {
-            let ci = render_cell_idx(loc.lat, loc.lng);
-            self.cell_add_render(ci, loc.id);
-            delta.added.push(RenderEntry {
-                cell: cell_key_from_idx(ci),
-                id: loc.id,
-                lng: loc.lng as f32,
-                lat: loc.lat as f32,
-                heading: self.render_angle(loc.heading),
-                sel: self.selections.paint_for(loc.id),
-                moved_from: None,
-            });
-        }
-
-        for (old, new) in &changes.updated {
-            let pos_changed = old.lat != new.lat || old.lng != new.lng;
-            let heading_changed = old.heading != new.heading;
-            let new_ci = render_cell_idx(new.lat, new.lng);
-            let old_ci = self
-                .render
-                .id_to_cell_idx
-                .get(new.id as usize)
-                .copied()
-                .unwrap_or(255);
-
-            // Crossing cells is a move, not a delete plus an unrelated create: the vacated
-            // slot rides along on the entry so the overlay entry can follow the row.
-            if pos_changed && old_ci != new_ci {
-                let moved_from = self.cell_remove_render(new.id);
-                self.cell_add_render(new_ci, new.id);
-                delta.added.push(RenderEntry {
-                    cell: cell_key_from_idx(new_ci),
-                    id: new.id,
-                    lng: new.lng as f32,
-                    lat: new.lat as f32,
-                    heading: self.render_angle(new.heading),
-                    sel: self.selections.paint_for(new.id),
-                    moved_from,
-                });
-                continue;
-            }
-
-            if pos_changed || heading_changed || membership_changed.contains(&new.id) {
-                if let Some((cell, cell_index)) = self.cell_lookup(new.id) {
-                    delta.updated.push(RenderPatchEntry {
-                        cell,
-                        cell_index,
-                        lng: pos_changed.then_some(new.lng as f32),
-                        lat: pos_changed.then_some(new.lat as f32),
-                        heading: heading_changed.then(|| self.render_angle(new.heading)),
-                        sel: self.selections.paint_for(new.id),
-                    });
+        if let Some(b) = &self.batch {
+            let (ids, lats, lngs, headings) = (
+                Columns::id(b),
+                Columns::lat(b),
+                Columns::lng(b),
+                Columns::heading(b),
+            );
+            for i in 0..b.num_rows() {
+                let id = ids.value(i);
+                if self.overlay.dead.contains(id) {
+                    continue;
+                }
+                match self.overlay.patches.get(&id) {
+                    Some(p) => emit(id, p.lat, p.lng, p.heading),
+                    None => emit(id, lats.value(i), lngs.value(i), headings.value(i)),
                 }
             }
         }
+        for loc in &self.overlay.adds {
+            emit(loc.id, loc.lat, loc.lng, loc.heading);
+        }
 
-        delta
+        self.render.cells = [const { None }; 32];
+        self.render.id_to_cell_idx.clear();
+        for c in &cells {
+            let ids = &c.add.key;
+            let Some(&max) = ids.iter().max() else {
+                continue;
+            };
+            self.ensure_id_to_cell_capacity(max);
+            for &id in ids {
+                self.render.id_to_cell_idx[id as usize] = c.cell;
+            }
+            self.render.cells[c.cell as usize] = Some(CellRender {
+                id_to_index: ids.iter().enumerate().map(|(i, &id)| (id, i)).collect(),
+                id_order: ids.clone(),
+            });
+        }
+
+        let frame = Frame {
+            kind: FrameKind::REPLACE,
+            version: self.version,
+            palette: self.selections.palette(),
+            cells: Frame::cells_of(cells),
+            selection: None,
+        };
+        log::debug!(
+            "[render] scene_frame total={}ms cells={} points={}",
+            t.elapsed().as_millis(),
+            frame.cells.len(),
+            self.render.total_len(),
+        );
+        frame
+    }
+
+    /// Project the changeset onto the render cells, keeping `render.cells` and
+    /// `id_to_cell_idx` in step: the single place cell membership changes. Three passes,
+    /// in the order the page applies them, so every index is the one the page will see:
+    /// every removal (removed rows, then rows moving out), every append (added rows, then
+    /// rows moving in), then the patches, looked up after both.
+    ///
+    /// `membership_changed` carries the ids whose selection paint moved, so a row that
+    /// changed selection without moving still gets a patch stating its new state.
+    pub(super) fn derive_cell_frames(
+        &mut self,
+        changes: &ChangeSet,
+        membership_changed: &HashSet<u32>,
+    ) -> [CellFrame; 32] {
+        let mut cells: [CellFrame; 32] = array::from_fn(|ci| CellFrame {
+            cell: ci as u8,
+            ..CellFrame::default()
+        });
+
+        for loc in &changes.removed {
+            if let Some((ci, idx)) = self.cell_remove_render(loc.id) {
+                cells[ci as usize].remove.push(idx);
+            }
+        }
+        let moves: Vec<bool> = changes
+            .updated
+            .iter()
+            .map(|(old, new)| {
+                let old_ci = self
+                    .render
+                    .id_to_cell_idx
+                    .get(new.id as usize)
+                    .copied()
+                    .unwrap_or(255);
+                let moved = (old.lat, old.lng) != (new.lat, new.lng)
+                    && old_ci != render_cell_idx(new.lat, new.lng);
+                if moved {
+                    if let Some((ci, idx)) = self.cell_remove_render(new.id) {
+                        cells[ci as usize].remove.push(idx);
+                    }
+                }
+                moved
+            })
+            .collect();
+
+        let arrivals = changes.added.iter().chain(
+            changes
+                .updated
+                .iter()
+                .zip(&moves)
+                .filter(|(_, &moved)| moved)
+                .map(|((_, new), _)| new),
+        );
+        for loc in arrivals {
+            let ci = render_cell_idx(loc.lat, loc.lng);
+            self.cell_add_render(ci, loc.id);
+            let sel = self.selections.paint_for(loc.id).unwrap_or(NO_SEL);
+            cells[ci as usize].add.push(
+                loc.id,
+                loc.lng,
+                loc.lat,
+                self.render_angle(loc.heading),
+                sel,
+            );
+        }
+
+        for ((old, new), &moved) in changes.updated.iter().zip(&moves) {
+            let restated = (old.lat, old.lng, old.heading) != (new.lat, new.lng, new.heading)
+                || membership_changed.contains(&new.id);
+            if moved || !restated {
+                continue;
+            }
+            if let Some((ci, idx)) = self.cell_lookup(new.id) {
+                let sel = self.selections.paint_for(new.id).unwrap_or(NO_SEL);
+                cells[ci as usize].patch.push(
+                    idx as u32,
+                    new.lng,
+                    new.lat,
+                    self.render_angle(new.heading),
+                    sel,
+                );
+            }
+        }
+
+        cells
     }
 
     /// Grow `id_to_cell_idx` so it can index `id`. Fills new slots with 255 (sentinel = unmapped).
@@ -588,9 +429,9 @@ impl Store {
         idx
     }
 
-    /// Remove a location from its render cell via swap-remove. Returns the removal
-    /// descriptor (needed by JS to patch its typed arrays) or `None` if not found.
-    pub(super) fn cell_remove_render(&mut self, id: u32) -> Option<CellRemoval> {
+    /// Remove a location from its render cell via swap-remove: the cell's last row takes
+    /// the vacated slot. Returns the cell and the slot, or `None` if it was not rendered.
+    pub(super) fn cell_remove_render(&mut self, id: u32) -> Option<(u8, u32)> {
         let ci = *self.render.id_to_cell_idx.get(id as usize)?;
         if ci == 255 {
             return None;
@@ -605,21 +446,17 @@ impl Store {
             cr.id_to_index.insert(moved_id, idx);
         }
         cr.id_order.pop();
-        Some(CellRemoval {
-            cell: cell_key_from_idx(ci),
-            cell_index: idx,
-            id,
-        })
+        Some((ci, idx as u32))
     }
 
-    /// Look up a location's render cell key and index within that cell.
-    pub(super) fn cell_lookup(&self, id: u32) -> Option<(String, usize)> {
+    /// A location's render cell and its index within that cell.
+    pub(super) fn cell_lookup(&self, id: u32) -> Option<(u8, usize)> {
         let ci = *self.render.id_to_cell_idx.get(id as usize)?;
         if ci == 255 {
             return None;
         }
         let cr = self.render.cells[ci as usize].as_ref()?;
         let idx = *cr.id_to_index.get(&id)?;
-        Some((cell_key_from_idx(ci), idx))
+        Some((ci, idx))
     }
 }

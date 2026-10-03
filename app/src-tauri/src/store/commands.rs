@@ -22,6 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicUsize};
 use std::time::Instant;
+use tauri::ipc::Channel;
 use tokio::task;
 
 /// Matched locations: returned inline, or as a file path to read them from.
@@ -196,6 +197,9 @@ async fn open_claimed_map(
     let status = store.open_status();
     let mut mgr = state.lock()?;
     mgr.window_map.insert(label.0.clone(), map_id.clone());
+    if let Some(replaced) = mgr.stores.remove(&map_id) {
+        store.adopt_watchers(replaced);
+    }
     mgr.stores.insert(map_id, store);
     Ok(status)
 }
@@ -236,7 +240,7 @@ pub fn store_add_locations(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
     locations: Vec<Location>,
-) -> AppResult<MutationResult> {
+) -> AppResult<Added> {
     let _t = Instant::now();
     with_store!(label, state, |store| {
         let _lock = _t.elapsed().as_millis();
@@ -257,7 +261,7 @@ pub async fn store_add_locations_uploaded(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
     session_dir: String,
-) -> AppResult<MutationResult> {
+) -> AppResult<Added> {
     let _t = Instant::now();
     // Parse before taking the store lock: a malformed chunk must leave the store untouched.
     let locations =
@@ -672,30 +676,25 @@ pub fn store_get_summary(
     })
 }
 
-/// Rebuild all marker render data from scratch and return the file path to fetch it from.
+/// Draw the open map's markers: `frames` receives the whole scene, then every change to it.
 #[tauri::command]
 #[specta::specta]
-pub async fn store_fill_render_file(
+pub async fn store_subscribe_frames(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
+    frames: Channel<FrameBytes>,
     req: RenderRequest,
-) -> AppResult<String> {
-    let (buf, map_id_str) = {
-        let mut mgr = state.lock()?;
-        let store = mgr.store_for_window(&label.0)?;
-        store.render.arrow_style = req.marker_style == "arrow";
-        if let Some(mc) = req.marker_color {
-            store.render.marker_color = mc;
+) -> AppResult<()> {
+    let mut mgr = state.lock()?;
+    let map_id = mgr.map_id_for_window(&label.0)?;
+    for (id, store) in &mut mgr.stores {
+        if *id != map_id {
+            store.frames.remove(&label.0);
         }
-        let mid = store.map_id.clone().unwrap_or_default();
-        (build_cell_render_buffers(store, &req), mid)
-    };
-    let path = storage::temp_dir()?.join(format!("mma_render_{map_id_str}.bin"));
-    task::spawn_blocking(move || {
-        fs::write(&path, &buf)?;
-        Ok(path.to_string_lossy().into_owned())
-    })
-    .await?
+    }
+    mgr.store_for_map(&map_id)?
+        .subscribe_frames(label.0, frames, &req);
+    Ok(())
 }
 
 /// Resolve a marker pick (cell key + index within cell) to a location ID.
@@ -774,62 +773,49 @@ pub fn store_commit_diff(
 }
 
 /// Replace all active selections and resolve them against current data. Returns
-/// per-selection counts and a bitmask for the marker overlay.
+/// per-selection counts; the markers repaint through the render frame.
 #[tauri::command]
 #[specta::specta]
 pub async fn store_sync_selections(
     label: WindowLabel,
     state: tauri::State<'_, StoreState>,
     sels: Vec<ListedSelection>,
-) -> AppResult<SelectionSync> {
+) -> AppResult<MutationResult> {
     let _t = Instant::now();
-    let (counts, buf, selected_count, num_cells) = {
-        let mut mgr = state.lock()?;
-        let store = mgr.store_for_window(&label.0)?;
+    let mut mgr = state.lock()?;
+    let store = mgr.store_for_window(&label.0)?;
 
-        // Faithful tree: real keys preserved so per-node counts come back keyed (incl. nested).
-        let sels_full: Vec<Selection> = sels.iter().map(|si| si.selection.clone()).collect();
+    // Faithful tree: real keys preserved so per-node counts come back keyed (incl. nested).
+    let sels_full: Vec<Selection> = sels.iter().map(|si| si.selection.clone()).collect();
 
-        // 1. Resolve the whole forest in one pass: per-selection Roaring id-sets plus
-        //    counts for every node (top-level and nested). Indexed filter leaves clone
-        //    postings; composites combine natively. (Geometric leaves still scan.)
-        //    Counts cover ghosted selections too; the overlay uses the non-ghosted subset.
-        let (sel_sets, counts) = store.resolve_forest(&sels_full);
+    // Resolve the whole forest in one pass: per-selection Roaring id-sets plus counts for
+    // every node (top-level and nested). Indexed filter leaves clone postings; composites
+    // combine natively. (Geometric leaves still scan.) Counts cover ghosted selections too;
+    // the overlay uses the non-ghosted subset.
+    let (sel_sets, counts) = store.resolve_forest(&sels_full);
 
-        // 2. Keep every selection, ghosted flagged: a mutation recounts all of them, and
-        //    `SelectionState::live` is the one rule that keeps ghosted out of the overlay
-        //    and the selected set.
-        store.selections.resolved =
-            pair_selections(sels_full, sel_sets, sels.iter().map(|si| si.ghosted));
+    // Keep every selection, ghosted flagged: a mutation recounts all of them, and
+    // `SelectionState::live` is the one rule that keeps ghosted out of the overlay and the
+    // selected set.
+    store.selections.resolved =
+        pair_selections(sels_full, sel_sets, sels.iter().map(|si| si.ghosted));
+    store.selections.ids = store.selections.live_ids();
+    store.selections.node_counts = counts;
+    store.selections.version += 1;
+    let result = store.finish_selection_change();
 
-        let all_selected = store.selections.live_ids();
-        let selected_count = all_selected.len() as usize;
-
-        // 3. Route selections to per-cell indices (O(selected), not O(S*N)), then
-        //    serialize the per-cell bitmask binary.
-        let render_total = store.render.total_len();
-        let live: Vec<&ResolvedSelection> = store.selections.live().collect();
-        let (buf, num_cells) = build_selection_buf(&store.render, &live);
-
-        store.selections.ids = all_selected;
-        store.selections.node_counts = counts.clone();
-        store.selections.version += 1;
-
-        log::debug!("[cmd] store_sync_selections total={}ms sels={} selected={} cells={} buf_size={} batch_rows={} overlay_adds={} dead={} alive={} render_total={} first_set_len={} counts={:?}",
-            _t.elapsed().as_millis(), sels.len(), selected_count, num_cells, buf.len(),
-            store.batch.as_ref().map_or(0, RecordBatch::num_rows), store.overlay.adds.len(),
-            store.overlay.dead.len(), *store.alive_count, render_total,
-            store.selections.resolved.first().map_or(0, |r| r.set.len() as usize), counts);
-
-        (counts, buf, selected_count, num_cells)
-    };
-
-    let bitmask = if num_cells > 0 { Some(buf) } else { None };
-    Ok(SelectionSync {
-        counts,
-        bitmask,
-        selected_count,
-    })
+    log::debug!(
+        "[cmd] store_sync_selections total={}ms sels={} selected={} batch_rows={} overlay_adds={} dead={} alive={} render_total={}",
+        _t.elapsed().as_millis(),
+        sels.len(),
+        store.selections.ids.len(),
+        store.batch.as_ref().map_or(0, RecordBatch::num_rows),
+        store.overlay.adds.len(),
+        store.overlay.dead.len(),
+        *store.alive_count,
+        store.render.total_len(),
+    );
+    Ok(result)
 }
 
 /// Ids of every location the selector resolves to, ascending.

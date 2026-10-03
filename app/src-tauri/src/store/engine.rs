@@ -3,13 +3,15 @@
 //! All location data lives here. The overlay (adds, patches, dead set) accumulates mutations
 //! between saves; `bake_overlay` merges them back into the batch. IDs are kept strictly sorted
 //! in the batch to enable O(log n) lookups via `Columns::row_of`. Render cells (32 geohash-1
-//! buckets) and selection bitmasks are derived from the same `ChangeSet` via `finish_mutation`.
+//! buckets) and the render frame every watching window receives are derived from the same
+//! `ChangeSet` via `finish_mutation`.
 
 use crate::types::{AppError, AppResult};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Mutex, OnceLock};
 
+pub use frame::*;
 pub(crate) use history::*;
 pub use membership::*;
 pub use mutations::*;
@@ -48,8 +50,8 @@ use tauri::ipc::InvokeError;
 /// Central state for one open map. Holds the immutable Arrow base batch plus an in-memory
 /// overlay that accumulates mutations (adds, patches, dead). `bake_overlay` merges the
 /// overlay back into the batch. The sorted ID invariant on `batch` + `overlay_adds` enables
-/// O(log n) lookups via binary search. Render cells, selection bitmasks, undo/redo stacks,
-/// and tag metadata all live here.
+/// O(log n) lookups via binary search. Render cells, the windows watching them, undo/redo
+/// stacks, and tag metadata all live here.
 ///
 /// The `.delta` sidecar is this overlay written as an uncommitted commit delta
 /// ([`Overlay::to_delta`]), and reopening reads it back ([`Overlay::from_delta`]).
@@ -149,6 +151,9 @@ pub struct Store {
     /// mutation functions. Validity is a length match against `alive_count`, so any bulk
     /// path that bypasses the overlay fns degrades to a rebuild, never wrong results.
     pub(crate) spatial: Ensured<SpatialIndex>,
+    /// The windows drawing this store. A store opened afresh has none: each window
+    /// subscribes when it loads its scene.
+    pub(crate) frames: FrameSinks,
 }
 
 macro_rules! apply_patch {
@@ -195,6 +200,7 @@ impl Store {
             edits: Tracked::default(),
             bounds: Ensured::default(),
             spatial: Ensured::default(),
+            frames: FrameSinks::default(),
         }
     }
 
@@ -256,16 +262,27 @@ impl Store {
         }
     }
 
-    /// Bump version, derive the render delta + selection sync from the semantic
-    /// changeset, and return the full mutation result. The changeset is the single
-    /// source of truth; the render delta and selection sync are two projections of it.
+    /// Bump version, project the semantic changeset onto the render cells and the
+    /// selection state, send every watching window the frame, and return the mutation
+    /// result. The changeset is the single source of truth; the frame and the selection
+    /// sync are two projections of it.
     pub(crate) fn finish_mutation(&mut self, changes: &ChangeSet) -> MutationResult {
+        self.finish(changes, false)
+    }
+
+    /// Finish a change to the selection list itself: no row moves, and the frame restates
+    /// every row's selection.
+    pub(crate) fn finish_selection_change(&mut self) -> MutationResult {
+        self.finish(&ChangeSet::default(), true)
+    }
+
+    fn finish(&mut self, changes: &ChangeSet, selections_replaced: bool) -> MutationResult {
         self.register_fields(changes);
         let before = self.version;
         self.bump();
         self.update_bounds(changes, before);
 
-        // The indexes are a projection of the changeset like the render delta is: postings
+        // The indexes are a projection of the changeset like the frame is: postings
         // follow the rows here, so no mutation path can move a row past its counts.
         let removed: Vec<&Location> = changes
             .removed
@@ -280,13 +297,12 @@ impl Store {
         let moved_fields = self.reindex(&removed, &added);
 
         // A metadata-only mutation (a value rename or reorder, a create with nothing to
-        // assign) moves no rows, so there is no membership to re-test and no delta to derive.
+        // assign) moves no rows, so there is no membership to re-test.
         let has_selections = !changes.is_empty() && !self.selections.resolved.is_empty();
         let full_resolve = has_selections
             && (changes.added.len() + changes.removed.len() + changes.updated.len() > 100
                 || self.selections_need_full_resolve());
 
-        // Step 1: Update selection membership and get back what changed.
         let membership_delta = if has_selections {
             if full_resolve {
                 self.resolve_selection_membership();
@@ -298,28 +314,22 @@ impl Store {
             None
         };
 
-        // Step 2: Derive the render delta (mutates render_cells). Every entry it emits
-        // states the row's selection state, so membership changes need no second channel:
-        // a row that only gained or lost a selection comes out as a coordinate-free patch.
+        // Every row the frame carries states its selection, so an incremental membership
+        // change needs no second channel: a row that only gained or lost a selection comes
+        // out as a patch. Only a full resolve restates every cell's membership, which costs
+        // O(rows in the affected cells) where the patches cost O(changed).
         let changed = membership_delta.map(|md| md.changed).unwrap_or_default();
-        let delta = self.derive_render_delta(changes, &changed);
-
-        // Step 3: Only a full resolve ships a bitmask. The incremental path is carried
-        // entirely by the delta above, which costs O(changed) instead of the
-        // O(rows in the affected cells) that a per-cell bitmask rebuild costs.
-        let selection_sync = if has_selections {
-            if full_resolve {
-                Some(self.build_selection_bitmask())
-            } else {
-                Some(SelectionSync {
-                    counts: self.selections.node_counts.clone(),
-                    bitmask: None,
-                    selected_count: self.selections.ids.len() as usize,
-                })
-            }
-        } else {
-            None
+        let cells = self.derive_cell_frames(changes, &changed);
+        let restated = full_resolve || selections_replaced;
+        let frame = Frame {
+            kind: FrameKind::PATCH,
+            version: self.version,
+            palette: self.selections.palette(),
+            cells: Frame::cells_of(cells),
+            selection: restated.then(|| self.selection_section()),
         };
+        self.frames.send(&frame);
+        let selection_sync = (has_selections || selections_replaced).then(|| self.selection_sync());
 
         let value_counts = (!moved_fields.is_empty()).then(|| {
             moved_fields
@@ -339,7 +349,6 @@ impl Store {
 
         let mut result = MutationResult {
             version: self.version,
-            delta,
             selection_sync,
             values: EngineValues {
                 value_counts,
@@ -671,6 +680,9 @@ impl StoreManager {
     /// other window still has it open.
     pub fn unbind_window(&mut self, label: &str) -> Option<(String, Store)> {
         let map_id = self.window_map.remove(label)?;
+        if let Some(store) = self.stores.get_mut(&map_id) {
+            store.frames.remove(label);
+        }
         if self.window_map.values().any(|v| v == &map_id) {
             log::debug!("[close_map] {map_id} still open in another window, skipping flush");
             return None;
@@ -939,6 +951,7 @@ macro_rules! selector_read {
 pub(crate) use selector_read;
 
 pub(crate) mod delta_legacy;
+pub(crate) mod frame;
 mod history;
 mod membership;
 mod mutations;

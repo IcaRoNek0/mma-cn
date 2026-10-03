@@ -3,9 +3,10 @@ import { applySelectionUpdate, getActiveSelections, getMapState } from "@/store/
 import { toggleGhost } from "@/store/selections";
 import type { ListedSelection } from "@/bindings.gen";
 
-vi.mock("@/lib/commands", () => ({
-	cmd: { storeSyncSelections: vi.fn(async () => ({ selectionCounts: {}, selectedCount: 0 })) },
-}));
+vi.mock("@/lib/commands", async () => {
+	const { selectionChange } = await import("./fixtures/mocks");
+	return { cmd: { storeSyncSelections: vi.fn(async () => selectionChange()) } };
+});
 
 const fakeRow = (key: string): ListedSelection => ({
 	selection: { key, color: [0, 0, 0], selector: { type: "Everything" } },

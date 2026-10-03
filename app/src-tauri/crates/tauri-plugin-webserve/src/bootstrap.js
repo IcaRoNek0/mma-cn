@@ -206,14 +206,28 @@
 		navigator.serviceWorker.register("/__webserve/sw.js").catch(() => {});
 	}
 
-	// Backend events (Rust app.emit) arrive over SSE and feed the same listener
-	// bus as in-tab emit. EventSource auto-reconnects, so transient drops self-heal.
+	// A channel message for this tab: run the channel's callback with it, fetching raw
+	// bytes first. The channel puts messages back in order by index.
+	function deliverChannel(c) {
+		const run = (message) => {
+			const cb = callbacks.get(c.callback);
+			if (cb) cb({ message, index: c.index });
+		};
+		if ("message" in c) return run(c.message);
+		_fetch("/__channel/" + c.data, { headers: { "X-Webserve-Client": clientId } })
+			.then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+			.then(run, () => {});
+	}
+
+	// Backend events (Rust app.emit) and channel messages arrive over SSE; events feed the
+	// same listener bus as in-tab emit. EventSource auto-reconnects, so transient drops self-heal.
 	if (typeof EventSource !== "undefined") {
 		const es = new EventSource("/__events?client=" + clientId);
 		es.onmessage = (m) => {
 			try {
 				const data = JSON.parse(m.data);
-				dispatch(data.event, data.payload);
+				if (data.channel) deliverChannel(data.channel);
+				else dispatch(data.event, data.payload);
 			} catch (e) {
 				/* ignore malformed frame */
 			}

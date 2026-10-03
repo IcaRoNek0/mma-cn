@@ -305,6 +305,16 @@ FirstSyncMode: {
 First-sync seeding when both sides already have pins. Only meaningful on the first sync
 (empty mapping); afterwards it's plain three-way. `Merge` never deletes.
 
+### FrameKind
+
+`unstable` · unreleased
+
+```ts
+FrameKind: { readonly Replace: 0; readonly Patch: 1 }
+```
+
+What a render frame does to the scene.
+
 ### IssueState
 
 `unstable` · since v0.11.0
@@ -476,6 +486,14 @@ MergeWinner: { readonly From: "from"; readonly To: "to" }
 ```
 
 When a move target already holds a value, which side survives.
+
+### NO_SEL
+
+`unstable` · unreleased
+
+```ts
+NO_SEL: 4294967295
+```
 
 ### OFFICIAL_ID_PATTERN
 
@@ -851,16 +869,6 @@ duplicateLocation(id: number): Promise<number | null>
 
 Clone a location in place and return the new id, or null if it doesn't exist. Undoable.
 
-### emitBitmask
-
-`unstable` · since v0.5.3
-
-```ts
-emitBitmask(bytes: number[]): void
-```
-
-Decode a selection bitmask and draw it on the map.
-
 ### exitPluginMode
 
 `stable` · since v0.3.1
@@ -991,8 +999,9 @@ mutate<
 >(fn: () => Promise<R>, empty: R): Promise<R>
 ```
 
-Run a mutation, apply its result to the map, and schedule a save. A result that wraps its
-mutation comes back whole; `empty` is its answer when no map is open.
+Run a mutation, wait for the scene to draw it, apply its result to the map, and schedule a
+save. A result that wraps its mutation comes back whole; `empty` is its answer when no map
+is open. `sceneReached(version)` then tells what the change did to the markers.
 
 ### openDuplicateLocation
 
@@ -5531,7 +5540,7 @@ Stop all sidecar processes across every plugin.
 `unstable` · since v0.4.0
 
 ```ts
-cmd.storeAddLocations(locations: Location[]): Promise<MutationResult>
+cmd.storeAddLocations(locations: Location[]): Promise<Added>
 ```
 
 Add new locations, allocating sequential IDs. Undoable.
@@ -5555,7 +5564,7 @@ map's tag table.
 `unstable` · since v0.10.0
 
 ```ts
-cmd.storeAddLocationsUploaded(sessionDir: string): Promise<MutationResult>
+cmd.storeAddLocationsUploaded(sessionDir: string): Promise<Added>
 ```
 
 Add locations from an upload session (see `storeUploadBegin`) as one undoable change.
@@ -5840,16 +5849,6 @@ cmd.storeExportJson(opts: ExportOpts): Promise<string>
 ```
 
 Export locations as a `{name, customCoordinates}` JSON file, including tags and field defs.
-
-#### cmd.storeFillRenderFile
-
-`unstable` · since v0.4.0
-
-```ts
-cmd.storeFillRenderFile(req: RenderRequest): Promise<string>
-```
-
-Rebuild all marker render data from scratch and return the file path to fetch it from.
 
 #### cmd.storeFindNearby
 
@@ -6382,16 +6381,29 @@ cmd.storeSpaced(
 An evenly spaced subset: exactly one of `targetCount` (thin to N, maximizing
 spacing) or `minDistanceM` (keep as many as fit at that spacing).
 
+#### cmd.storeSubscribeFrames
+
+`unstable` · unreleased
+
+```ts
+cmd.storeSubscribeFrames(
+  frames: Channel<ArrayBuffer>,
+  req: RenderRequest,
+): Promise<null>
+```
+
+Draw the open map's markers: `frames` receives the whole scene, then every change to it.
+
 #### cmd.storeSyncSelections
 
 `unstable` · since v0.4.0
 
 ```ts
-cmd.storeSyncSelections(sels: ListedSelection[]): Promise<SelectionSync>
+cmd.storeSyncSelections(sels: ListedSelection[]): Promise<MutationResult>
 ```
 
 Replace all active selections and resolve them against current data. Returns
-per-selection counts and a bitmask for the marker overlay.
+per-selection counts; the markers repaint through the render frame.
 
 #### cmd.storeTouchMapOpened
 
@@ -8025,7 +8037,7 @@ The marker scene the map surfaces render from, and its load lifecycle.
 clearScene(): void
 ```
 
-Clear all marker data from the scene.
+Clear all marker data from the scene and stop following the map.
 
 ### getMarkerDefaultColor
 
@@ -8052,10 +8064,10 @@ The shared scene that all map surfaces render from.
 `unstable` · since v0.10.3
 
 ```ts
-loadScene(markerStyle: MarkerStyle, mc?: RGB): Promise<void>
+loadScene(markerStyle?: MarkerStyle, mc?: RGB): Promise<void>
 ```
 
-Rebuild the full scene for all locations.
+Load the whole scene again and follow every change to it from there.
 
 ### recolorScene
 
@@ -8066,6 +8078,17 @@ recolorScene(mc: RGB): void
 ```
 
 Change the default marker color and repaint.
+
+### sceneReached
+
+`unstable` · unreleased
+
+```ts
+sceneReached(version: number): Promise<FrameSummary>
+```
+
+Resolves once the scene has applied the frame for map version `version`, with what that
+frame did. Resolves at once, with nothing applied, when the scene follows no map.
 
 ### setMarkerDefaultColor
 
@@ -8085,7 +8108,7 @@ Set the default marker color (RGB bytes).
 startSceneEngine(): () => void
 ```
 
-Start listening for deltas, selections, and active-location changes. Returns a stop function.
+Start following active-location changes. Returns a stop function.
 
 ### whenSceneSettled
 

@@ -15,7 +15,10 @@ use crate::store::storage;
 use crate::types::RawExtra;
 use std::env;
 use std::path::Path;
+use std::sync::atomic::{self, AtomicUsize};
+use std::sync::Arc;
 use tauri::async_runtime;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::test;
 use tauri::test::MockRuntime;
 
@@ -157,12 +160,12 @@ impl Fixture {
         store
     }
 
-    /// A store with its render cells built, as the app has after the open-time
-    /// full render. Required by anything that touches the render delta or the
-    /// selection bitmask.
+    /// A store with its render cells built and one window watching, as the app has after
+    /// the open-time scene load. Required by anything that touches the render frames or
+    /// the selection bitmask.
     pub fn rendered_store(&self) -> Store {
         let mut store = self.store();
-        fill_render(&mut store);
+        store.subscribe_frames(label().0, Channel::new(|_| Ok(())), &render_request());
         store
     }
 
@@ -304,17 +307,29 @@ impl BenchApp {
     pub fn sync_selections(&self, sels: Vec<ListedSelection>) -> usize {
         async_runtime::block_on(store_sync_selections(label(), self.state(), sels))
             .expect("sync_selections")
+            .selection_sync
+            .expect("a selection change reports its counts")
             .selected_count
     }
 
-    /// Full render via the real command, temp-file write included.
-    pub fn fill_render(&self) -> String {
-        async_runtime::block_on(store_fill_render_file(
+    /// Full scene via the real command: build, encode and send. Returns the frame's size.
+    pub fn subscribe_frames(&self) -> usize {
+        let size = Arc::new(AtomicUsize::new(0));
+        let sent = size.clone();
+        let sink = Channel::new(move |body| {
+            if let InvokeResponseBody::Raw(bytes) = body {
+                sent.store(bytes.len(), atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        async_runtime::block_on(store_subscribe_frames(
             label(),
             self.state(),
+            sink,
             render_request(),
         ))
-        .expect("fill_render")
+        .expect("subscribe_frames");
+        size.load(atomic::Ordering::Relaxed)
     }
 
     pub fn find_nearby(&self, lat: f64, lng: f64, radius_m: f64) -> Vec<Location> {
@@ -329,13 +344,6 @@ impl BenchApp {
 // ---------------------------------------------------------------------------
 // Direct engine calls (real fns, no command plumbing)
 // ---------------------------------------------------------------------------
-
-/// The render build the command wraps; used by fixtures and the delta bench.
-pub fn fill_render(store: &mut Store) -> Vec<u8> {
-    let req = render_request();
-    store.render.arrow_style = false;
-    build_cell_render_buffers(store, &req)
-}
 
 /// The real bulk-update path -- `store_update_locations` is this plus the state lock.
 pub fn update_locations(

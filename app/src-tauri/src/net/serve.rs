@@ -1,7 +1,8 @@
 //! Headless web-serve entry. Builds the real app with the `webserve` plugin and a
 //! hidden `about:blank` webview (the default client's IPC host), registers the app's URI
 //! schemes for the web, then runs. All HTTP/bridge logic lives in the plugin -
-//! the only app-facing surface is enabling the plugin + the scheme registrations.
+//! the only app-facing surface is enabling the plugin, its channel interceptor, and the
+//! scheme registrations.
 //!
 //! Gate: `--features web-serve`. Entry: the `mma-serve` bin.
 
@@ -24,6 +25,7 @@ pub fn run_server() {
     crate::manage_command_state(tauri::Builder::default())
         .invoke_handler(crate::specta_builder().invoke_handler())
         .plugin(tauri_plugin_webserve::init())
+        .channel_interceptor(tauri_plugin_webserve::forward_channel)
         .setup(|app| {
             crate::init_backend(app.handle())?;
             register_web_schemes();

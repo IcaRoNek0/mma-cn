@@ -60,37 +60,34 @@ impl SelectionState {
             .fold(RoaringBitmap::new(), |acc, r| acc | &r.set)
     }
 
-    /// Paint of a selected id = the last selection containing it. None if unselected.
-    pub(super) fn paint_for(&self, id: u32) -> Option<SelPaint> {
+    /// The live selection painting a selected id: the last one containing it, by its
+    /// index in `live` order. `None` if unselected.
+    pub(super) fn paint_for(&self, id: u32) -> Option<u32> {
         if !self.ids.contains(id) {
             return None;
         }
-        let mut paint = None;
-        for (i, r) in self.live().enumerate() {
-            if r.set.contains(id) {
-                paint = Some(SelPaint {
-                    idx: i as u32,
-                    color: r.sel.color,
-                });
-            }
-        }
-        paint
+        self.live()
+            .enumerate()
+            .filter(|(_, r)| r.set.contains(id))
+            .last()
+            .map(|(i, _)| i as u32)
     }
 
     /// Bulk form of `paint_for`. Later selections overwrite earlier ones, so each id ends
     /// up with the same paint the per-id lookup would return.
-    pub(super) fn paint_map(&self) -> HashMap<u32, SelPaint> {
+    pub(super) fn paint_map(&self) -> HashMap<u32, u32> {
         let mut map = HashMap::with_capacity(self.ids.len() as usize);
         for (i, r) in self.live().enumerate() {
-            let paint = SelPaint {
-                idx: i as u32,
-                color: r.sel.color,
-            };
             for id in &r.set {
-                map.insert(id, paint);
+                map.insert(id, i as u32);
             }
         }
         map
+    }
+
+    /// Every live selection's colour, indexed by the paint `paint_for` returns.
+    pub(crate) fn palette(&self) -> Vec<[u8; 3]> {
+        self.live().map(|r| r.sel.color).collect()
     }
 }
 
@@ -102,14 +99,11 @@ pub(super) struct MembershipDelta {
 }
 
 /// Updated selection state after a change. `counts` gives each selection's match count.
-// `bitmask` carries the packed per-cell bitmask bytes inline in the response (no shared temp
-// file, so no clobber race under concurrent mutations); `None` when nothing changed.
 #[derive(serde::Serialize, Clone, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionSync {
     /// Resolved count per selection node, keyed by `Selection.key` (top-level and nested).
     pub counts: HashMap<String, u32>,
-    pub bitmask: Option<Vec<u8>>,
     pub selected_count: usize,
 }
 
@@ -142,7 +136,7 @@ impl Store {
     }
 
     /// Update selection membership sets for incremental changes (adds/removes/updates).
-    /// Returns which ids changed paint, so the render delta can state their new
+    /// Returns which ids changed paint, so the render frame can state their new
     /// selection state.
     pub(super) fn update_selection_membership(&mut self, changes: &ChangeSet) -> MembershipDelta {
         let drop_ids: HashSet<u32> = changes
@@ -154,7 +148,7 @@ impl Store {
         // Paint before the mutation, snapshotted while the sets still reflect it. Paint is
         // the compared fact - not union membership - because a row that moves between
         // overlapping selections changes colour without ever leaving the union.
-        let mut prev_paint: HashMap<u32, Option<SelPaint>> = HashMap::new();
+        let mut prev_paint: HashMap<u32, Option<u32>> = HashMap::new();
         if !drop_ids.is_empty() {
             for id in &drop_ids {
                 prev_paint.insert(*id, self.selections.paint_for(*id));
@@ -230,31 +224,26 @@ impl Store {
         self.selections.version += 1;
     }
 
-    /// Build the full selection bitmask from the current render cells + member sets.
-    /// Every cell is rebuilt; incremental membership changes ride the `sel` field on the
-    /// render delta's own entries instead (see `finish_mutation`).
-    pub(super) fn build_selection_bitmask(&self) -> SelectionSync {
-        let counts = self.selections.node_counts.clone();
-        let selected_count = self.selections.ids.len() as usize;
+    /// Every selection's counts and the selected total, as they stand.
+    pub(super) fn selection_sync(&self) -> SelectionSync {
+        SelectionSync {
+            counts: self.selections.node_counts.clone(),
+            selected_count: self.selections.ids.len() as usize,
+        }
+    }
 
+    /// Every cell's selection membership, the selection section of a frame.
+    pub(super) fn selection_section(&self) -> Vec<u8> {
         let t0 = Instant::now();
         let live: Vec<&ResolvedSelection> = self.selections.live().collect();
-        let num_sels = live.len();
         let (buf, num_cells) = build_selection_buf(&self.render, &live);
-        let bitmask = if num_cells > 0 { Some(buf) } else { None };
-
         log::debug!(
             "[sel] total={}ms sels={} selected={} cells={}",
             t0.elapsed().as_millis(),
-            num_sels,
-            selected_count,
+            live.len(),
+            self.selections.ids.len(),
             num_cells,
         );
-
-        SelectionSync {
-            counts,
-            bitmask,
-            selected_count,
-        }
+        buf
     }
 }

@@ -5,7 +5,15 @@ import {
 	type SelCellEntry,
 	type SelectedIds,
 } from "@/lib/render/CellManager";
-import { delta, entry, paint, selPatch } from "./fixtures/renderFixtures";
+import {
+	applyDelta,
+	applySelections,
+	delta,
+	entry,
+	paint,
+	scene,
+	selPatch,
+} from "./fixtures/renderFixtures";
 
 /** Base-layer visibility byte for a location, or null if it has no marker. There is no
  *  per-marker base colour any more: every base marker draws in the one constant the layer
@@ -41,7 +49,8 @@ function bitmaskFor(mgr: CellManager, pick: (id: number) => boolean): SelCellEnt
 }
 
 function selectAll(mgr: CellManager, color: [number, number, number] = [255, 0, 0]): SelectedIds {
-	return mgr.applySelectionBitmasks(
+	return applySelections(
+		mgr,
 		[color],
 		bitmaskFor(mgr, () => true),
 	);
@@ -52,7 +61,8 @@ function selectIds(
 	ids: Set<number>,
 	color: [number, number, number] = [255, 0, 0],
 ): SelectedIds {
-	return mgr.applySelectionBitmasks(
+	return applySelections(
+		mgr,
 		[color],
 		bitmaskFor(mgr, (id) => ids.has(id)),
 	);
@@ -63,7 +73,7 @@ function clearSelection(mgr: CellManager): SelectedIds {
 	for (const [cellChar, cb] of mgr.cells) {
 		cellEntries.push({ cellChar, locCount: cb.count, sels: [] });
 	}
-	return mgr.applySelectionBitmasks([], cellEntries);
+	return applySelections(mgr, [], cellEntries);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +210,7 @@ function seedLocations(mgr: CellManager, n: number, cell = "s"): void {
 	for (let i = 1; i <= n; i++) {
 		entries.push(entry(cell, i, i * 10, i * 20));
 	}
-	mgr.applyDelta(delta({ added: entries }));
+	applyDelta(mgr, delta({ added: entries }));
 }
 
 // ===========================================================================
@@ -327,7 +337,8 @@ describe("Selection and main layer consistency", () => {
 
 	it("overlay angles match main layer angles", () => {
 		mgr = new CellManager();
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 10, 20, 45), entry("s", 2, 30, 40, 135), entry("s", 3, 50, 60, 270)],
 			}),
@@ -419,7 +430,8 @@ describe("Deltas during active selections", () => {
 	it("adding entries during selection: new entries not in overlay", () => {
 		selectIds(mgr, new Set([1, 2]));
 
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 6, 60, 70)],
 			}),
@@ -439,7 +451,8 @@ describe("Deltas during active selections", () => {
 		// Remove id=2 via swap-remove
 		const cb = mgr.cells.get("s")!;
 		const idx = cb.idToIndex.get(2)!;
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: idx, id: 2 }],
 			}),
@@ -461,7 +474,8 @@ describe("Deltas during active selections", () => {
 		// Move id=3
 		const cb = mgr.cells.get("s")!;
 		const idx = cb.idToIndex.get(3)!;
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				updated: [
 					{ cell: "s", cellIndex: idx, lng: 999, lat: 888, heading: null, sel: paint([255, 0, 0]) },
@@ -483,7 +497,8 @@ describe("Deltas during active selections", () => {
 		const idx = cb.idToIndex.get(3)!;
 		const vBefore = mgr.overlay.version;
 
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				updated: [
 					{ cell: "s", cellIndex: idx, lng: 999, lat: 888, heading: 45, sel: paint([255, 0, 0]) },
@@ -506,7 +521,8 @@ describe("Deltas during active selections", () => {
 
 		// A selected row moving to another cell arrives as one entry carrying the slot it
 		// vacated; the overlay entry follows it rather than being dropped and rebuilt.
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [
 					{
@@ -537,7 +553,7 @@ describe("Deltas during active selections", () => {
 		selectIds(mgr, new Set([1]));
 		const before = mgr.overlay.count;
 
-		mgr.applyDelta(delta({ updated: [selPatch("s", 9999, paint([1, 2, 3]))] }));
+		applyDelta(mgr, delta({ updated: [selPatch("s", 9999, paint([1, 2, 3]))] }));
 
 		expect(mgr.overlay.count).toBe(before);
 		expect(mgr.selectedIds().has(0)).toBe(false);
@@ -548,7 +564,7 @@ describe("Deltas during active selections", () => {
 		const vBefore = mgr.overlay.version;
 
 		const idx = mgr.cells.get("s")!.idToIndex.get(4)!;
-		mgr.applyDelta(delta({ updated: [selPatch("s", idx, null)] }));
+		applyDelta(mgr, delta({ updated: [selPatch("s", idx, null)] }));
 
 		expect(mgr.overlay.version).toBe(vBefore);
 		expect(mgr.overlay.count).toBe(2);
@@ -559,7 +575,7 @@ describe("Deltas during active selections", () => {
 		const cb = mgr.cells.get("s")!;
 		const cellIndex = cb.idToIndex.get(2)!;
 
-		mgr.applyDelta(delta({ updated: [selPatch("s", cellIndex, null)] }));
+		applyDelta(mgr, delta({ updated: [selPatch("s", cellIndex, null)] }));
 
 		expect(mgr.overlay.count).toBe(1);
 		expect([...mgr.overlay.ids.slice(0, 1)]).toEqual([1]);
@@ -574,8 +590,8 @@ describe("Deltas during active selections", () => {
 
 		// Same id patched selected twice: the overlay must still hold exactly one entry.
 		const patch = selPatch("s", cellIndex, paint([0, 200, 0]));
-		mgr.applyDelta(delta({ updated: [patch] }));
-		mgr.applyDelta(delta({ updated: [patch] }));
+		applyDelta(mgr, delta({ updated: [patch] }));
+		applyDelta(mgr, delta({ updated: [patch] }));
 
 		expect(mgr.overlay.count).toBe(2);
 		const oi = mgr.overlay.ids.indexOf(2);
@@ -593,7 +609,8 @@ describe("Membership propagation via selection patches", () => {
 
 	beforeEach(() => {
 		mgr = new CellManager();
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 1, 1), entry("s", 2, 2, 2), entry("s", 3, 3, 3)],
 			}),
@@ -601,7 +618,8 @@ describe("Membership propagation via selection patches", () => {
 	});
 
 	it("a patch hides only the rows it names", () => {
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				updated: [selPatch("s", 0, paint([50, 200, 50])), selPatch("s", 1, paint([50, 200, 50]))],
 			}),
@@ -615,13 +633,14 @@ describe("Membership propagation via selection patches", () => {
 	it("a patch after swap-remove targets the row now at that index", () => {
 		const cb = mgr.cells.get("s")!;
 		// Remove id=1 (index 0); id=3 swaps into index 0.
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: 0, id: 1 }],
 			}),
 		);
 
-		mgr.applyDelta(delta({ updated: [selPatch("s", 0, paint([0, 255, 0]))] }));
+		applyDelta(mgr, delta({ updated: [selPatch("s", 0, paint([0, 255, 0]))] }));
 
 		expect(cb.ids[0]).toBe(3);
 		expect(getVisible(mgr, 3)).toBe(0);
@@ -645,7 +664,8 @@ describe("No ghost or double markers after complex sequences", () => {
 		selectIds(mgr, new Set([3, 7]));
 		// Remove one selected entry
 		const idx3 = mgr.cells.get("s")!.idToIndex.get(3)!;
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: idx3, id: 3 }],
 			}),
@@ -657,7 +677,8 @@ describe("No ghost or double markers after complex sequences", () => {
 
 	it("select → add → re-select including new → clear: no ghosts", () => {
 		selectIds(mgr, new Set([1, 2]));
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 11, 110, 220)],
 			}),
@@ -684,7 +705,8 @@ describe("No ghost or double markers after complex sequences", () => {
 
 	it("undo-redo cycle with interleaved selection: invariants hold", () => {
 		// Add 3 locations
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 20, 200, 200), entry("s", 21, 210, 210), entry("s", 22, 220, 220)],
 			}),
@@ -696,7 +718,8 @@ describe("No ghost or double markers after complex sequences", () => {
 
 		// "Delete" id=20
 		const idx20 = mgr.cells.get("s")!.idToIndex.get(20)!;
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: idx20, id: 20 }],
 			}),
@@ -708,7 +731,8 @@ describe("No ghost or double markers after complex sequences", () => {
 		assertNoVanishedMarkers(mgr);
 
 		// "Undo" — re-add 20
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 20, 200, 200)],
 			}),
@@ -727,7 +751,8 @@ describe("No ghost or double markers after complex sequences", () => {
 		for (let id = 10; id >= 1; id--) {
 			const cb = mgr.cells.get("s")!;
 			const idx = cb.idToIndex.get(id)!;
-			mgr.applyDelta(
+			applyDelta(
+				mgr,
 				delta({
 					removed: [{ cell: "s", cellIndex: idx, id }],
 				}),
@@ -749,7 +774,8 @@ describe("Multi-cell render consistency", () => {
 
 	beforeEach(() => {
 		mgr = new CellManager();
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [
 					entry("s", 1, 10, 20),
@@ -784,7 +810,8 @@ describe("Multi-cell render consistency", () => {
 		selectIds(mgr, new Set([1, 3])); // s:1 and t:3
 
 		// Remove from cell "s"
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: mgr.cells.get("s")!.idToIndex.get(1)!, id: 1 }],
 			}),
@@ -819,7 +846,8 @@ describe("Multiple overlapping selections", () => {
 			if ([1, 2, 3].includes(id)) maskR[i >> 3] |= 1 << (i & 7);
 			if ([3, 4, 5].includes(id)) maskB[i >> 3] |= 1 << (i & 7);
 		}
-		mgr.applySelectionBitmasks(
+		applySelections(
+			mgr,
 			[
 				[255, 0, 0],
 				[0, 0, 255],
@@ -859,7 +887,8 @@ describe("Multiple overlapping selections", () => {
 			mask1[i >> 3] |= 1 << (i & 7);
 			mask2[i >> 3] |= 1 << (i & 7);
 		}
-		mgr.applySelectionBitmasks(
+		applySelections(
+			mgr,
 			[
 				[255, 0, 0],
 				[0, 255, 0],
@@ -989,22 +1018,18 @@ describe("SelectionOverlay id index", () => {
 });
 
 // ===========================================================================
-// 11. initFromBinary + selection overlay round-trip
+// 11. A replace frame + selection overlay round-trip
 // ===========================================================================
 
-describe("initFromBinary clears selection state", () => {
-	it("replaces existing overlay on re-init", () => {
+describe("a replace frame clears selection state", () => {
+	it("replaces existing overlay on a new scene", () => {
 		const mgr = new CellManager();
 		seedLocations(mgr, 5);
 		selectAll(mgr);
 		expect(mgr.overlay.count).toBe(5);
 
-		// Re-init from a minimal binary (1 cell, 2 entries, 0 selection)
-		const buf = buildMinimalBinary("s", [
-			{ id: 100, lng: 1, lat: 2, heading: 0, visible: 255 },
-			{ id: 101, lng: 3, lat: 4, heading: 0, visible: 255 },
-		]);
-		mgr.initFromBinary(buf);
+		// A new scene: 1 cell, 2 rows, nothing selected
+		mgr.apply(scene([entry("s", 100, 1, 2), entry("s", 101, 3, 4)]));
 
 		expect(mgr.totalCount).toBe(2);
 		expect(mgr.overlay.count).toBe(0);
@@ -1025,31 +1050,31 @@ describe("CellBuffer idToIndex bijectivity", () => {
 
 	it("holds after sequential appends", () => {
 		for (let i = 1; i <= 20; i++) {
-			buf.append(entry("s", i, i, i));
+			buf.append(i, i, i, 0);
 			assertIdToIndexBijective(buf, `after append ${i}`);
 		}
 	});
 
 	it("holds after swapRemove from middle", () => {
-		for (let i = 1; i <= 5; i++) buf.append(entry("s", i, i, i));
+		for (let i = 1; i <= 5; i++) buf.append(i, i, i, 0);
 		buf.swapRemove(2); // remove index 2 (middle)
 		assertIdToIndexBijective(buf, "after middle remove");
 	});
 
 	it("holds after swapRemove of first element", () => {
-		for (let i = 1; i <= 5; i++) buf.append(entry("s", i, i, i));
+		for (let i = 1; i <= 5; i++) buf.append(i, i, i, 0);
 		buf.swapRemove(0);
 		assertIdToIndexBijective(buf, "after first remove");
 	});
 
 	it("holds after swapRemove of last element", () => {
-		for (let i = 1; i <= 5; i++) buf.append(entry("s", i, i, i));
+		for (let i = 1; i <= 5; i++) buf.append(i, i, i, 0);
 		buf.swapRemove(4);
 		assertIdToIndexBijective(buf, "after last remove");
 	});
 
 	it("holds after removing all elements one by one", () => {
-		for (let i = 1; i <= 5; i++) buf.append(entry("s", i, i, i));
+		for (let i = 1; i <= 5; i++) buf.append(i, i, i, 0);
 		while (buf.count > 0) {
 			buf.swapRemove(0);
 			assertIdToIndexBijective(buf, `count=${buf.count}`);
@@ -1058,39 +1083,39 @@ describe("CellBuffer idToIndex bijectivity", () => {
 	});
 
 	it("holds through interleaved add/remove", () => {
-		buf.append(entry("s", 10, 1, 1));
-		buf.append(entry("s", 20, 2, 2));
-		buf.append(entry("s", 30, 3, 3));
+		buf.append(10, 1, 1, 0);
+		buf.append(20, 2, 2, 0);
+		buf.append(30, 3, 3, 0);
 		assertIdToIndexBijective(buf, "initial");
 
 		buf.swapRemove(1); // remove id=20
 		assertIdToIndexBijective(buf, "after remove 20");
 
-		buf.append(entry("s", 40, 4, 4));
+		buf.append(40, 4, 4, 0);
 		assertIdToIndexBijective(buf, "after add 40");
 
 		buf.swapRemove(0); // remove whatever is at 0
 		assertIdToIndexBijective(buf, "after remove index 0");
 
-		buf.append(entry("s", 50, 5, 5));
-		buf.append(entry("s", 60, 6, 6));
+		buf.append(50, 5, 5, 0);
+		buf.append(60, 6, 6, 0);
 		assertIdToIndexBijective(buf, "after add 50,60");
 	});
 
 	it("holds after capacity growth", () => {
 		for (let i = 0; i < 300; i++) {
-			buf.append(entry("s", i, i, i));
+			buf.append(i, i, i, 0);
 		}
 		assertIdToIndexBijective(buf, "after 300 appends");
 	});
 
 	it("holds after remove-then-re-add of same ID", () => {
-		buf.append(entry("s", 1, 10, 20));
-		buf.append(entry("s", 2, 30, 40));
+		buf.append(1, 10, 20, 0);
+		buf.append(2, 30, 40, 0);
 		buf.swapRemove(0); // remove id=1
 		assertIdToIndexBijective(buf, "after remove");
 
-		buf.append(entry("s", 1, 50, 60)); // re-add id=1
+		buf.append(1, 50, 60, 0); // re-add id=1
 		assertIdToIndexBijective(buf, "after re-add");
 		expect(buf.idToIndex.get(1)).toBe(buf.count - 1);
 	});
@@ -1108,7 +1133,8 @@ describe("CellManager totalCount consistency", () => {
 	});
 
 	it("stays correct through adds across multiple cells", () => {
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 1, 1), entry("t", 2, 2, 2), entry("u", 3, 3, 3)],
 			}),
@@ -1117,21 +1143,24 @@ describe("CellManager totalCount consistency", () => {
 	});
 
 	it("stays correct through mixed adds and removes", () => {
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 1, 1), entry("s", 2, 2, 2), entry("t", 3, 3, 3)],
 			}),
 		);
 		assertTotalCountConsistent(mgr, "after initial add");
 
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: 0, id: 1 }],
 			}),
 		);
 		assertTotalCountConsistent(mgr, "after remove from s");
 
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("t", 4, 4, 4), entry("u", 5, 5, 5)],
 				removed: [{ cell: "t", cellIndex: 0, id: 3 }],
@@ -1147,7 +1176,8 @@ describe("CellManager totalCount consistency", () => {
 		const cb = mgr.cells.get("s")!;
 		for (let i = cb.count - 1; i >= 0; i--) {
 			const id = cb.ids[i];
-			mgr.applyDelta(
+			applyDelta(
+				mgr,
 				delta({
 					removed: [{ cell: "s", cellIndex: i, id }],
 				}),
@@ -1164,11 +1194,10 @@ describe("CellManager totalCount consistency", () => {
 		expect(mgr.totalCount).toBe(0);
 	});
 
-	it("stays correct after initFromBinary", () => {
+	it("stays correct after a replace frame", () => {
 		seedLocations(mgr, 5);
-		const buf = buildMinimalBinary("s", [{ id: 100, lng: 1, lat: 2, heading: 0, visible: 255 }]);
-		mgr.initFromBinary(buf);
-		assertTotalCountConsistent(mgr, "after initFromBinary");
+		mgr.apply(scene([entry("s", 100, 1, 2)]));
+		assertTotalCountConsistent(mgr, "after a replace frame");
 	});
 });
 
@@ -1184,7 +1213,8 @@ describe("No duplicate IDs across cells", () => {
 	});
 
 	it("normal multi-cell add has no duplicates", () => {
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [
 					entry("s", 1, 1, 1),
@@ -1199,13 +1229,15 @@ describe("No duplicate IDs across cells", () => {
 	});
 
 	it("remove from one cell + add to another with different IDs: no duplicates", () => {
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 1, 1), entry("t", 2, 2, 2)],
 			}),
 		);
 
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("t", 3, 3, 3)],
 				removed: [{ cell: "s", cellIndex: 0, id: 1 }],
@@ -1220,12 +1252,13 @@ describe("No duplicate IDs across cells", () => {
 		for (let i = 0; i < 200; i++) {
 			entries.push(entry(cells[i % cells.length], i + 1, i, i));
 		}
-		mgr.applyDelta(delta({ added: entries }));
+		applyDelta(mgr, delta({ added: entries }));
 		assertNoDuplicateIdsAcrossCells(mgr, "200 entries across 4 cells");
 	});
 
 	it("undo-redo sequence maintains no duplicates", () => {
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 1, 1), entry("s", 2, 2, 2), entry("t", 3, 3, 3)],
 			}),
@@ -1233,7 +1266,8 @@ describe("No duplicate IDs across cells", () => {
 		assertNoDuplicateIdsAcrossCells(mgr, "initial");
 
 		// "Delete" id=1 from cell s
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [{ cell: "s", cellIndex: mgr.cells.get("s")!.idToIndex.get(1)!, id: 1 }],
 			}),
@@ -1241,7 +1275,8 @@ describe("No duplicate IDs across cells", () => {
 		assertNoDuplicateIdsAcrossCells(mgr, "after delete");
 
 		// "Undo" — re-add id=1 back to cell s
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 1, 1, 1)],
 			}),
@@ -1263,7 +1298,8 @@ describe("Structural integrity (all three invariants) through operation sequence
 
 	it("holds through a realistic editing session", () => {
 		// User opens map — locations load across cells
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [
 					entry("s", 1, 10, 20),
@@ -1281,7 +1317,8 @@ describe("Structural integrity (all three invariants) through operation sequence
 		assertStructuralIntegrity(mgr, "after select");
 
 		// User adds a new location
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 6, 110, 120)],
 			}),
@@ -1291,7 +1328,8 @@ describe("Structural integrity (all three invariants) through operation sequence
 		// User deletes two locations
 		const sIdx2 = mgr.cells.get("s")!.idToIndex.get(2)!;
 		const tIdx4 = mgr.cells.get("t")!.idToIndex.get(4)!;
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				removed: [
 					{ cell: "s", cellIndex: sIdx2, id: 2 },
@@ -1307,7 +1345,8 @@ describe("Structural integrity (all three invariants) through operation sequence
 
 		// User updates a location (position patch)
 		const uIdx5 = mgr.cells.get("u")!.idToIndex.get(5)!;
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				updated: [{ cell: "u", cellIndex: uIdx5, lng: 999, lat: 888, heading: 45, sel: null }],
 			}),
@@ -1315,7 +1354,8 @@ describe("Structural integrity (all three invariants) through operation sequence
 		assertStructuralIntegrity(mgr, "after position update");
 
 		// User undoes the delete (re-add)
-		mgr.applyDelta(
+		applyDelta(
+			mgr,
 			delta({
 				added: [entry("s", 2, 30, 40), entry("t", 4, 70, 80)],
 			}),
@@ -1329,32 +1369,14 @@ describe("Structural integrity (all three invariants) through operation sequence
 		assertStructuralIntegrity(mgr, "after final clear");
 	});
 
-	it("holds through initFromBinary", () => {
-		const buf = buildMinimalBinary("s", [
-			{ id: 10, lng: 1, lat: 2, heading: 0, visible: 255 },
-			{ id: 20, lng: 3, lat: 4, heading: 90, visible: 255 },
-			{ id: 30, lng: 5, lat: 6, heading: 180, visible: 255 },
-		]);
-		mgr.initFromBinary(buf);
-		assertStructuralIntegrity(mgr, "after initFromBinary");
+	it("holds through a replace frame", () => {
+		mgr.apply(scene([entry("s", 10, 1, 2), entry("s", 20, 3, 4, 90), entry("s", 30, 5, 6, 180)]));
+		assertStructuralIntegrity(mgr, "after a replace frame");
 	});
 
-	it("holds through multi-cell initFromBinary", () => {
-		const buf = buildMultiCellBinary([
-			{
-				cell: "s",
-				entries: [
-					{ id: 1, lng: 10, lat: 20, heading: 0, visible: 255 },
-					{ id: 2, lng: 30, lat: 40, heading: 0, visible: 255 },
-				],
-			},
-			{
-				cell: "t",
-				entries: [{ id: 3, lng: 50, lat: 60, heading: 0, visible: 255 }],
-			},
-		]);
-		mgr.initFromBinary(buf);
-		assertStructuralIntegrity(mgr, "after multi-cell initFromBinary");
+	it("holds through a multi-cell replace frame", () => {
+		mgr.apply(scene([entry("s", 1, 10, 20), entry("s", 2, 30, 40), entry("t", 3, 50, 60)]));
+		assertStructuralIntegrity(mgr, "after a multi-cell replace frame");
 		expect(mgr.totalCount).toBe(3);
 		expect(mgr.cells.get("s")!.count).toBe(2);
 		expect(mgr.cells.get("t")!.count).toBe(1);
@@ -1369,7 +1391,7 @@ describe("Structural integrity (all three invariants) through operation sequence
 			for (let i = 0; i < 5; i++) {
 				newEntries.push(entry(cells[i % 3], nextId++, nextId * 10, nextId * 20));
 			}
-			mgr.applyDelta(delta({ added: newEntries }));
+			applyDelta(mgr, delta({ added: newEntries }));
 			assertStructuralIntegrity(mgr, `round ${round} after add`);
 
 			// Remove the first entry from each cell that has one
@@ -1380,74 +1402,9 @@ describe("Structural integrity (all three invariants) through operation sequence
 				}
 			}
 			if (removals.length > 0) {
-				mgr.applyDelta(delta({ removed: removals }));
+				applyDelta(mgr, delta({ removed: removals }));
 				assertStructuralIntegrity(mgr, `round ${round} after remove`);
 			}
 		}
 	});
 });
-
-// ===========================================================================
-// Helpers — binary builders
-// ===========================================================================
-
-type BinaryEntry = {
-	id: number;
-	lng: number;
-	lat: number;
-	heading: number;
-	visible: number;
-};
-
-// Helper to build a minimal Rust-format binary
-function buildMinimalBinary(cell: string, entries: BinaryEntry[]): ArrayBuffer {
-	return buildMultiCellBinary([{ cell, entries }]);
-}
-
-function buildMultiCellBinary(cells: { cell: string; entries: BinaryEntry[] }[]): ArrayBuffer {
-	let size = 4; // u32 cell_count
-	for (const c of cells) {
-		const n = c.entries.length;
-		// header+pad + ids + positions + visible+pad + angles
-		size += 8 + n * 4 + n * 2 * 4 + n + ((4 - (n & 3)) & 3) + n * 4;
-	}
-	size += 4; // sel_count
-
-	const buf = new ArrayBuffer(size);
-	const dv = new DataView(buf);
-	let off = 0;
-
-	dv.setUint32(off, cells.length, true);
-	off += 4;
-
-	for (const c of cells) {
-		const n = c.entries.length;
-		dv.setUint8(off, c.cell.charCodeAt(0));
-		off += 1;
-		dv.setUint32(off, n, true);
-		off += 4;
-		off += 3; // alignment pad
-		for (const e of c.entries) {
-			dv.setUint32(off, e.id, true);
-			off += 4;
-		}
-		for (const e of c.entries) {
-			dv.setFloat32(off, e.lng, true);
-			off += 4;
-			dv.setFloat32(off, e.lat, true);
-			off += 4;
-		}
-		for (const e of c.entries) {
-			dv.setUint8(off, e.visible);
-			off += 1;
-		}
-		off += (4 - (n & 3)) & 3; // pad visible to 4
-		for (const e of c.entries) {
-			dv.setFloat32(off, e.heading, true);
-			off += 4;
-		}
-	}
-
-	dv.setUint32(off, 0, true); // sel_count = 0
-	return buf;
-}

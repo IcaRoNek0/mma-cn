@@ -510,20 +510,12 @@ async function runScale(scale: number, scaleMaps: Set<string>): Promise<void> {
 		run: () =>
 			withApi(async (api) => {
 				const start = performance.now();
-				const path = await api.cmd.storeFillRenderFile({
-					west: -180,
-					south: -90,
-					east: 180,
-					north: 90,
-					markerStyle: "pin",
-				});
-				const filled = performance.now();
-				const bytes = (await (await fetch(api.mmaBufUrl(path))).arrayBuffer()).byteLength;
-				const done = performance.now();
+				await api.loadScene("pin");
+				const durationMs = performance.now() - start;
 				return {
-					durationMs: done - start,
-					operationMs: filled - start,
-					metrics: { fetchMs: done - filled, bytes },
+					durationMs,
+					operationMs: durationMs,
+					metrics: { markers: api.getScene().totalCount },
 				};
 			}),
 	});

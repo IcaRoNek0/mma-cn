@@ -2,8 +2,8 @@
 
 import * as _tauri_apps_api_window from '@tauri-apps/api/window';
 import * as _tauri_apps_api_webview from '@tauri-apps/api/webview';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import * as __TAURI_EVENT from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
 import { Command } from '@tauri-apps/plugin-shell';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import * as react from 'react';
@@ -312,6 +312,17 @@ declare const BUILTIN_FIELDS: readonly [{
     readonly comparison: null;
     readonly interned: false;
 }];
+/** What a render frame does to the scene. @unstable */
+declare const FrameKind: {
+    /** Clears the scene, then adds every row the frame carries. */
+    readonly Replace: 0;
+    /** Changes the scene in place. */
+    readonly Patch: 1;
+};
+/** @unstable */
+type FrameKind = (typeof FrameKind)[keyof typeof FrameKind];
+/** @unstable */
+declare const NO_SEL: 4294967295;
 declare const OFFICIAL_ID_PATTERN: "^[-_A-Za-z0-9]{21}[AQgw]$";
 /** @unstable */
 declare const CLEARABLE_BUILTINS: readonly ["panoId"];
@@ -478,6 +489,9 @@ export type consts_FieldType = FieldType;
 declare const consts_FirstSyncMode: typeof FirstSyncMode;
 /** @unstable */
 export type consts_FirstSyncMode = FirstSyncMode;
+declare const consts_FrameKind: typeof FrameKind;
+/** @unstable */
+export type consts_FrameKind = FrameKind;
 declare const consts_IssueState: typeof IssueState;
 /** @unstable */
 export type consts_IssueState = IssueState;
@@ -491,6 +505,7 @@ export type consts_MapShape = MapShape;
 declare const consts_MergeWinner: typeof MergeWinner;
 /** @unstable */
 export type consts_MergeWinner = MergeWinner;
+declare const consts_NO_SEL: typeof NO_SEL;
 declare const consts_OFFICIAL_ID_PATTERN: typeof OFFICIAL_ID_PATTERN;
 declare const consts_PLAIN_CALLS: typeof PLAIN_CALLS;
 declare const consts_PROJECTIONS: typeof PROJECTIONS;
@@ -522,8 +537,8 @@ declare const consts_ValidationFlag: typeof ValidationFlag;
 /** @unstable */
 export type consts_ValidationFlag = ValidationFlag;
 declare namespace consts {
-  export { consts_BUILTIN_FIELDS as BUILTIN_FIELDS, consts_CLEARABLE_BUILTINS as CLEARABLE_BUILTINS, consts_DEFAULT_DUPLICATE_SCORE as DEFAULT_DUPLICATE_SCORE, consts_EFFECT_CALLS as EFFECT_CALLS, consts_ERROR_CODES as ERROR_CODES, consts_KNOWN_FIELDS as KNOWN_FIELDS, consts_OFFICIAL_ID_PATTERN as OFFICIAL_ID_PATTERN, consts_PLAIN_CALLS as PLAIN_CALLS, consts_PROJECTIONS as PROJECTIONS, consts_SCRATCH_MAP_ID as SCRATCH_MAP_ID, consts_SYNC_PROVIDERS as SYNC_PROVIDERS, consts_VIRTUAL_FLAGS as VIRTUAL_FLAGS };
-  export { consts_CameraType as CameraType, consts_CapturePick as CapturePick, consts_DatePart as DatePart, consts_FieldType as FieldType, consts_FirstSyncMode as FirstSyncMode, consts_IssueState as IssueState, consts_LocationFlag as LocationFlag, consts_MapShape as MapShape, consts_MergeWinner as MergeWinner, consts_PanoType as PanoType, consts_RankingStrategy as RankingStrategy, consts_RateCost as RateCost, consts_ResolutionSide as ResolutionSide, consts_Sink as Sink, consts_SyncDirection as SyncDirection, consts_SyncTrigger as SyncTrigger, consts_ValidationFlag as ValidationFlag };
+  export { consts_BUILTIN_FIELDS as BUILTIN_FIELDS, consts_CLEARABLE_BUILTINS as CLEARABLE_BUILTINS, consts_DEFAULT_DUPLICATE_SCORE as DEFAULT_DUPLICATE_SCORE, consts_EFFECT_CALLS as EFFECT_CALLS, consts_ERROR_CODES as ERROR_CODES, consts_KNOWN_FIELDS as KNOWN_FIELDS, consts_NO_SEL as NO_SEL, consts_OFFICIAL_ID_PATTERN as OFFICIAL_ID_PATTERN, consts_PLAIN_CALLS as PLAIN_CALLS, consts_PROJECTIONS as PROJECTIONS, consts_SCRATCH_MAP_ID as SCRATCH_MAP_ID, consts_SYNC_PROVIDERS as SYNC_PROVIDERS, consts_VIRTUAL_FLAGS as VIRTUAL_FLAGS };
+  export { consts_CameraType as CameraType, consts_CapturePick as CapturePick, consts_DatePart as DatePart, consts_FieldType as FieldType, consts_FirstSyncMode as FirstSyncMode, consts_FrameKind as FrameKind, consts_IssueState as IssueState, consts_LocationFlag as LocationFlag, consts_MapShape as MapShape, consts_MergeWinner as MergeWinner, consts_PanoType as PanoType, consts_RankingStrategy as RankingStrategy, consts_RateCost as RateCost, consts_ResolutionSide as ResolutionSide, consts_Sink as Sink, consts_SyncDirection as SyncDirection, consts_SyncTrigger as SyncTrigger, consts_ValidationFlag as ValidationFlag };
 }
 
 /** Commands @unstable */
@@ -703,9 +718,9 @@ declare const commands$1: {
     /**  Return the map's current location count, store version, and unsaved-change count. @unstable */
     storeGetSummary: () => Promise<SummaryResult>;
     /**  Add new locations, allocating sequential IDs. Undoable. @unstable */
-    storeAddLocations: (locations: Location[]) => Promise<MutationResult>;
+    storeAddLocations: (locations: Location[]) => Promise<Added>;
     /**  Add locations from an upload session (see `storeUploadBegin`) as one undoable change. @unstable */
-    storeAddLocationsUploaded: (sessionDir: string) => Promise<MutationResult>;
+    storeAddLocationsUploaded: (sessionDir: string) => Promise<Added>;
     /**  Remove locations by ID. Undoable. @unstable */
     storeRemoveLocations: (ids: number[]) => Promise<MutationResult>;
     /**
@@ -827,10 +842,10 @@ declare const commands$1: {
     storeCommitDiff: () => Promise<[number, number, number]>;
     /**
      *  Replace all active selections and resolve them against current data. Returns
-     *  per-selection counts and a bitmask for the marker overlay.
+     *  per-selection counts; the markers repaint through the render frame.
      *  @unstable
      */
-    storeSyncSelections: (sels: ListedSelection[]) => Promise<SelectionSync>;
+    storeSyncSelections: (sels: ListedSelection[]) => Promise<MutationResult>;
     /**
      *  Find groups of locations within `distance` metres of each other (transitive).
      *  Returns groups of IDs, each with at least two members.
@@ -850,8 +865,8 @@ declare const commands$1: {
      *  @unstable
      */
     storePruneDuplicates: (selector: Selector, distance: number, score: string | null) => Promise<MutationResult>;
-    /**  Rebuild all marker render data from scratch and return the file path to fetch it from. @unstable */
-    storeFillRenderFile: (req: RenderRequest) => Promise<string>;
+    /**  Draw the open map's markers: `frames` receives the whole scene, then every change to it. @unstable */
+    storeSubscribeFrames: (frames: Channel<ArrayBuffer>, req: RenderRequest) => Promise<null>;
     /**  Resolve a marker pick (cell key + index within cell) to a location ID. @unstable */
     storeResolvePick: (cell: string, cellIndex: number) => Promise<number | null>;
     /**  Return metadata for every map in the database. @unstable */
@@ -1235,6 +1250,12 @@ declare const events: {
         emit: (payload: ValiProgress) => Promise<void>;
     };
 };
+/**  A batch of new locations added to the open map. @unstable */
+type Added = {
+    mutation: MutationResult;
+    /**  The id the first location was given; the rest follow it in order. */
+    firstId: number;
+};
 /** @unstable */
 type AnonIssueRef = {
     number: number;
@@ -1273,12 +1294,6 @@ type BatchMode = {
 type CameraFrame = {
     heading: number;
     pitch: number;
-};
-/**  A marker removed from a render cell. */
-type CellRemoval = {
-    cell: string;
-    cellIndex: number;
-    id: number;
 };
 /**
  *  Per-field columns of the selected set. One value per row per field, `null` where a
@@ -1414,7 +1429,7 @@ type EditorImportPreview = {
     willAutoCommit: boolean;
 };
 /**
- *  Combined result of an editor import: the mutation delta (for render pipeline)
+ *  Combined result of an editor import: the mutation it made
  *  plus import-specific metadata.
  *  @unstable
  */
@@ -2065,8 +2080,8 @@ type MmUser = {
 };
 /**  What one change did to the open map. */
 type MutationResult = {
+    /**  The map version this change brought the map to. */
     version: number;
-    delta: RenderDelta;
     selectionSync: SelectionSync | null;
     values: EngineValues;
 };
@@ -2460,41 +2475,6 @@ type RemoteTag = {
     /**  The tag's position in the source's ordering; null when the source keeps none. */
     order: number | null;
 };
-/**  Marker changes after an edit: added, updated, and removed markers. */
-type RenderDelta = {
-    added: RenderEntry[];
-    updated: RenderPatchEntry[];
-    removed: CellRemoval[];
-};
-/**  A marker appended to a render cell: position, heading, and selection state. */
-type RenderEntry = {
-    cell: string;
-    id: number;
-    lng: number;
-    lat: number;
-    heading: number;
-    /**  The selection drawing this marker, or `null` when no selection does. */
-    sel: SelPaint | null;
-    /**
-     *  The slot this row vacated when it crossed cells. Present only for a move, so JS
-     *  mirrors the swap-remove and carries the overlay entry across instead of inferring
-     *  a move from an unrelated removed/added pair.
-     */
-    movedFrom: CellRemoval | null;
-};
-/**
- *  Update to an existing marker within its cell. Position and heading are `null` when
- *  unchanged; `sel` always states the row's current selection state, so a membership
- *  change with no movement is just a patch with no coordinates.
- */
-type RenderPatchEntry = {
-    cell: string;
-    cellIndex: number;
-    lng: number | null;
-    lat: number | null;
-    heading: number | null;
-    sel: SelPaint | null;
-};
 /**
  *  Parameters for a full marker rebuild. `markerStyle` ("arrow" or "pin") decides whether
  *  headings are drawn.
@@ -2665,16 +2645,6 @@ type SeenWriteEntry = {
     thumbnail: string | null;
 };
 /**
- *  The selection drawing a row: its colour, and its index in `SelectionState::resolved`.
- *  The index is the draw order - a later selection overdraws an earlier one - so the
- *  overlay can be ordered by it instead of by whatever order rows happen to arrive in.
- *  Every marker sits at z=0 in one deck.gl layer, so buffer order is the only z there is.
- */
-type SelPaint = {
-    idx: number;
-    color: [number, number, number];
-};
-/**
  *  A named, colored selection. `key` is deterministic (JS mints it) so selections can be
  *  diffed across syncs; `Selection::of` keys internal queries by their serialized selector.
  *  `color` is the RGB overlay color.
@@ -2690,7 +2660,6 @@ type SelectionSync = {
     counts: {
         [key in string]: number;
     };
-    bitmask: number[] | null;
     selectedCount: number;
 };
 /**
@@ -3266,20 +3235,6 @@ declare namespace colorUtils {
   export type { colorUtils_HSL as HSL, colorUtils_RGB as RGB, colorUtils_RGBA as RGBA };
 }
 
-/** Per-cell, per-selection membership: a dense bitmask or a sparse selected-index list. @unstable */
-export type SelEntry = {
-    kind: "mask";
-    mask: Uint8Array;
-} | {
-    kind: "idx";
-    indices: Uint32Array;
-};
-/** @unstable */
-export interface SelCellEntry {
-    cellChar: string;
-    locCount: number;
-    sels: SelEntry[];
-}
 /** The read-only id-membership surface shared by `Set<number>` and `SelectedIds`, for code
  *  that only needs `size` / `has` / iteration over either. */
 export interface ReadonlyIdSet extends Iterable<number> {
@@ -3358,9 +3313,6 @@ declare class SelectionOverlay {
     private swap;
     /** Snapshot of the selected ids. Copies the bit array so later edits can't mutate it. */
     selectedIds(): SelectedIds;
-    /** Replace every entry with arrays sliced straight out of Rust's render binary, which
-     *  ships them in emission order, then put them in selection order. */
-    load(positions: Float32Array<ArrayBuffer>, colors: Uint8Array<ArrayBuffer>, angles: Float32Array<ArrayBuffer>, ids: Uint32Array<ArrayBuffer>, sel: Uint32Array<ArrayBuffer>, maxId: number): void;
     /** Size up front for a rebuild of known size, so `set` never reallocates mid-loop. */
     reserve(n: number, maxId: number): void;
     /** Grow the draw arrays to hold `n` entries and the id-keyed arrays to cover `maxId`. */
@@ -3385,20 +3337,38 @@ declare class CellBuffer {
     positionVersion: number;
     colorVersion: number;
     constructor(capacity?: number);
-    /** Append a marker, growing the buffer if needed. Visibility is corrected by the
-     *  caller's `syncVisible` once the overlay knows about the row. */
-    append(entry: RenderEntry): void;
+    /** A cell holding `rows` as they are, viewing the frame's arrays rather than copying
+     *  them. Every row starts hidden until the caller paints it. */
+    static of(rows: FrameRows): CellBuffer;
+    /** Append a marker, growing the buffer if needed. Visibility is set by the caller once
+     *  the overlay knows about the row. */
+    append(id: number, lng: number, lat: number, angle: number): void;
     /** O(1) removal by swapping with the last element. Mirrors Rust's cell_remove_render. */
     swapRemove(index: number): void;
-    patchPosition(index: number, lng?: number, lat?: number, heading?: number): void;
+    patchPosition(index: number, lng: number, lat: number, angle: number): void;
     /** Show (255) or hide (0) one marker in the base layer. */
     patchVisible(index: number, visible: number): void;
     private ensureCapacity;
 }
+/** One cell's rows in a frame, viewed in place: ids for adds, slots for patches. @unstable */
+export interface FrameRows {
+    key: Uint32Array<ArrayBuffer>;
+    pos: Float32Array<ArrayBuffer>;
+    angle: Float32Array<ArrayBuffer>;
+    sel: Uint32Array<ArrayBuffer>;
+}
+/** What applying one frame did: the map version the scene reached, whether it started the
+ *  scene over, and the ids it added and removed, ascending. A row that moved between cells
+ *  is in neither; a replace lists nothing. @unstable */
+export interface FrameSummary {
+    version: number;
+    replace: boolean;
+    added: Uint32Array;
+    removed: Uint32Array;
+}
 /**
- * Owns all marker render data as 32 geohash-cell CellBuffers plus a selection overlay.
- * Initialized from a binary blob built by Rust (`initFromBinary`), then kept in sync
- * via incremental deltas (`applyDelta`) and selection bitmasks (`applySelectionBitmasks`).
+ * Owns all marker render data as 32 geohash-cell CellBuffers plus a selection overlay,
+ * kept in step with the map by applying its render frames in order (`apply`).
  * deck.gl layers read the typed arrays directly - no JSON serialization in the render loop.
  */
 declare class CellManager {
@@ -3412,22 +3382,20 @@ declare class CellManager {
     readonly overlay: SelectionOverlay;
     /** The row the active-location layer draws, hidden in its base cell. */
     private activeId;
-    /** Parse the full render binary from Rust. Replaces all cells and the selection overlay. */
-    initFromBinary(buf: ArrayBuffer): void;
-    /** Scratch for `applySelectionBitmasks`: per-row winning selection index, reused across
-     *  cells so a full sync does not allocate one array per cell. */
+    /** Scratch for `restateSelections`: per-row winning selection index, reused across
+     *  cells so a full restate does not allocate one array per cell. */
     private selWinner;
     /**
-     * Apply an incremental delta. Every entry states the row's resulting selection state,
-     * so the base cells and the overlay are written from one fact rather than inferred
-     * from each other. Returns the affected cell keys.
+     * Apply one render frame. Per cell, in order: each removal swap-removes its slot, the
+     * adds append, then the patches restate rows by their slot. Every added or patched row
+     * states the selection painting it, so the base cells and the overlay are written from
+     * one fact. A selection section, when present, then restates every cell's membership.
      */
-    applyDelta(delta: RenderDelta): Set<string>;
+    apply(buf: ArrayBuffer): FrameSummary;
     /** Put the row at `cb[i]` in or out of the selection overlay and set its base visibility.
      *  Idempotent, so restating a row's current state costs nothing but is always safe.
-     *  Takes the buffer and index the caller already has - `syncVisible` is for the
-     *  active-location path, which only knows an id. */
-    private setSelection;
+     *  The caller bumps the cell's colour version once for the whole frame. */
+    private paint;
     /** Set the active location, whose marker the active layer draws instead of the base cell.
      *  Returns whether the active row actually moved. */
     setActive(id: number | null): boolean;
@@ -3446,13 +3414,13 @@ declare class CellManager {
     /** Selected-id set, snapshotted from the overlay. */
     selectedIds(): SelectedIds;
     /**
-     * Decode per-cell bitmasks from Rust into the selection overlay. Selected rows are drawn
-     * by the overlay in their selection's color and hidden in their base cell.
+     * Restate the selection overlay from a frame's selection section. Selected rows are
+     * drawn by the overlay in their selection's color and hidden in their base cell.
      *
      * Partial updates are supported: only the cells named in `cellEntries` are restated,
      * and overlay entries for every other cell survive untouched.
      */
-    applySelectionBitmasks(selColors: RGB[], cellEntries: SelCellEntry[]): SelectedIds;
+    private restateSelections;
     clear(): void;
 }
 
@@ -3567,10 +3535,9 @@ declare function patchMapMeta(id: string, patch: MapMetaPatch_Deserialize): Prom
 declare function updateMapMeta(patch: MapMetaPatch_Deserialize): Promise<void> | undefined;
 /** Replace the map's extra-field definitions (types/labels for `Location.extra` keys). */
 declare function setMapExtraFields(fields: Record<string, FieldDef>): Promise<void>;
-/** Decode a selection bitmask and draw it on the map. @unstable */
-declare function emitBitmask(bytes: number[]): void;
-/** Run a mutation, apply its result to the map, and schedule a save. A result that wraps its
- *  mutation comes back whole; `empty` is its answer when no map is open. @unstable */
+/** Run a mutation, wait for the scene to draw it, apply its result to the map, and schedule a
+ *  save. A result that wraps its mutation comes back whole; `empty` is its answer when no map
+ *  is open. `sceneReached(version)` then tells what the change did to the markers. @unstable */
 declare function mutate(fn: () => Promise<MutationResult>): Promise<MutationResult>;
 /** @unstable */
 declare function mutate<R extends {
@@ -3717,8 +3684,6 @@ declare const store_deleteTags: typeof deleteTags;
 /** @unstable */
 declare const store_discardOpenMap: typeof discardOpenMap;
 declare const store_duplicateLocation: typeof duplicateLocation;
-/** @unstable */
-declare const store_emitBitmask: typeof emitBitmask;
 declare const store_exitPluginMode: typeof exitPluginMode;
 /** @unstable */
 declare const store_flushSave: typeof flushSave;
@@ -3782,7 +3747,7 @@ declare const store_useMapState: typeof useMapState;
 /** @unstable */
 declare const store_waitForInflightPersist: typeof waitForInflightPersist;
 declare namespace store {
-  export { store_addLocations as addLocations, store_applyFieldOp as applyFieldOp, store_applySelectionUpdate as applySelectionUpdate, store_cancelAutosave as cancelAutosave, store_checkoutCommit as checkoutCommit, store_closeDuplicates as closeDuplicates, closeMap$1 as closeMap, store_commitMap as commitMap, store_createTags as createTags, store_currentSelection as currentSelection, store_deleteField as deleteField, store_deleteTags as deleteTags, store_discardOpenMap as discardOpenMap, store_duplicateLocation as duplicateLocation, store_emitBitmask as emitBitmask, store_exitPluginMode as exitPluginMode, store_flushSave as flushSave, store_getActiveSelections as getActiveSelections, store_getMapState as getMapState, store_getTag as getTag, store_getTagCounts as getTagCounts, store_getTags as getTags, store_getVisibleTags as getVisibleTags, store_holdAutosave as holdAutosave, store_initStore as initStore, store_mergeDuplicates as mergeDuplicates, store_mutate as mutate, store_openDuplicateLocation as openDuplicateLocation, openMap$1 as openMap, store_openStagedLocation as openStagedLocation, store_patchMapMeta as patchMapMeta, store_previewDuplicateGroups as previewDuplicateGroups, store_previewVirtualLocation as previewVirtualLocation, store_pruneDuplicates as pruneDuplicates, query$1 as query, store_redo as redo, store_removeDuplicate as removeDuplicate, store_removeLocations as removeLocations, store_renameField as renameField, store_renameTagsIn as renameTagsIn, store_reorderTags as reorderTags, store_resolveLocation as resolveLocation, store_scheduleAutoCommit as scheduleAutoCommit, store_scheduleSave as scheduleSave, store_selectEvenlySpacedFromSelection as selectEvenlySpacedFromSelection, store_selectRandomFromSelection as selectRandomFromSelection, store_selectSpacedFromSelection as selectSpacedFromSelection, store_setActiveLocation as setActiveLocation, store_setMapExtraFields as setMapExtraFields, store_setPluginMode as setPluginMode, store_setSelectedLocationIds as setSelectedLocationIds, store_setTags as setTags, store_setWorkArea as setWorkArea, syncSelections$1 as syncSelections, store_tagIdsToNames as tagIdsToNames, store_undo as undo, store_updateLocations as updateLocations, store_updateMapMeta as updateMapMeta, store_updateTags as updateTags, store_useMapState as useMapState, store_waitForInflightPersist as waitForInflightPersist };
+  export { store_addLocations as addLocations, store_applyFieldOp as applyFieldOp, store_applySelectionUpdate as applySelectionUpdate, store_cancelAutosave as cancelAutosave, store_checkoutCommit as checkoutCommit, store_closeDuplicates as closeDuplicates, closeMap$1 as closeMap, store_commitMap as commitMap, store_createTags as createTags, store_currentSelection as currentSelection, store_deleteField as deleteField, store_deleteTags as deleteTags, store_discardOpenMap as discardOpenMap, store_duplicateLocation as duplicateLocation, store_exitPluginMode as exitPluginMode, store_flushSave as flushSave, store_getActiveSelections as getActiveSelections, store_getMapState as getMapState, store_getTag as getTag, store_getTagCounts as getTagCounts, store_getTags as getTags, store_getVisibleTags as getVisibleTags, store_holdAutosave as holdAutosave, store_initStore as initStore, store_mergeDuplicates as mergeDuplicates, store_mutate as mutate, store_openDuplicateLocation as openDuplicateLocation, openMap$1 as openMap, store_openStagedLocation as openStagedLocation, store_patchMapMeta as patchMapMeta, store_previewDuplicateGroups as previewDuplicateGroups, store_previewVirtualLocation as previewVirtualLocation, store_pruneDuplicates as pruneDuplicates, query$1 as query, store_redo as redo, store_removeDuplicate as removeDuplicate, store_removeLocations as removeLocations, store_renameField as renameField, store_renameTagsIn as renameTagsIn, store_reorderTags as reorderTags, store_resolveLocation as resolveLocation, store_scheduleAutoCommit as scheduleAutoCommit, store_scheduleSave as scheduleSave, store_selectEvenlySpacedFromSelection as selectEvenlySpacedFromSelection, store_selectRandomFromSelection as selectRandomFromSelection, store_selectSpacedFromSelection as selectSpacedFromSelection, store_setActiveLocation as setActiveLocation, store_setMapExtraFields as setMapExtraFields, store_setPluginMode as setPluginMode, store_setSelectedLocationIds as setSelectedLocationIds, store_setTags as setTags, store_setWorkArea as setWorkArea, syncSelections$1 as syncSelections, store_tagIdsToNames as tagIdsToNames, store_undo as undo, store_updateLocations as updateLocations, store_updateMapMeta as updateMapMeta, store_updateTags as updateTags, store_useMapState as useMapState, store_waitForInflightPersist as waitForInflightPersist };
   export type { store_MapState as MapState, store_UiState as UiState };
 }
 
@@ -5223,12 +5188,6 @@ declare namespace picker {
   export type { picker_SelectorPick as SelectorPick, picker_SelectorPickController as SelectorPickController, picker_SelectorPickHandle as SelectorPickHandle };
 }
 
-/** @unstable */
-export interface SelectionBitmaskPayload {
-    selColors: RGB[];
-    cellEntries: SelCellEntry[];
-    setIds: (ids: SelectedIds) => void;
-}
 declare const EVENT_DEFS: {
     "location:add": Location[];
     "location:remove": number[];
@@ -5245,12 +5204,6 @@ declare const EVENT_DEFS: {
     "map:close": void;
     /** @unstable */
     "store:changed": void;
-    /** @unstable */
-    "render:delta": RenderDelta;
-    /** The scene must be loaded again from scratch. @unstable */
-    "render:reset": void;
-    /** @unstable */
-    "render:selection": SelectionBitmaskPayload;
     "map-list:changed": void;
     /** @unstable */
     "saved-selections:changed": void;
@@ -7340,13 +7293,19 @@ declare function setMarkerDefaultColor(r: number, g: number, b: number): void;
 declare function recolorScene(mc: RGB): void;
 /** Current default marker color as RGBA. @unstable */
 declare function getMarkerDefaultColor(): RGBA;
+/**
+ * Resolves once the scene has applied the frame for map version `version`, with what that
+ * frame did. Resolves at once, with nothing applied, when the scene follows no map.
+ * @unstable
+ */
+declare function sceneReached(version: number): Promise<FrameSummary>;
 /** Resolves when the most recently started full scene load has finished (or immediately if none is in flight). @unstable */
 declare function whenSceneSettled(): Promise<void>;
-/** Rebuild the full scene for all locations. @unstable */
-declare function loadScene(markerStyle: MarkerStyle, mc?: RGB): Promise<void>;
-/** Clear all marker data from the scene. @unstable */
+/** Load the whole scene again and follow every change to it from there. @unstable */
+declare function loadScene(markerStyle?: MarkerStyle, mc?: RGB): Promise<void>;
+/** Clear all marker data from the scene and stop following the map. @unstable */
 declare function clearScene(): void;
-/** Start listening for deltas, selections, and active-location changes. Returns a stop function. @unstable */
+/** Start following active-location changes. Returns a stop function. @unstable */
 declare function startSceneEngine(): () => void;
 
 /** @unstable */
@@ -7360,6 +7319,8 @@ declare const sceneStore_loadScene: typeof loadScene;
 /** @unstable */
 declare const sceneStore_recolorScene: typeof recolorScene;
 /** @unstable */
+declare const sceneStore_sceneReached: typeof sceneReached;
+/** @unstable */
 declare const sceneStore_setMarkerDefaultColor: typeof setMarkerDefaultColor;
 /** @unstable */
 declare const sceneStore_startSceneEngine: typeof startSceneEngine;
@@ -7372,6 +7333,7 @@ declare namespace sceneStore {
     sceneStore_getScene as getScene,
     sceneStore_loadScene as loadScene,
     sceneStore_recolorScene as recolorScene,
+    sceneStore_sceneReached as sceneReached,
     sceneStore_setMarkerDefaultColor as setMarkerDefaultColor,
     sceneStore_startSceneEngine as startSceneEngine,
     sceneStore_whenSceneSettled as whenSceneSettled,
@@ -7986,5 +7948,5 @@ declare global {
     const MMA: MMA;
 }
 
-export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, SYNC_PROVIDERS, Sink, SyncDirection, SyncTrigger, VIRTUAL_FLAGS, ValidationFlag, commands$1 as commands, events };
-export type { AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, CellRemoval, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FileSource, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapPreferences, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, Policy, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RemoteTag, RenderDelta, RenderEntry, RenderPatchEntry, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, SelPaint, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncLogEntry, SyncLogResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };
+export type { BUILTIN_FIELDS, CLEARABLE_BUILTINS, CameraType, CapturePick, DEFAULT_DUPLICATE_SCORE, DatePart, EFFECT_CALLS, ERROR_CODES, FieldType, FirstSyncMode, FrameKind, IssueState, KNOWN_FIELDS, LocationFlag, MMA, MMA as MMAApi, MapShape, MergeWinner, NO_SEL, OFFICIAL_ID_PATTERN, PLAIN_CALLS, PROJECTIONS, PanoType, RankingStrategy, RateCost, ResolutionSide, SCRATCH_MAP_ID, SYNC_PROVIDERS, Sink, SyncDirection, SyncTrigger, VIRTUAL_FLAGS, ValidationFlag, commands$1 as commands, events };
+export type { Added, AnonIssueRef, AttachmentRef, BatchMode, CameraFrame, Columns, CommitDelta, CommitDiff, CommitInfo, CommitResult, ComparisonType, Conflict, ConflictKind, CopyToMapResult, CountBy, DataLocation, DbStats, DeviceCodeInfo, EditorImportPreview, EditorImportResult, EngineValues, ExportOpts, ExportProgress, ExprError, ExternalMutation, FieldCount, FieldDef, FieldOp, FieldOpResult, FieldValue, FieldValuesPatch, FieldValuesResult, FileSource, FilterOp, GeoResult, GgUser, GhUser, HoneycombRun, IdQuery, ImageSize, ImportPreviewEntry, ImportProgress, ImportedMapInfo, IssueComment, IssueRef, IssueThread, KeySpec, ListedSelection, Location, LocationPatch, LocationPatch_Deserialize, MapExtra, MapKeyAction, MapKeyBinding, MapMeta, MapMetaPatch, MapMetaPatch_Deserialize, MapPreferences, MapSettings, MmMapSummary, MmUser, MutationResult, NormalizedSyncLocation, NumericBinning, Pano, PanoAnswer, PanoDate, PanoLink, PanoQuery, PanoTime, ParsedLocation, PartitionBucket, PluginBuild, PluginBuild_Deserialize, PluginManifest, PluginManifest_Deserialize, PluginSidecar, PluginSidecar_Deserialize, Policy, PolygonGeometry, Pov, PresenceActivity, ProcedureActivity, ProcedureConfig, ProcedureDecl, ProcedureHost, ProcedureProgress, ProcedureRequest, ProcedureResponse, ProcedureResult, ProviderActivity, ProviderDecl, PullCreate, PullUpdate, QueryActivity, RateSpec, RemoteMappingRow, RemoteTag, RenderRequest, ResultEntry, RetrySpec, ReviewCreate, ReviewSession, ReviewUpdate, Rows, RowsRun, SavedSelection, SavedSelectionInfo, ScoreBounds, SearchQuery, SeenEntry, SeenFilter, SeenMapInfo, SeenWriteEntry, Selection, SelectionSync, Selector, SideCounts, SidecarDone, SidecarLine, SidecarLog, SidecarProgress, SpacedPickResult, StoreStatus, StoreWarning, SummaryResult, SyncLogEntry, SyncLogResult, SyncPatch, SyncReconcileResult, Update, UpdateAvailable, UpdateProgress, ValiCountryStatus, ValiLocation, ValiLocation_Deserialize, ValiProgress, VirtualTag };

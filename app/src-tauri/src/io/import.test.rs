@@ -1,6 +1,7 @@
 use super::*;
 use crate::selections::Selector;
 use crate::store::engine;
+use crate::store::engine::frame::tests::Captured;
 use crate::store::engine::{record_name, record_order, ValueRecord};
 use crate::store::engine::{Store, WindowLabel};
 use crate::store::maps;
@@ -938,11 +939,15 @@ fn editor_import_reports_marker_additions() {
         ..Default::default()
     };
 
-    let result = add_parsed_to_store(&mut store, &mut parsed, &[]).unwrap();
+    let frames = Captured::default();
+    store.frames.insert("test".into(), frames.sink());
+    add_parsed_to_store(&mut store, &mut parsed, &[]).unwrap();
 
-    assert_eq!(result.delta.added.len(), 2);
-    assert!(result.delta.updated.is_empty());
-    assert!(result.delta.removed.is_empty());
+    let cells = frames.last().cells;
+    assert_eq!(cells.iter().map(|c| c.add.len()).sum::<usize>(), 2);
+    assert!(cells
+        .iter()
+        .all(|c| c.remove.is_empty() && c.patch.len() == 0));
 }
 
 // -----------------------------------------------------------------------

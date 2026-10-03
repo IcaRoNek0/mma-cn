@@ -6,11 +6,10 @@ import { applySelectionUpdate, getMapState } from "@/store/useMapStore";
 import { useSelectorPick, type SelectorPickController } from "@/store/selectorPick";
 import { buildSelection, tagSelector, toggleGhost } from "@/store/selections";
 
-vi.mock("@/lib/commands", () => ({
-	cmd: {
-		storeSyncSelections: vi.fn(async () => ({ counts: {}, bitmask: null, selectedCount: 0 })),
-	},
-}));
+vi.mock("@/lib/commands", async () => {
+	const { selectionChange } = await import("./fixtures/mocks");
+	return { cmd: { storeSyncSelections: vi.fn(async () => selectionChange()) } };
+});
 
 let result: SelectorPickController;
 function Probe() {

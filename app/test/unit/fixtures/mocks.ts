@@ -121,6 +121,22 @@ export function openMapResult(
 	};
 }
 
+/** What `storeSyncSelections` answers: a change that moved no row and recounted the selections. */
+export function selectionChange(counts: Record<string, number> = {}) {
+	return {
+		version: 0,
+		selectionSync: { counts, selectedCount: 0 },
+		values: {
+			locationCount: null,
+			canUndo: null,
+			canRedo: null,
+			valueCounts: null,
+			valueMeta: null,
+			fieldDefs: null,
+		},
+	};
+}
+
 export function cmdProxy(handlers: Handlers) {
 	return {
 		cmd: new Proxy({}, { get: (_t, name: string) => handlers[name] ?? (async () => null) }),

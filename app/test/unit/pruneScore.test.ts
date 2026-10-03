@@ -16,16 +16,19 @@ vi.mock("@/lib/commands", async () => {
 			...testMap(),
 			settings: h.duplicateScore === null ? {} : { duplicateScore: h.duplicateScore },
 		}),
-		storeOpenMap: async () => openMapResult(),
+		storeOpenMap: async () => {
+			const opened = openMapResult();
+			opened.values.locationCount = 5;
+			return opened;
+		},
 		storePruneDuplicates: async (...args: unknown[]) => {
 			const [selector, distance, score] = args as [Selector, number, string | null];
 			h.calls.push({ selector, distance, score });
 			return {
-				version: 0,
-				delta: { added: [], updated: [], removed: [1, 2] },
+				version: 4,
 				selectionSync: null,
 				values: {
-					locationCount: null,
+					locationCount: 3,
 					canUndo: null,
 					canRedo: null,
 					tagCounts: null,
@@ -37,6 +40,17 @@ vi.mock("@/lib/commands", async () => {
 	});
 });
 vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
+vi.mock("@/lib/render/sceneStore", () => ({
+	clearScene: () => {},
+	loadScene: async () => {},
+	whenSceneSettled: async () => {},
+	sceneReached: async (version: number) => ({
+		version,
+		replace: false,
+		added: new Uint32Array(0),
+		removed: new Uint32Array(0),
+	}),
+}));
 // closeMap announces itself to the other windows; there is no Tauri to announce to here.
 vi.mock("@tauri-apps/api/event", () => ({ emit: async () => {}, listen: async () => () => {} }));
 
@@ -70,7 +84,7 @@ describe("pruneDuplicates hands Rust the map's duplicate preference", () => {
 		expect(h.calls[0].distance).toBe(120);
 	});
 
-	it("reports the rows Rust removed", async () => {
+	it("reports how many rows the prune took off the map", async () => {
 		h.duplicateScore = null;
 		await openMap("m1");
 		expect(await pruneDuplicates({ type: "Everything" }, 25)).toBe(2);

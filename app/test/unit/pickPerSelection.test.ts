@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/commands", async () => {
-	const { cmdProxy, testMap, openMapResult } = await import("./fixtures/mocks");
+	const { cmdProxy, testMap, openMapResult, selectionChange } = await import("./fixtures/mocks");
 	// Tag 1 and tag 2 overlap on ids 4 and 5; tag 3 is disjoint from both.
 	const byTag: Record<number, number[]> = {
 		1: [1, 2, 3, 4, 5],
@@ -42,7 +42,7 @@ vi.mock("@/lib/commands", async () => {
 				},
 			}),
 		storeOpenMap: async () => openMapResult({ tagCounts: { 1: 5, 2: 5 } }),
-		storeSyncSelections: async () => ({ counts: {}, bitmask: null, selectedCount: 0 }),
+		storeSyncSelections: async () => selectionChange(),
 		storeResolve: async (selector: TestSelector) => poolOf(selector),
 		storeSample: async (selector: TestSelector, n: number) => {
 			h.sampledSelectors.push(selector);

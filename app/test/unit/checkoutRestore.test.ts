@@ -9,15 +9,18 @@ vi.mock("@/store/mapList", () => ({
 	reloadMapList: vi.fn(async () => {}),
 }));
 
-vi.mock("@/lib/commands", () => ({
-	cmd: {
-		storeSaveDirty: vi.fn(async () => {}),
-		storeCloseMap: vi.fn(async () => {}),
-		storeCheckoutCommit: vi.fn(async () => {}),
-		storeOpenMap: vi.fn(async () => ({})),
-		storeSyncSelections: vi.fn(async () => ({ counts: {}, bitmask: null, selectedCount: 0 })),
-	},
-}));
+vi.mock("@/lib/commands", async () => {
+	const { selectionChange } = await import("./fixtures/mocks");
+	return {
+		cmd: {
+			storeSaveDirty: vi.fn(async () => {}),
+			storeCloseMap: vi.fn(async () => {}),
+			storeCheckoutCommit: vi.fn(async () => {}),
+			storeOpenMap: vi.fn(async () => ({})),
+			storeSyncSelections: vi.fn(async () => selectionChange()),
+		},
+	};
+});
 
 const fakeRow = (key: string): ListedSelection => ({
 	selection: { key, color: [0, 0, 0], selector: { type: "Everything" } },

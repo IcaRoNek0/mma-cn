@@ -227,6 +227,18 @@ export type SyncDirection = (typeof SyncDirection)[keyof typeof SyncDirection];
 
 export const BUILTIN_FIELDS = [{"key":"id","label":"ID","type":"number","kind":"identity","comparison":null,"interned":false},{"key":"lat","label":"Latitude","type":"number","kind":"identity","comparison":null,"interned":false},{"key":"lng","label":"Longitude","type":"number","kind":"identity","comparison":null,"interned":false},{"key":"heading","label":"Heading","type":"number","kind":"writable","comparison":{"type":"circular","period":360.0},"interned":false},{"key":"pitch","label":"Pitch","type":"number","kind":"writable","comparison":null,"interned":false},{"key":"zoom","label":"Zoom","type":"number","kind":"writable","comparison":null,"interned":false},{"key":"panoId","label":"Pano ID","type":"string","kind":null,"comparison":null,"interned":false},{"key":"tags","label":"Tags","type":"array","kind":"writable","comparison":null,"interned":true},{"key":"createdAt","label":"Created","type":"date","kind":null,"comparison":null,"interned":false},{"key":"modifiedAt","label":"Modified","type":"date","kind":null,"comparison":null,"interned":false},{"key":"tagCount","label":"Tag count","type":"number","kind":"virtual","comparison":null,"interned":false},{"key":"loadAsPanoId","label":"Load as pano ID","type":"boolean","kind":"writable","comparison":null,"interned":false}] as const;
 
+/** What a render frame does to the scene. @unstable */
+export const FrameKind = {
+	/** Clears the scene, then adds every row the frame carries. */
+	Replace: 0,
+	/** Changes the scene in place. */
+	Patch: 1,
+} as const;
+export type FrameKind = (typeof FrameKind)[keyof typeof FrameKind];
+
+/** @unstable */
+export const NO_SEL = 4294967295 as const;
+
 export const OFFICIAL_ID_PATTERN = "^[-_A-Za-z0-9]{21}[AQgw]$" as const;
 
 /** @unstable */

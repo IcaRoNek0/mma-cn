@@ -520,11 +520,11 @@ fn render(c: &mut Criterion) {
     let mut g = c.benchmark_group("render");
     g.sample_size(10);
     g.throughput(Throughput::Elements(n as u64));
-    // The real command, temp-file write included -- the cost the app pays per full render.
+    // The real command, encode and send included -- the cost the app pays per scene load.
     g.bench_function(format!("{n}/full_build"), |b| {
-        b.iter(|| black_box(app.fill_render().len()));
+        b.iter(|| black_box(app.subscribe_frames()));
     });
-    // A 100-row edit on a rendered store: the delta path, which must not scale with n.
+    // A 100-row edit on a rendered store: the frame path, which must not scale with n.
     g.bench_function(format!("{n}/delta_100"), |b| {
         b.iter_batched_ref(
             || fx.rendered_store(),

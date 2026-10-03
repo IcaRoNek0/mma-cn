@@ -1,8 +1,8 @@
-import type { RenderDelta, RenderEntry, SelPaint } from "@/bindings.gen";
+import { FrameKind, NO_SEL } from "@/bindings.consts";
 import type { RGB } from "@/lib/util/color";
 
-/** A marker's selection state: `null` = the base layer draws it, a paint = the overlay does. */
-export type SelColor = SelPaint | null;
+/** Render cells are keyed by the first character of a location's geohash. */
+const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
 
 function bitHas(bits: Uint8Array, id: number): boolean {
 	return (bits[id >>> 3] & (1 << (id & 7))) !== 0;
@@ -17,16 +17,16 @@ export interface SelCellEntry {
 }
 
 /**
- * Decode the inline selection-bitmask bytes written by Rust's `assemble_selection_bitmask`
+ * Decode a frame's selection section, written by Rust's `assemble_selection_bitmask`
  * (engine/render.rs). Sole reader of that wire format - all format knowledge lives here
- * and in `applySelectionBitmasks`, which consumes the decoded entries.
+ * and in `restateSelections`, which consumes the decoded entries.
  */
-export function decodeSelectionBitmask(bytes: number[]): {
+export function decodeSelectionBitmask(bytes: Uint8Array): {
 	selColors: RGB[];
 	cellEntries: SelCellEntry[];
 } {
-	const buf = new Uint8Array(bytes).buffer;
-	const dv = new DataView(buf);
+	const buf = bytes.buffer;
+	const dv = new DataView(buf, bytes.byteOffset, bytes.byteLength);
 	let off = 0;
 	const numSels = dv.getUint32(off, true);
 	off += 4;
@@ -58,7 +58,7 @@ export function decodeSelectionBitmask(bytes: number[]): {
 				}
 				sels.push({ kind: "idx", indices });
 			} else {
-				sels.push({ kind: "mask", mask: new Uint8Array(buf, off, maskBytes) });
+				sels.push({ kind: "mask", mask: new Uint8Array(buf, bytes.byteOffset + off, maskBytes) });
 				off += maskBytes;
 			}
 		}
@@ -289,33 +289,6 @@ export class SelectionOverlay {
 		return new SelectedIds(this.bits.slice(), this.count);
 	}
 
-	/** Replace every entry with arrays sliced straight out of Rust's render binary, which
-	 *  ships them in emission order, then put them in selection order. */
-	load(
-		positions: Float32Array<ArrayBuffer>,
-		colors: Uint8Array<ArrayBuffer>,
-		angles: Float32Array<ArrayBuffer>,
-		ids: Uint32Array<ArrayBuffer>,
-		sel: Uint32Array<ArrayBuffer>,
-		maxId: number,
-	) {
-		this.positions = positions;
-		this.colors = colors;
-		this.angles = angles;
-		this.ids = ids;
-		this.sel = sel;
-		this.count = this.capacity = ids.length;
-		this.bits = new Uint8Array((maxId >>> 3) + 1);
-		this.slot = new Uint32Array(maxId + 1);
-		for (let i = 0; i < ids.length; i++) {
-			const id = ids[i];
-			this.bits[id >>> 3] |= 1 << (id & 7);
-			this.slot[id] = i;
-		}
-		this.version++;
-		this.order();
-	}
-
 	/** Size up front for a rebuild of known size, so `set` never reallocates mid-loop. */
 	reserve(n: number, maxId: number) {
 		if (n > 0) this.ensure(n, maxId);
@@ -376,17 +349,31 @@ export class CellBuffer {
 		this.angles = new Float32Array(capacity);
 	}
 
-	/** Append a marker, growing the buffer if needed. Visibility is corrected by the
-	 *  caller's `syncVisible` once the overlay knows about the row. */
-	append(entry: RenderEntry) {
+	/** A cell holding `rows` as they are, viewing the frame's arrays rather than copying
+	 *  them. Every row starts hidden until the caller paints it. */
+	static of(rows: FrameRows): CellBuffer {
+		const n = rows.key.length;
+		const cb = new CellBuffer(0);
+		cb.positions = rows.pos;
+		cb.angles = rows.angle;
+		cb.visible = new Uint8Array(n);
+		cb.ids = Array.from(rows.key);
+		for (let i = 0; i < n; i++) cb.idToIndex.set(cb.ids[i], i);
+		cb.count = cb.capacity = n;
+		return cb;
+	}
+
+	/** Append a marker, growing the buffer if needed. Visibility is set by the caller once
+	 *  the overlay knows about the row. */
+	append(id: number, lng: number, lat: number, angle: number) {
 		this.ensureCapacity(this.count + 1);
 		const i = this.count;
-		this.positions[i * 2] = entry.lng;
-		this.positions[i * 2 + 1] = entry.lat;
+		this.positions[i * 2] = lng;
+		this.positions[i * 2 + 1] = lat;
 		this.visible[i] = 255;
-		this.angles[i] = entry.heading;
-		this.ids[i] = entry.id;
-		this.idToIndex.set(entry.id, i);
+		this.angles[i] = angle;
+		this.ids[i] = id;
+		this.idToIndex.set(id, i);
 		this.count++;
 		this.positionVersion++;
 		this.colorVersion++;
@@ -415,11 +402,11 @@ export class CellBuffer {
 		this.colorVersion++;
 	}
 
-	patchPosition(index: number, lng?: number, lat?: number, heading?: number) {
+	patchPosition(index: number, lng: number, lat: number, angle: number) {
 		if (index < 0 || index >= this.count) return;
-		if (lng != null) this.positions[index * 2] = lng;
-		if (lat != null) this.positions[index * 2 + 1] = lat;
-		if (heading != null) this.angles[index] = heading;
+		this.positions[index * 2] = lng;
+		this.positions[index * 2 + 1] = lat;
+		this.angles[index] = angle;
 		this.positionVersion++;
 	}
 
@@ -446,10 +433,36 @@ export class CellBuffer {
 	}
 }
 
+/** One cell's rows in a frame, viewed in place: ids for adds, slots for patches. */
+interface FrameRows {
+	key: Uint32Array<ArrayBuffer>;
+	pos: Float32Array<ArrayBuffer>;
+	angle: Float32Array<ArrayBuffer>;
+	sel: Uint32Array<ArrayBuffer>;
+}
+
+function rowsAt(buf: ArrayBuffer, off: number, n: number): FrameRows {
+	return {
+		key: new Uint32Array(buf, off, n),
+		pos: new Float32Array(buf, off + n * 4, n * 2),
+		angle: new Float32Array(buf, off + n * 12, n),
+		sel: new Uint32Array(buf, off + n * 16, n),
+	};
+}
+
+/** What applying one frame did: the map version the scene reached, whether it started the
+ *  scene over, and the ids it added and removed, ascending. A row that moved between cells
+ *  is in neither; a replace lists nothing. */
+export interface FrameSummary {
+	version: number;
+	replace: boolean;
+	added: Uint32Array;
+	removed: Uint32Array;
+}
+
 /**
- * Owns all marker render data as 32 geohash-cell CellBuffers plus a selection overlay.
- * Initialized from a binary blob built by Rust (`initFromBinary`), then kept in sync
- * via incremental deltas (`applyDelta`) and selection bitmasks (`applySelectionBitmasks`).
+ * Owns all marker render data as 32 geohash-cell CellBuffers plus a selection overlay,
+ * kept in step with the map by applying its render frames in order (`apply`).
  * deck.gl layers read the typed arrays directly - no JSON serialization in the render loop.
  */
 export class CellManager {
@@ -465,157 +478,116 @@ export class CellManager {
 	/** The row the active-location layer draws, hidden in its base cell. */
 	private activeId: number | null = null;
 
-	/** Parse the full render binary from Rust. Replaces all cells and the selection overlay. */
-	initFromBinary(buf: ArrayBuffer) {
-		this.cells.clear();
-		this.totalCount = 0;
-		this.maxId = 0;
-		this.overlay.clear();
-
-		const dv = new DataView(buf);
-		if (buf.byteLength < 4) return;
-		const cellCount = dv.getUint32(0, true);
-		let offset = 4;
-
-		for (let c = 0; c < cellCount; c++) {
-			const gh0 = dv.getUint8(offset);
-			const cellKey = String.fromCharCode(gh0);
-			const count = dv.getUint32(offset + 1, true);
-			// 5-byte header + 3 pad; the arrays sit 4-byte aligned so the views below are legal.
-			offset += 8;
-
-			const cb = new CellBuffer(count);
-			cb.count = count;
-
-			const idView = new Uint32Array(buf, offset, count);
-			offset += count * 4;
-			cb.ids = Array.from(idView);
-			cb.idToIndex.clear();
-			for (let i = 0; i < count; i++) {
-				const id = cb.ids[i];
-				cb.idToIndex.set(id, i);
-				if (id > this.maxId) this.maxId = id;
-			}
-
-			cb.positions = new Float32Array(buf, offset, count * 2);
-			offset += count * 8;
-			cb.visible = new Uint8Array(buf, offset, count);
-			offset += count + ((4 - (count & 3)) & 3);
-			cb.angles = new Float32Array(buf, offset, count);
-			offset += count * 4;
-
-			cb.capacity = count;
-
-			this.cells.set(cellKey, cb);
-			this.totalCount += count;
-		}
-
-		// Selection overlay, in emission order (`load` sorts it by selIdx):
-		// [u32 count][f32[] positions][u8[] colors][f32[] angles][u32[] ids][u32[] selIdx]
-		if (offset + 4 <= buf.byteLength) {
-			const selCount = dv.getUint32(offset, true);
-			offset += 4;
-			if (selCount > 0) {
-				const pos = new Float32Array(buf, offset, selCount * 2);
-				offset += selCount * 8;
-				const col = new Uint8Array(buf, offset, selCount * 4);
-				offset += selCount * 4;
-				const ang = new Float32Array(buf, offset, selCount);
-				offset += selCount * 4;
-				const ids = new Uint32Array(buf, offset, selCount);
-				offset += selCount * 4;
-				const sel = new Uint32Array(buf, offset, selCount);
-				this.overlay.load(pos, col, ang, ids, sel, this.maxId);
-			}
-		}
-
-		this.version++;
-	}
-
-	/** Scratch for `applySelectionBitmasks`: per-row winning selection index, reused across
-	 *  cells so a full sync does not allocate one array per cell. */
+	/** Scratch for `restateSelections`: per-row winning selection index, reused across
+	 *  cells so a full restate does not allocate one array per cell. */
 	private selWinner = new Int32Array(0);
 
 	/**
-	 * Apply an incremental delta. Every entry states the row's resulting selection state,
-	 * so the base cells and the overlay are written from one fact rather than inferred
-	 * from each other. Returns the affected cell keys.
+	 * Apply one render frame. Per cell, in order: each removal swap-removes its slot, the
+	 * adds append, then the patches restate rows by their slot. Every added or patched row
+	 * states the selection painting it, so the base cells and the overlay are written from
+	 * one fact. A selection section, when present, then restates every cell's membership.
 	 */
-	applyDelta(delta: RenderDelta): Set<string> {
-		const affected = new Set<string>();
-		const overlayBefore = this.overlay.version;
-
-		for (const rem of delta.removed) {
-			const cb = this.cells.get(rem.cell);
-			if (cb) {
-				cb.swapRemove(rem.cellIndex);
-				this.totalCount--;
-				affected.add(rem.cell);
-			}
-			this.overlay.delete(rem.id);
+	apply(buf: ArrayBuffer): FrameSummary {
+		const dv = new DataView(buf);
+		const replace = dv.getUint32(0, true) === FrameKind.Replace;
+		const version = dv.getUint32(4, true) + dv.getUint32(8, true) * 2 ** 32;
+		const paletteLen = dv.getUint32(12, true);
+		const palette: RGB[] = [];
+		for (let i = 0, o = 16; i < paletteLen; i++, o += 3) {
+			palette.push([dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2)]);
 		}
+		let off = (16 + paletteLen * 3 + 3) & ~3;
+		if (replace) {
+			this.cells.clear();
+			this.totalCount = 0;
+			this.maxId = 0;
+			this.overlay.clear();
+		}
+		const overlayBefore = this.overlay.version;
+		const added: number[] = [];
+		const removed: number[] = [];
 
-		for (const entry of delta.added) {
-			// A row that crossed cells vacates its old slot here, so its overlay entry is
-			// restated below rather than dropped by an unrelated-looking removal.
-			if (entry.movedFrom) {
-				const from = this.cells.get(entry.movedFrom.cell);
-				if (from) {
-					from.swapRemove(entry.movedFrom.cellIndex);
+		const cellCount = dv.getUint32(off, true);
+		off += 4;
+		for (let c = 0; c < cellCount; c++) {
+			const key = BASE32[dv.getUint32(off, true)];
+			const nRemove = dv.getUint32(off + 4, true);
+			const nAdd = dv.getUint32(off + 8, true);
+			const nPatch = dv.getUint32(off + 12, true);
+			off += 16;
+			const remove = new Uint32Array(buf, off, nRemove);
+			off += nRemove * 4;
+			const add = rowsAt(buf, off, nAdd);
+			off += nAdd * 20;
+			const patch = rowsAt(buf, off, nPatch);
+			off += nPatch * 20;
+
+			let cb = this.cells.get(key);
+			if (cb) {
+				for (const i of remove) {
+					const id = cb.ids[i];
+					removed.push(id);
+					this.overlay.delete(id);
+					cb.swapRemove(i);
 					this.totalCount--;
-					affected.add(entry.movedFrom.cell);
 				}
 			}
-			let cb = this.cells.get(entry.cell);
-			if (!cb) {
-				cb = new CellBuffer();
-				this.cells.set(entry.cell, cb);
+			if (nAdd > 0) {
+				const from = cb?.count ?? 0;
+				if (cb) {
+					for (let k = 0; k < nAdd; k++) {
+						cb.append(add.key[k], add.pos[k * 2], add.pos[k * 2 + 1], add.angle[k]);
+					}
+				} else {
+					cb = CellBuffer.of(add);
+					this.cells.set(key, cb);
+				}
+				for (let k = 0; k < nAdd; k++) {
+					const id = add.key[k];
+					if (id > this.maxId) this.maxId = id;
+					if (!replace) added.push(id);
+					this.paint(cb, from + k, add.sel[k], palette);
+				}
+				this.totalCount += nAdd;
 			}
-			cb.append(entry);
-			if (entry.id > this.maxId) this.maxId = entry.id;
-			this.totalCount++;
-			affected.add(entry.cell);
-			this.setSelection(cb, cb.count - 1, entry.sel);
+			if (cb && nPatch > 0) {
+				for (let k = 0; k < nPatch; k++) {
+					const i = patch.key[k];
+					if (i >= cb.count) continue;
+					cb.patchPosition(i, patch.pos[k * 2], patch.pos[k * 2 + 1], patch.angle[k]);
+					this.paint(cb, i, patch.sel[k], palette);
+				}
+			}
+			if (cb) cb.colorVersion++;
 		}
 
-		for (const patch of delta.updated) {
-			const cb = this.cells.get(patch.cell);
-			if (!cb || patch.cellIndex >= cb.count) continue;
-			const i = patch.cellIndex;
-			cb.patchPosition(
-				i,
-				patch.lng ?? undefined,
-				patch.lat ?? undefined,
-				patch.heading ?? undefined,
-			);
-			affected.add(patch.cell);
-			this.setSelection(cb, i, patch.sel);
+		const selectionLen = dv.getUint32(off, true);
+		if (selectionLen > 0) {
+			this.restateSelections(decodeSelectionBitmask(new Uint8Array(buf, off + 4, selectionLen)));
+		} else if (this.overlay.version !== overlayBefore) {
+			// Adds land at the end of the overlay and deletes swap the tail into the hole, so
+			// the slots go back in selection order before they are drawn - otherwise an edited
+			// marker jumps in front of everything.
+			this.overlay.order();
 		}
 
-		// Entries just added landed at the end of the overlay and deletes swapped the tail
-		// into the hole, so the slots have to be put back in selection order before they
-		// are drawn - otherwise an edited marker jumps in front of everything. Guarded on
-		// the overlay having moved at all, so a delta that touches no selected row doesn't
-		// pay a scan over every selected marker on the map.
-		if (this.overlay.version !== overlayBefore) this.overlay.order();
-
-		this.version++;
-		return affected;
+		if (replace || cellCount > 0 || selectionLen > 0) this.version++;
+		return { version, replace, ...withoutMoves(added, removed) };
 	}
 
 	/** Put the row at `cb[i]` in or out of the selection overlay and set its base visibility.
 	 *  Idempotent, so restating a row's current state costs nothing but is always safe.
-	 *  Takes the buffer and index the caller already has - `syncVisible` is for the
-	 *  active-location path, which only knows an id. */
-	private setSelection(cb: CellBuffer, i: number, sel: SelColor) {
+	 *  The caller bumps the cell's colour version once for the whole frame. */
+	private paint(cb: CellBuffer, i: number, sel: number, palette: RGB[]) {
 		const id = cb.ids[i];
-		if (sel) {
+		if (sel !== NO_SEL) {
 			const p = cb.positions;
-			this.overlay.set(id, p[i * 2], p[i * 2 + 1], cb.angles[i], sel.color, sel.idx);
+			this.overlay.set(id, p[i * 2], p[i * 2 + 1], cb.angles[i], palette[sel], sel);
 		} else {
 			this.overlay.delete(id);
 		}
-		cb.patchVisible(i, sel || id === this.activeId ? 0 : 255);
+		cb.visible[i] = sel !== NO_SEL || id === this.activeId ? 0 : 255;
 	}
 
 	/** Set the active location, whose marker the active layer draws instead of the base cell.
@@ -669,13 +641,19 @@ export class CellManager {
 	}
 
 	/**
-	 * Decode per-cell bitmasks from Rust into the selection overlay. Selected rows are drawn
-	 * by the overlay in their selection's color and hidden in their base cell.
+	 * Restate the selection overlay from a frame's selection section. Selected rows are
+	 * drawn by the overlay in their selection's color and hidden in their base cell.
 	 *
 	 * Partial updates are supported: only the cells named in `cellEntries` are restated,
 	 * and overlay entries for every other cell survive untouched.
 	 */
-	applySelectionBitmasks(selColors: RGB[], cellEntries: SelCellEntry[]): SelectedIds {
+	private restateSelections({
+		selColors,
+		cellEntries,
+	}: {
+		selColors: RGB[];
+		cellEntries: SelCellEntry[];
+	}) {
 		const numSels = selColors.length;
 		const incoming: { cb: CellBuffer; n: number; entry: SelCellEntry }[] = [];
 		for (const entry of cellEntries) {
@@ -754,9 +732,6 @@ export class CellManager {
 
 		// The active row was shown again along with the rest of its cell.
 		if (this.activeId != null) this.syncVisible(this.activeId);
-
-		this.version++;
-		return this.overlay.selectedIds();
 	}
 
 	clear() {
@@ -766,4 +741,17 @@ export class CellManager {
 		this.overlay.clear();
 		this.version++;
 	}
+}
+
+/** Ascending ids, minus the ones in both lists: a row that left one cell for another. */
+function withoutMoves(added: number[], removed: number[]) {
+	if (added.length > 0 && removed.length > 0) {
+		const left = new Set(removed);
+		const moved = new Set(added.filter((id) => left.has(id)));
+		if (moved.size > 0) {
+			added = added.filter((id) => !moved.has(id));
+			removed = removed.filter((id) => !moved.has(id));
+		}
+	}
+	return { added: Uint32Array.from(added).sort(), removed: Uint32Array.from(removed).sort() };
 }

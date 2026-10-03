@@ -195,7 +195,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             store::commands::store_duplicate_groups,
             store::commands::store_merge_duplicates,
             store::commands::store_prune_duplicates,
-            store::commands::store_fill_render_file,
+            store::commands::store_subscribe_frames,
             store::commands::store_resolve_pick,
             store::maps::store_list_maps,
             store::maps::store_get_map,
@@ -417,6 +417,8 @@ fn export_consts() -> Result<(), String> {
         ("ValidationFlag", types::ValidationFlag::ts_const()),
         ("SyncDirection", sync::SyncDirection::ts_const().unstable()),
         ("BUILTIN_FIELDS", TsConst::value(selections::BUILTIN_FIELDS)),
+        ("FrameKind", store::engine::FrameKind::ts_const().unstable()),
+        ("NO_SEL", TsConst::value(store::engine::NO_SEL).unstable()),
         (
             "OFFICIAL_ID_PATTERN",
             TsConst::value(sv::pano_id::OFFICIAL_ID_PATTERN),

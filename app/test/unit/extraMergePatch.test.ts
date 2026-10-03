@@ -18,7 +18,6 @@ vi.mock("@/lib/commands", async () => {
 	const { cmdProxy, testMap, openMapResult } = await import("./fixtures/mocks");
 	const mutationResult = () => ({
 		version: 0,
-		delta: { added: [], updated: [], removed: [] },
 		selectionSync: null,
 		values: {
 			locationCount: 1,

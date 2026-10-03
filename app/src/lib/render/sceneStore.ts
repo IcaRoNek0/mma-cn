@@ -1,6 +1,6 @@
-import { CellManager } from "@/lib/render/CellManager";
+import { Channel } from "@tauri-apps/api/core";
+import { CellManager, type FrameSummary } from "@/lib/render/CellManager";
 import { cmd } from "@/lib/commands";
-import { mmaBufUrl } from "@/lib/util/util";
 import type { RGB, RGBA } from "@/lib/util/color";
 import { log } from "@/lib/util/log";
 import { trace } from "@/lib/util/debug";
@@ -9,16 +9,21 @@ import { mapOpen } from "@/lib/util/debug";
 import { emit as emitEvent, subscribe as subscribeEvent } from "@/lib/events";
 import type { MarkerStyle } from "@/types";
 
-// Owns marker/scene data for every map surface. The editor map drives the
-// engine (fetch + lifecycle); both it and the minimap render from the same `CellManager`.
-// There can be exactly one producer — `store_fill_render_file` is unsafe for a second caller
-// (ignores bounds, rebuilds the picking index, shared file path).
+// Owns marker/scene data for every map surface. The editor map drives the engine (the
+// frame subscription and its lifecycle); both it and the minimap render from the same
+// `CellManager`. Rust sends every change to the scene as a render frame on one channel.
 
 let markerDefault: RGBA = [42, 42, 42, 255];
 
 const scene = new CellManager();
 let lastMarkerStyle: MarkerStyle = "pin";
-let loadToken = 0;
+
+/** The channel the scene is following, or null when it follows none. */
+let following: Channel<ArrayBuffer> | null = null;
+/** The last few frames applied, for a wait that starts after its frame landed. */
+let applied: FrameSummary[] = [];
+const APPLIED_KEPT = 16;
+let waiters: { version: number; resolve: (s: FrameSummary) => void }[] = [];
 
 /** The shared scene that all map surfaces render from. */
 export function getScene(): CellManager {
@@ -48,6 +53,54 @@ export function getMarkerDefaultColor(): RGBA {
 	return markerDefault;
 }
 
+function nothingApplied(version: number): FrameSummary {
+	return { version, replace: false, added: new Uint32Array(0), removed: new Uint32Array(0) };
+}
+
+/** Follow `channel` from here on, releasing every wait on the one before. */
+function follow(channel: Channel<ArrayBuffer> | null) {
+	following = channel;
+	applied = [];
+	for (const w of waiters) w.resolve(nothingApplied(w.version));
+	waiters = [];
+}
+
+/**
+ * Resolves once the scene has applied the frame for map version `version`, with what that
+ * frame did. Resolves at once, with nothing applied, when the scene follows no map.
+ * @unstable
+ */
+export function sceneReached(version: number): Promise<FrameSummary> {
+	if (!following) return Promise.resolve(nothingApplied(version));
+	const hit = applied.find((s) => s.version >= version);
+	if (hit) return Promise.resolve(hit);
+	return new Promise((resolve) => waiters.push({ version, resolve }));
+}
+
+function onFrame(channel: Channel<ArrayBuffer>, buf: ArrayBuffer): FrameSummary | null {
+	if (channel !== following) return null;
+	const t = trace("frame", { summary: true });
+	const before = scene.overlay.version;
+	const drawn = scene.version;
+	const s = scene.apply(buf);
+	if (s.replace) {
+		syncActive();
+		applied = [];
+	}
+	if (scene.overlay.version !== before) setSelectedLocationIds(scene.selectedIds());
+	applied.push(s);
+	if (applied.length > APPLIED_KEPT) applied.shift();
+	// A replace frame draws the store as it stands, which answers every wait on it.
+	waiters = waiters.filter((w) => {
+		if (!s.replace && w.version > s.version) return true;
+		w.resolve(s);
+		return false;
+	});
+	t.end({ added: s.added.length, removed: s.removed.length, bytes: buf.byteLength });
+	if (scene.version !== drawn) emitEvent("scene:changed");
+	return s;
+}
+
 let sceneSettled: Promise<void> = Promise.resolve();
 let loadRequested = 0;
 
@@ -56,8 +109,8 @@ export function whenSceneSettled(): Promise<void> {
 	return sceneSettled;
 }
 
-/** Rebuild the full scene for all locations. */
-export function loadScene(markerStyle: MarkerStyle, mc?: RGB): Promise<void> {
+/** Load the whole scene again and follow every change to it from there. */
+export function loadScene(markerStyle: MarkerStyle = lastMarkerStyle, mc?: RGB): Promise<void> {
 	const seq = ++loadRequested;
 	return (sceneSettled = sceneSettled
 		.catch(() => {})
@@ -70,11 +123,16 @@ export function loadScene(markerStyle: MarkerStyle, mc?: RGB): Promise<void> {
 async function doLoadScene(markerStyle: MarkerStyle, mc?: RGB): Promise<void> {
 	lastMarkerStyle = markerStyle;
 	if (mc) setMarkerDefaultColor(...mc);
-	const token = ++loadToken;
-	const mapId = getMapState().mapId;
 	const t = trace("render", { summary: true });
+	const channel = new Channel<ArrayBuffer>();
+	const loaded = new Promise<void>((resolve) => {
+		channel.onmessage = (buf) => {
+			if (onFrame(channel, buf)?.replace) resolve();
+		};
+	});
+	follow(channel);
 	try {
-		const filePath = await cmd.storeFillRenderFile({
+		await cmd.storeSubscribeFrames(channel, {
 			west: -180,
 			south: -90,
 			east: 180,
@@ -82,64 +140,33 @@ async function doLoadScene(markerStyle: MarkerStyle, mc?: RGB): Promise<void> {
 			markerStyle,
 			markerColor: mc,
 		});
-		t.step("fill");
-		const resp = await fetch(mmaBufUrl(filePath));
-		if (!resp.ok) throw new Error(`render fetch ${resp.status}: ${await resp.text()}`);
-		t.step("fetch-headers");
-		const buf = await resp.arrayBuffer();
-		t.step("arraybuffer");
-		if (token !== loadToken || getMapState().mapId !== mapId) return; // superseded by a newer load or another map
-		scene.initFromBinary(buf);
-		t.step("parse");
+		t.step("subscribe");
+		await loaded;
+		t.step("apply");
 		mapOpen.mark("markers");
-		syncActive();
-		// The reloaded binary carries the selection overlay; re-derive the id set from it,
-		// since any bitmask decode in `mutate` ran against the pre-reload scene.
-		setSelectedLocationIds(scene.selectedIds());
-		t.end({ cells: scene.cells.size, total: scene.totalCount, bytes: buf.byteLength });
-		emitEvent("scene:changed");
+		t.end({ cells: scene.cells.size, total: scene.totalCount });
 	} catch (e) {
+		if (following === channel) follow(null);
 		log.error("[scene] loadScene failed:", e);
 	}
 }
 
-/** Clear all marker data from the scene. */
+/** Clear all marker data from the scene and stop following the map. */
 export function clearScene() {
+	follow(null);
 	scene.clear();
 	emitEvent("scene:changed");
 }
 
-/** Start listening for deltas, selections, and active-location changes. Returns a stop function. */
+/** Start following active-location changes. Returns a stop function. */
 export function startSceneEngine(): () => void {
-	const unsubReset = subscribeEvent("render:reset", () => void loadScene(lastMarkerStyle));
-	const unsubDelta = subscribeEvent("render:delta", (delta) => {
-		const t = trace("delta", { summary: true });
-		const before = scene.overlay.version;
-		const affected = scene.applyDelta(delta);
-		// No bitmask follows an incremental mutation; applyDelta already folded membership in.
-		if (scene.overlay.version !== before) setSelectedLocationIds(scene.selectedIds());
-		t.end({ affected: affected.size, added: delta.added.length, removed: delta.removed.length });
-		if (affected.size > 0 || scene.overlay.version !== before) emitEvent("scene:changed");
-	});
-
-	const unsubSel = subscribeEvent("render:selection", ({ selColors, cellEntries, setIds }) => {
-		const t = trace("selection", { summary: true });
-		const ids = scene.applySelectionBitmasks(selColors, cellEntries);
-		setIds(ids);
-		t.end({ cells: cellEntries.length, sels: selColors.length, ids: ids.size });
-		emitEvent("scene:changed");
-	});
-
 	// Active-location switch fires a plain store mutation (store_set_active is fire-and-forget,
-	// no delta). `setActive` is a no-op when the id hasn't moved.
+	// no frame). `setActive` is a no-op when the id hasn't moved.
 	const unsubStore = subscribeEvent("store:changed", () => {
 		if (syncActive()) emitEvent("scene:changed");
 	});
 
 	return () => {
-		unsubReset();
-		unsubDelta();
-		unsubSel();
 		unsubStore();
 		clearScene();
 	};
