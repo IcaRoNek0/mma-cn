@@ -1,3 +1,9 @@
+## v0.11.5 - 2026-10-03
+- Map opening & closing is significantly faster - **breaking change** - upon update, undo history is cleared once on map open.
+- Importing locations updates their markers without redrawing the whole map
+- Panorama downloads behavior changes
+- Fixed reopening after an app crash restoring undo history that did not match the autosaved edits
+
 ## v0.11.4 - 2026-10-01
 - Each map layer gets its own button beside the opacity slider
 - Validation reports every finding for a location instead of just one, and the validate dialog picks which categories to report, adding "pinned away from the default pano" and "default pano is not the newest"
