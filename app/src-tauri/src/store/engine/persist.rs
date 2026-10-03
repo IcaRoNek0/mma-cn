@@ -1,4 +1,4 @@
-//! Everything that touches disk or SQLite for an open store: Arrow snapshots, msgpack deltas, edit history, tag display metadata.
+//! Everything that touches disk or SQLite for an open store: Arrow snapshots, the uncommitted delta, edit history, tag display metadata.
 
 use super::*;
 use crate::store::arrow;
@@ -20,22 +20,22 @@ pub(crate) fn load_delta(delta_path: &Path) -> Option<Overlay> {
     if !delta_path.exists() {
         return None;
     }
-    let parsed = fs::read(delta_path)
-        .map_err(|e| e.to_string())
-        .and_then(|d| rmp_serde::from_slice::<Overlay>(&d).map_err(|e| e.to_string()));
-    match parsed {
-        Ok(p) => Some(p),
+    match arrow::read_arrow_ipc(delta_path) {
+        Ok(batch) => Some(Overlay::from_delta(&batch)),
         Err(e) => {
-            let kept = delta_path.with_extension("corrupt");
-            let _ = fs::remove_file(&kept);
-            let moved = fs::rename(delta_path, &kept).is_ok();
-            log::error!(
-                "[store_open] unreadable delta ({e}), set aside (moved={moved}) at {kept:?}"
-            );
-            crate::emit_event(StoreWarning::DeltaSetAside);
+            set_aside_delta(delta_path, &e);
             None
         }
     }
+}
+
+/// Move an unreadable delta to a `.corrupt` sibling and warn the user.
+pub(crate) fn set_aside_delta(delta_path: &Path, reason: &AppError) {
+    let kept = delta_path.with_extension("corrupt");
+    let _ = fs::remove_file(&kept);
+    let moved = fs::rename(delta_path, &kept).is_ok();
+    log::error!("[delta] unreadable delta ({reason}), set aside (moved={moved}) at {kept:?}");
+    crate::emit_event(StoreWarning::DeltaSetAside);
 }
 
 pub(crate) fn flush_closed_store(map_id: &str, store: &Store) -> AppResult<()> {
@@ -54,14 +54,6 @@ pub(crate) fn flush_closed_store(map_id: &str, store: &Store) -> AppResult<()> {
     Ok(())
 }
 
-/// Msgpack-serialize the overlay (uncommitted changes) for the `.delta` sidecar.
-/// This is what lets the base file stay pinned at the last commit: on next
-/// `store_open_map` the blob is loaded straight back into the overlay, and a commit
-/// bakes it into the base and deletes the file.
-pub(crate) fn overlay_delta_bytes(overlay: &Overlay) -> AppResult<Vec<u8>> {
-    rmp_serde::to_vec_named(overlay).map_err(AppError::from)
-}
-
 /// Read a map's full current state from disk = base file + uncommitted delta sidecar.
 /// Use this for consumers (e.g. export) that read a map's locations directly off disk,
 /// since the base file alone is only the last committed state.
@@ -77,10 +69,8 @@ pub(crate) fn read_full_state_from_disk(map_id: &str) -> AppResult<Vec<Location>
 
     let delta_path = storage::arrow_delta_path(map_id)?;
     if delta_path.exists() {
-        if let Ok(data) = fs::read(&delta_path) {
-            if let Ok(delta) = rmp_serde::from_slice::<Overlay>(&data) {
-                delta.apply_to(&mut locs);
-            }
+        if let Ok(batch) = arrow::read_arrow_ipc(&delta_path) {
+            Overlay::from_delta(&batch).apply_to(&mut locs);
         }
     }
     Ok(locs)
@@ -89,7 +79,7 @@ pub(crate) fn read_full_state_from_disk(map_id: &str) -> AppResult<Vec<Location>
 /// What an open map owes disk: its delta and its undo history, each stamped with the
 /// revision it reflects, so edits made while the write runs stay unsaved.
 pub(crate) struct Unsaved {
-    delta: Option<At<Vec<u8>>>,
+    delta: Option<At<RecordBatch>>,
     edits: Option<At<EditStacks>>,
     alive: usize,
     pending: CommitDiff,
@@ -104,7 +94,7 @@ impl Unsaved {
         delta_path: &Path,
     ) -> AppResult<()> {
         if let Some(delta) = &self.delta {
-            storage::atomic_write_bytes(delta_path, delta.value())?;
+            arrow::write_arrow_ipc(delta_path, delta.value())?;
         }
         storage::set_map_counts(conn, map_id, self.alive, self.pending)?;
         if let Some(edits) = &self.edits {
@@ -120,13 +110,11 @@ impl Store {
         if !self.overlay.is_unsaved() && !self.edits.is_unsaved() {
             return Ok(None);
         }
-        let delta = if self.overlay.is_unsaved() {
-            Some(self.overlay.stamp(overlay_delta_bytes(&self.overlay)?))
-        } else {
-            None
-        };
         Ok(Some(Unsaved {
-            delta,
+            delta: self.overlay.is_unsaved().then(|| {
+                self.overlay
+                    .stamp(self.overlay.to_delta(self.batch.as_ref()))
+            }),
             edits: self
                 .edits
                 .is_unsaved()
@@ -188,7 +176,7 @@ pub(crate) fn save_edit_history(
                     edit.seq as i64,
                     stack,
                     entry.max_id(),
-                    rmp_serde::to_vec_named(&**entry)?
+                    arrow::arrow_ipc_bytes(&arrow::delta_to_batch(&entry.created, &entry.removed))?
                 ])?;
             }
             (None, None) => log::warn!(
@@ -230,7 +218,8 @@ pub(crate) fn load_edit(conn: &Connection, map_id: &str, seq: u64) -> AppResult<
         rusqlite::params![map_id, seq as i64],
         |r| r.get(0),
     )?;
-    Ok(rmp_serde::from_slice(&bytes)?)
+    let (created, removed) = arrow::batch_to_delta(&arrow::read_arrow_ipc_bytes(&bytes)?);
+    Ok(EditEntry { created, removed })
 }
 
 /// Highest location id the stored history can re-materialize, without reading it.

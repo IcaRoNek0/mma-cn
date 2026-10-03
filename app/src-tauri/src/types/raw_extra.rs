@@ -14,9 +14,9 @@ use std::sync::Arc;
 /// `Location.extra` stored as its raw JSON bytes instead of a parsed map.
 ///
 /// Over IPC/JSON and into the Arrow `extra` string column it emits transparently, so
-/// those formats are unchanged. The binary (rmp) encoding used for delta sidecars and
-/// undo blobs now writes a plain string; legacy shipped builds wrote a map there, so the
-/// `Deserialize` impl accepts both (see [`BinRawExtraVisitor`]). Parsing happens only
+/// those formats are unchanged. The binary (rmp) encoding of legacy msgpack delta sidecars
+/// carries a plain string, or a map from older builds, so the `Deserialize` impl accepts
+/// both (see [`BinRawExtraVisitor`]). Parsing happens only
 /// when a consumer needs keyed access, via [`RawExtra::to_map`] (deep) or
 /// [`RawExtra::get`]/[`RawExtra::for_each_field`] (zero-alloc byte scan).
 #[derive(Clone, Debug)]
@@ -289,7 +289,7 @@ impl PartialEq for RawExtra {
 // `RawValue` only round-trips through serde_json (its serialize/deserialize use a
 // private magic token that only serde_json honors). So for human-readable formats
 // (serde_json -- IPC to JS, on-disk JSON) we emit/read the object transparently, and
-// for binary formats (rmp_serde -- delta overlay + undo stack persistence) we fall
+// for binary formats (rmp_serde -- legacy msgpack delta sidecars) we fall
 // back to a plain string carrying the same raw JSON.
 impl serde::Serialize for RawExtra {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {

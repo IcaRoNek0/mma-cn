@@ -1,7 +1,7 @@
 //! Generic file ops: temp-file-then-rename writes and orphan sweeps.
 
 use super::*;
-use crate::types::{AppError, AppResult};
+use crate::types::AppResult;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -30,14 +30,6 @@ fn tmp_path(path: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     path.with_extension(format!("{}.{n}.tmp", std::process::id()))
-}
-
-/// [`atomic_write`] for a caller that already holds the whole payload.
-pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    atomic_write(path, |mut file| {
-        use std::io::Write;
-        file.write_all(bytes).map_err(AppError::from)
-    })
 }
 
 /// [`atomic_write`] of `from`'s bytes to `to`.

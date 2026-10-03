@@ -11,7 +11,6 @@
 use super::*;
 use crate::store::arrow::Columns;
 use crate::store::commands::*;
-use crate::store::engine::persist::overlay_delta_bytes;
 use crate::store::storage;
 use crate::types::RawExtra;
 use std::env;
@@ -367,7 +366,8 @@ pub fn traverse_scope(store: &Store, set: &RoaringBitmap) -> (usize, f64) {
 }
 
 pub fn serialize_overlay(store: &Store) -> Vec<u8> {
-    overlay_delta_bytes(&store.overlay).expect("serialize overlay")
+    arrow::arrow_ipc_bytes(&store.overlay.to_delta(store.batch.as_ref()))
+        .expect("serialize overlay")
 }
 
 /// Setup-only population of the overlay (id alloc + add). Fixture seeding for

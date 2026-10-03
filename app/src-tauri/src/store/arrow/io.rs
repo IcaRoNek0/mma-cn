@@ -8,7 +8,7 @@ use arrow_ipc::reader::FileReader;
 use arrow_ipc::writer::FileWriter;
 use arrow_select::concat;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Cursor, Read, Seek, Write};
 use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
@@ -21,12 +21,22 @@ use std::sync::Arc;
 /// a partial file.
 pub(crate) fn write_arrow_ipc(path: &Path, batch: &RecordBatch) -> AppResult<()> {
     atomic_write(path, |file| {
-        let buf = BufWriter::with_capacity(1 << 20, file);
-        let mut writer = FileWriter::try_new(buf, &batch.schema())?;
-        writer.write(batch)?;
-        writer.finish()?;
-        Ok(())
+        write_ipc(BufWriter::with_capacity(1 << 20, file), batch)
     })
+}
+
+/// A RecordBatch as the bytes of an Arrow IPC file.
+pub(crate) fn arrow_ipc_bytes(batch: &RecordBatch) -> AppResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    write_ipc(&mut bytes, batch)?;
+    Ok(bytes)
+}
+
+fn write_ipc(out: impl Write, batch: &RecordBatch) -> AppResult<()> {
+    let mut writer = FileWriter::try_new(out, &batch.schema())?;
+    writer.write(batch)?;
+    writer.finish()?;
+    Ok(())
 }
 
 /// Read an Arrow IPC file into a single RecordBatch.
@@ -34,20 +44,25 @@ pub(crate) fn write_arrow_ipc(path: &Path, batch: &RecordBatch) -> AppResult<()>
 /// If the file contains multiple batches they are concatenated. An empty or
 /// missing-batch file returns an empty batch with the location schema.
 pub(crate) fn read_arrow_ipc(path: &Path) -> AppResult<RecordBatch> {
-    let file = File::open(path)?;
-    let reader = FileReader::try_new(file, None)?;
+    read_ipc(File::open(path)?)
+}
+
+/// [`read_arrow_ipc`] over the bytes of an Arrow IPC file.
+pub(crate) fn read_arrow_ipc_bytes(bytes: &[u8]) -> AppResult<RecordBatch> {
+    read_ipc(Cursor::new(bytes))
+}
+
+fn read_ipc(source: impl Read + Seek) -> AppResult<RecordBatch> {
+    let reader = FileReader::try_new(source, None)?;
     let mut batches = Vec::new();
     for batch in reader {
         batches.push(migrate::migrate(batch?)?);
     }
-    if batches.is_empty() {
-        return Ok(RecordBatch::new_empty(Arc::new(location_schema())));
+    match batches.len() {
+        0 => Ok(RecordBatch::new_empty(Arc::new(location_schema()))),
+        1 => Ok(batches.pop().unwrap()),
+        _ => concat::concat_batches(&batches[0].schema(), &batches).map_err(AppError::from),
     }
-    if batches.len() == 1 {
-        return Ok(batches.into_iter().next().unwrap());
-    }
-    let schema = Arc::new(location_schema());
-    concat::concat_batches(&schema, &batches).map_err(AppError::from)
 }
 
 /// Keeps the mmap alive for as long as the RecordBatch references it.

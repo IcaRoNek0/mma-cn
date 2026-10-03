@@ -872,11 +872,17 @@ fn every_prefix_upgrades_to_head() {
                 "prefix k={k}: seen row must survive"
             );
         }
-        if k >= 25 {
+        if k >= 26 {
             assert_eq!(
                 count_rows(&conn, "edit_entries"),
                 1,
                 "prefix k={k}: edit_entries row must survive"
+            );
+        } else if k == 25 {
+            assert_eq!(
+                count_rows(&conn, "edit_entries"),
+                0,
+                "prefix k={k}: v26 drops undo entries in the retired encoding"
             );
         } else {
             assert!(
@@ -891,6 +897,26 @@ fn every_prefix_upgrades_to_head() {
             "prefix k={k} schema diverges from fresh full-chain schema"
         );
     }
+}
+
+#[test]
+fn v26_clears_every_stored_undo_entry() {
+    let conn = Connection::open_in_memory().unwrap();
+    configure_connection(&conn).unwrap();
+    let before = MIGRATIONS.iter().position(|(v, _)| *v == 26).unwrap();
+    apply_prefix(&conn, before);
+    insert_map(&conn, "m1", "n");
+    insert_map(&conn, "m2", "n");
+    for (map, seq) in [("m1", 0), ("m1", 1), ("m2", 0)] {
+        conn.execute(
+            "INSERT INTO edit_entries (map_id, seq, stack, max_id, entry) VALUES (?1, ?2, 0, 0, x'90')",
+            rusqlite::params![map, seq],
+        )
+        .unwrap();
+    }
+
+    run_migrations_on(&conn).unwrap();
+    assert_eq!(count_rows(&conn, "edit_entries"), 0);
 }
 
 #[test]

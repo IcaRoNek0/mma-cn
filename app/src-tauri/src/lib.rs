@@ -593,6 +593,7 @@ pub(crate) fn init_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn error::
     let _ = APP_HANDLE.set(app.clone());
     store::storage::init_paths(app)?;
     store::storage::run_migrations()?;
+    store::engine::delta_legacy::convert_msgpack_deltas();
     Ok(())
 }
 

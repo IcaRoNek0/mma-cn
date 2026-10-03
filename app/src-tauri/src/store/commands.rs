@@ -571,13 +571,13 @@ fn copy_to_map(
         }
         let t_save = Instant::now();
         let delta_path = storage::arrow_delta_path(&target_map_id)?;
-        let mut delta: Overlay = if delta_path.exists() {
-            rmp_serde::from_slice(&fs::read(&delta_path)?)?
+        let (mut created, removed) = if delta_path.exists() {
+            arrow::batch_to_delta(&arrow::read_arrow_ipc(&delta_path)?)
         } else {
-            Overlay::default()
+            Default::default()
         };
-        delta.adds.extend(fresh);
-        storage::atomic_write_bytes(&delta_path, &rmp_serde::to_vec_named(&delta)?)?;
+        created.extend(fresh);
+        arrow::write_arrow_ipc(&delta_path, &arrow::delta_to_batch(&created, &removed))?;
         let mut pending = storage::map_pending(&conn, &target_map_id)?;
         pending.added += copied;
         storage::set_map_counts(

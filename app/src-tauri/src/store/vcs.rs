@@ -115,7 +115,10 @@ pub async fn store_commit(
 
         // Read the changeset before the bake folds it in; a saved overlay still holds it.
         let pre_bake = if !genesis && !store.overlay.is_empty() {
-            Some(store.build_overlay_delta())
+            Some((
+                store.overlay.to_delta(store.batch.as_ref()),
+                store.overlay_diff_counts(),
+            ))
         } else {
             None
         };
@@ -148,9 +151,9 @@ pub async fn store_commit(
 
     let path = storage::commit_delta_path(&map_id, &id)?;
     let (added, removed_n, modified) = match pre_bake {
-        Some((created, removed, a, r, m)) => {
-            arrow::write_arrow_ipc(&path, &arrow::delta_to_batch(&created, &removed))?;
-            (a, r, m)
+        Some((delta, counts)) => {
+            arrow::write_arrow_ipc(&path, &delta)?;
+            counts
         }
         None if genesis => {
             // The commit's full state == the base file we just wrote. Store the delta as a

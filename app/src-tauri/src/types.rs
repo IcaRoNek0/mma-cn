@@ -4,8 +4,6 @@
 //! Arrow IPC on disk, JSON over IPC to the JS frontend, and used throughout the
 //! store, import, and selection engines.
 
-use rmp_serde::decode;
-use rmp_serde::encode;
 use specta::datatype::DataType;
 use std::collections::HashMap;
 use std::error;
@@ -499,8 +497,6 @@ impl_app_error_from!(
     rusqlite::Error,
     serde_json::Error,
     arrow_schema::ArrowError,
-    encode::Error,
-    decode::Error,
     tauri::Error,
     JoinError,
     ZipError,

@@ -102,7 +102,7 @@ impl EditStacks {
 /// One undo/redo entry. Records the locations created and removed by a single user action.
 /// Updates are encoded as simultaneous remove-old + create-new with the same ID.
 /// Reversing an entry swaps `created` and `removed`.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EditEntry {
     pub created: Vec<Location>,
     pub removed: Vec<Location>,

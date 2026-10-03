@@ -51,15 +51,12 @@ use tauri::ipc::InvokeError;
 /// O(log n) lookups via binary search. Render cells, selection bitmasks, undo/redo stacks,
 /// and tag metadata all live here.
 ///
-/// This is also the on-disk `.delta` sidecar format: serializing it is the autosave, and
-/// deserializing it is the reload. `dead_ids`/`patches` are the wire names and shapes
-/// (a seq either way), so the msgpack stays byte-compatible with existing delta files.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+/// The `.delta` sidecar is this overlay written as an uncommitted commit delta
+/// ([`Overlay::to_delta`]), and reopening reads it back ([`Overlay::from_delta`]).
+#[derive(Default, Debug, PartialEq)]
 pub(crate) struct Overlay {
     pub adds: Vec<Location>,
-    #[serde(rename = "dead_ids", with = "dead_as_seq")]
     pub dead: RoaringBitmap,
-    #[serde(with = "patches_as_seq")]
     pub patches: HashMap<u32, Location>,
 }
 
@@ -67,6 +64,44 @@ impl Overlay {
     /// No uncommitted content. An autosaved overlay is clean but stays non-empty until baked.
     pub(crate) fn is_empty(&self) -> bool {
         self.adds.is_empty() && self.dead.is_empty() && self.patches.is_empty()
+    }
+
+    /// These changes as a commit delta against `base`: adds and patched rows' new versions
+    /// are created; patched and dead base rows are removed. A dead id absent from the base
+    /// was added then removed, and is dropped.
+    pub(crate) fn to_delta(&self, base: Option<&RecordBatch>) -> RecordBatch {
+        let cols = base.map(Columns::of);
+        let base_row = |id: u32| cols.as_ref().and_then(|c| Some(c.location(c.row_of(id)?)));
+        let mut created: Vec<Location> = self.adds.clone();
+        created.extend(self.patches.values().cloned());
+        created.sort_unstable_by_key(|l| l.id);
+        let mut removed: Vec<Location> = self
+            .patches
+            .keys()
+            .copied()
+            .chain(&self.dead)
+            .filter_map(base_row)
+            .collect();
+        removed.sort_unstable_by_key(|l| l.id);
+        arrow::delta_to_batch(&created, &removed)
+    }
+
+    /// The overlay a [`Overlay::to_delta`] batch was written from: an id on both sides is a
+    /// patch, one only created is an add, one only removed is dead.
+    pub(crate) fn from_delta(batch: &RecordBatch) -> Self {
+        let (created, removed) = arrow::batch_to_delta(batch);
+        let mut dead: RoaringBitmap = removed.iter().map(|l| l.id).collect();
+        let mut overlay = Self::default();
+        for l in created {
+            if dead.remove(l.id) {
+                overlay.patches.insert(l.id, l);
+            } else {
+                overlay.adds.push(l);
+            }
+        }
+        overlay.adds.sort_unstable_by_key(|l| l.id);
+        overlay.dead = dead;
+        overlay
     }
 
     /// Apply these changes onto a plain location list read off disk.
@@ -345,42 +380,8 @@ impl Store {
         Some(cols.location(cols.row_of(id)?))
     }
 
-    /// Build a commit delta directly from the overlay - the in-memory changeset
-    /// since the last commit. O(changeset), no history replay. Old versions of
-    /// modified/removed rows come from the committed base batch, so this is only
-    /// valid while the base still holds the parent state (i.e. before `bake_overlay`).
-    /// Returns `(created, removed, added, removed, modified)`.
-    pub(crate) fn build_overlay_delta(&self) -> (Vec<Location>, Vec<Location>, u32, u32, u32) {
-        let mut created: Vec<Location> = self.overlay.adds.clone();
-        let mut removed: Vec<Location> = Vec::new();
-        let added = self.overlay.adds.len() as u32;
-
-        let mut modified = 0u32;
-        for (id, new) in &self.overlay.patches {
-            match self.base_loc_by_id(*id) {
-                Some(old) => {
-                    removed.push(old);
-                    created.push(new.clone());
-                    modified += 1;
-                }
-                None => created.push(new.clone()), // not in base: a net add
-            }
-        }
-
-        let mut removed_n = 0u32;
-        for id in &self.overlay.dead {
-            // A dead id absent from the base was added-then-removed this session: a no-op.
-            if let Some(old) = self.base_loc_by_id(id) {
-                removed.push(old);
-                removed_n += 1;
-            }
-        }
-
-        (created, removed, added, removed_n, modified)
-    }
-
     /// Net `(added, removed, modified)` since last commit, counted from the overlay.
-    /// Mirrors `build_overlay_delta`'s categorization without cloning any locations:
+    /// Mirrors [`Overlay::to_delta`]'s categorization without cloning any locations:
     /// adds are created, patches on base rows are modified (patches absent from the
     /// base are net adds), dead base rows are removed. Added-then-removed ids never
     /// touch the base and count as nothing. O(overlay * log n).
@@ -937,39 +938,7 @@ macro_rules! selector_read {
 }
 pub(crate) use selector_read;
 
-/// Dead ids ride the wire as the plain id list the set has always serialized to.
-mod dead_as_seq {
-    use roaring::RoaringBitmap;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(m: &RoaringBitmap, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(m.iter())
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<RoaringBitmap, D::Error> {
-        Ok(Vec::<u32>::deserialize(d)?.into_iter().collect())
-    }
-}
-
-/// Patches ride the wire as a plain list of locations, keyed back by id on the way in.
-mod patches_as_seq {
-    use super::{HashMap, Location};
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(m: &HashMap<u32, Location>, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(m.values())
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<HashMap<u32, Location>, D::Error> {
-        Ok(Vec::<Location>::deserialize(d)?
-            .into_iter()
-            .map(|l| (l.id, l))
-            .collect())
-    }
-}
-
+pub(crate) mod delta_legacy;
 mod history;
 mod membership;
 mod mutations;

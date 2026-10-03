@@ -17,7 +17,9 @@ fn concurrent_atomic_writes_to_one_destination_leave_one_intact_payload() {
     let payloads: Vec<Vec<u8>> = (0u8..4).map(|i| vec![i; 4096]).collect();
     std::thread::scope(|s| {
         for p in &payloads {
-            s.spawn(|| atomic_write_bytes(&dest, p).unwrap());
+            s.spawn(|| {
+                atomic_write(&dest, |mut file| Ok(io::Write::write_all(&mut file, p)?)).unwrap();
+            });
         }
     });
     let got = fs::read(&dest).unwrap();
