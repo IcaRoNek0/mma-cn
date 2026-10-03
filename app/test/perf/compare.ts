@@ -149,6 +149,7 @@ function environmentWarnings(base: BenchmarkReport, candidate: BenchmarkReport):
 	check("iterations", "iterations");
 	check("seed", "fixture seed");
 	check("platform", "platform");
+	check("network", "network model");
 	return warnings;
 }
 

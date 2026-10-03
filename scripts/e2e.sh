@@ -10,11 +10,13 @@
 #                                                   #   monkey-patch Street View (deterministic, no network)
 #   scripts/e2e.sh --web [...]                      # run the same specs against the web-serve
 #                                                   #   build in Chrome instead of the native shell
-#   scripts/e2e.sh --bench                          # the performance suite only, one container,
+#   scripts/e2e.sh --bench                          # whole-app performance suite, one container,
 #                                                   #   never sharded. Results land in
 #                                                   #   app/test/perf/results (live-mounted).
 #                                                   #   Tune with MMA_BENCH_SCALES / _SAMPLES /
 #                                                   #   _WARMUPS / _ROUTES / _SEED / _LABEL / _GPU.
+#   scripts/e2e.sh --bench procedures               # procedure throughput, recorded SV latency;
+#                                                   #   tune MMA_SCALE_ROWS and MMA_BENCH_SAMPLES.
 #
 # Images are tagged per commit and profile (scripts/internal/e2e-image.sh) and built on
 # demand: a clean checkout builds once and is reused; a dirty one is rebuilt by
@@ -29,6 +31,7 @@ cd "$(dirname "$0")/.."
 # --web swaps the native-shell runner for the web-serve one (Chrome over HTTP IPC).
 MOCK_ENV=()
 BENCH=0
+BENCH_SPEC="./test/e2e/performance.test.ts"
 RUNNER="sh /repo/scripts/internal/e2e-native.sh"
 while :; do
 	case "${1:-}" in
@@ -45,6 +48,16 @@ while :; do
 	--bench)
 		BENCH=1
 		shift
+		if [ "${1:-}" = "procedures" ]; then
+			BENCH_SPEC="./test/e2e/procedure-scale.test.ts"
+			MOCK_ENV=(-e MMA_TEST_MOCK_SV=1)
+			export MMA_E2E_SV_REPLAY=1
+			export MMA_E2E_SV_MAX_INFLIGHT="${MMA_E2E_SV_MAX_INFLIGHT:-240}"
+			export MMA_E2E_SV_HIDDEN_CAPTURE=1
+			export MMA_SCALE_ROWS="${MMA_SCALE_ROWS:-1000}"
+			unset MMA_E2E_SV_FAULTS
+			shift
+		fi
 		;;
 	*) break ;;
 	esac
@@ -123,7 +136,7 @@ if [ "$BENCH" = "1" ]; then
 	done
 	# --exclude overrides the config's exclude list, which otherwise also blocks --spec.
 	run_logged "$(log_name)" "${MOCK_ENV[@]}" "${FWD_ENV[@]}" "${BENCH_ENV[@]}" --rm e2e $RUNNER \
-		--spec ./test/e2e/performance.test.ts --exclude ./test/e2e/scratch.test.ts
+		--spec "$BENCH_SPEC" --exclude ./test/e2e/scratch.test.ts
 	exit $?
 fi
 

@@ -6,6 +6,7 @@
 // Benchmarks report; they never assert an absolute time.
 
 import { createWriteStream, promises as fs, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { execFileSync } from "node:child_process";
 import { cpus, release, tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { measureProcessTree, telemetrySupported } from "./processTelemetry.ts";
 import type { ProcessTreeTelemetry } from "./processTelemetry.ts";
+import { SIS_LATENCY_FIXTURE } from "../e2e/svLatency.ts";
 
 export const SCHEMA_VERSION = 2 as const;
 const FIXTURE_COUNTRIES = ["US", "FR", "JP", "BR", "ZA", "AU", "DE", "IN", "CA", "RU"];
@@ -96,6 +98,12 @@ export interface BenchmarkEnvironment {
 	scales: Array<string | number>;
 	iterations: number;
 	warmupIterations: number;
+	network?: {
+		replay: boolean;
+		fixtureSha256: string | null;
+		maxInflight: number;
+		hiddenCapture: boolean;
+	};
 }
 
 export interface BenchmarkReport {
@@ -264,14 +272,23 @@ export async function runBenchmark(options: RunBenchmarkOptions): Promise<Benchm
 		rawSamples.push((await sample(options, true, i + 1))!);
 	}
 
+	return benchmarkCase(options.category, options.route, options.scale, rawSamples);
+}
+
+export function benchmarkCase(
+	category: string,
+	route: string,
+	scale: string | number,
+	rawSamples: BenchmarkRawSample[],
+): BenchmarkCase {
 	const operationSamples = rawSamples
 		.map((s) => s.operationMs)
 		.filter((value): value is number => value !== undefined);
 	return {
-		id: caseId(options.category, options.route, options.scale),
-		route: options.route,
-		category: options.category,
-		scale: options.scale,
+		id: caseId(category, route, scale),
+		route,
+		category,
+		scale,
 		sampleCount: rawSamples.length,
 		duration: summarizeDurations(rawSamples.map((s) => s.durationMs)),
 		operation:
@@ -448,6 +465,16 @@ export function collectEnvironment(
 		scales,
 		iterations,
 		warmupIterations,
+		network: process.env.MMA_TEST_MOCK_SV
+			? {
+					replay: Boolean(process.env.MMA_E2E_SV_REPLAY),
+					fixtureSha256: process.env.MMA_E2E_SV_REPLAY
+						? createHash("sha256").update(readFileSync(SIS_LATENCY_FIXTURE)).digest("hex")
+						: null,
+					maxInflight: Number(process.env.MMA_E2E_SV_MAX_INFLIGHT ?? 0),
+					hiddenCapture: Boolean(process.env.MMA_E2E_SV_HIDDEN_CAPTURE),
+				}
+			: undefined,
 	};
 }
 
