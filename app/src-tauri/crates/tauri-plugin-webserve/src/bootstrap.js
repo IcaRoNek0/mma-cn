@@ -176,10 +176,8 @@
 	// render buffer) work IMMEDIATELY — no service-worker activation race; (2) a
 	// service worker for subresources that bypass fetch (e.g. <img> map tiles;
 	// http-form only — custom-scheme requests never reach a service worker).
-	// TODO: raw-scheme <img>/XHR subresources (Linux/macOS browsers) are caught by
-	// neither layer; if one surfaces (candidate: unofficial-pano svtile tiles, if
-	// opensv loads them via <img>), patch XMLHttpRequest.open + the
-	// HTMLImageElement.src setter through this same rewrite.
+	// Raw-scheme <img>/XHR subresources (Linux/macOS browsers) are caught by neither
+	// layer, so patch those entry points through this same rewrite too.
 	function rewriteSchemeUrl(url) {
 		try {
 			const u = new URL(url, location.href);
@@ -202,6 +200,21 @@
 		const rewritten = url && rewriteSchemeUrl(url);
 		return rewritten ? _fetch(rewritten, init) : _fetch(input, init);
 	};
+	const _xhrOpen = XMLHttpRequest.prototype.open;
+	XMLHttpRequest.prototype.open = function (method, url, ...args) {
+		const rewritten = rewriteSchemeUrl(url);
+		return _xhrOpen.call(this, method, rewritten || url, ...args);
+	};
+	const imageSrc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+	if (imageSrc && imageSrc.set) {
+		Object.defineProperty(HTMLImageElement.prototype, "src", {
+			...imageSrc,
+			set(value) {
+				const rewritten = rewriteSchemeUrl(value);
+				imageSrc.set.call(this, rewritten || value);
+			},
+		});
+	}
 	if ("serviceWorker" in navigator) {
 		navigator.serviceWorker.register("/__webserve/sw.js").catch(() => {});
 	}
