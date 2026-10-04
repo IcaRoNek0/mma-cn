@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import { ts, withProgram } from "./native-ts.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = path.join(ROOT, "src");
@@ -74,6 +74,12 @@ function i18nBindings(sf) {
 }
 
 /** Message sources keyed by catalog key, plus the files each was seen in (for error messages). */
+/** Runs `use(sourceOf)` with every file in `files` parsed. */
+const parsed = (files, use) =>
+	withProgram(files, { noResolve: true, noLib: true, types: [], jsx: "preserve" }, ({ program }) =>
+		use((file) => program.getSourceFile(file)),
+	);
+
 export function extract(files) {
 	const messages = new Map();
 	const seenIn = new Map();
@@ -91,43 +97,39 @@ export function extract(files) {
 		if (!seenIn.has(key)) seenIn.set(key, file);
 	};
 
-	for (const file of files) {
-		const rel = path.relative(ROOT, file).replace(/\\/g, "/");
-		const sf = ts.createSourceFile(
-			file,
-			fs.readFileSync(file, "utf8"),
-			ts.ScriptTarget.Latest,
-			true,
-			file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-		);
+	parsed(files, (sourceOf) => {
+		for (const file of files) {
+			const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+			const sf = sourceOf(file);
 
-		const bound = i18nBindings(sf);
-		if (!bound) continue;
+			const bound = i18nBindings(sf);
+			if (!bound) continue;
 
-		const take = (node) => {
-			const text = literal(node);
-			if (text !== null) return record(text, text, rel);
-			const forms = pluralForms(node);
-			if (forms) return record(forms.other, forms, rel);
-		};
+			const take = (node) => {
+				const text = literal(node);
+				if (text !== null) return record(text, text, rel);
+				const forms = pluralForms(node);
+				if (forms) return record(forms.other, forms, rel);
+			};
 
-		// JsxAttribute -> JsxAttributes -> JsxOpeningElement | JsxSelfClosingElement
-		const isTransElement = (n) =>
-			bound.Trans !== null && n.parent?.parent?.tagName?.getText?.() === bound.Trans;
+			// JsxAttribute -> JsxAttributes -> JsxOpeningElement | JsxSelfClosingElement
+			const isTransElement = (n) =>
+				bound.Trans !== null && n.parent?.parent?.tagName?.getText?.() === bound.Trans;
 
-		const visit = (n) => {
-			if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-				const fn = n.expression.text;
-				if (fn === bound.t || fn === bound.msg) take(n.arguments[0]);
-			} else if (ts.isJsxAttribute(n) && n.name.getText() === "msg" && isTransElement(n)) {
-				const init = n.initializer;
-				if (init && ts.isJsxExpression(init)) take(init.expression);
-				else take(init);
-			}
-			ts.forEachChild(n, visit);
-		};
-		visit(sf);
-	}
+			const visit = (n) => {
+				if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+					const fn = n.expression.text;
+					if (fn === bound.t || fn === bound.msg) take(n.arguments[0]);
+				} else if (ts.isJsxAttribute(n) && n.name.getText() === "msg" && isTransElement(n)) {
+					const init = n.initializer;
+					if (init && ts.isJsxExpression(init)) take(init.expression);
+					else take(init);
+				}
+				n.forEachChild(visit);
+			};
+			visit(sf);
+		}
+	});
 	return messages;
 }
 
@@ -135,30 +137,55 @@ export function extract(files) {
  *  bindings, so extraction reads them from there -- the bindings stay the single source. */
 function bindingLabels() {
 	const file = path.join(SRC, "bindings.consts.ts");
-	const sf = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
-	const labels = [];
-	for (const st of sf.statements) {
-		if (!ts.isVariableStatement(st)) continue;
-		for (const decl of st.declarationList.declarations) {
-			const name = decl.name.getText();
-			if (name !== "BUILTIN_FIELDS" && name !== "KNOWN_FIELDS") continue;
-			const init = ts.isAsExpression(decl.initializer)
-				? decl.initializer.expression
-				: decl.initializer;
-			// The file is prettier-formatted, so its literals are JS objects, not JSON.
-			for (const f of new Function(`return ${init.getText(sf)}`)()) {
-				if (f.label) labels.push(f.label);
-				for (const [, label] of f.labels ?? []) labels.push(label);
+	return parsed([file], (sourceOf) => {
+		const sf = sourceOf(file);
+		const labels = [];
+		for (const st of sf.statements) {
+			if (!ts.isVariableStatement(st)) continue;
+			for (const decl of st.declarationList.declarations) {
+				const name = decl.name.getText();
+				if (name !== "BUILTIN_FIELDS" && name !== "KNOWN_FIELDS") continue;
+				const init = ts.isAsExpression(decl.initializer)
+					? decl.initializer.expression
+					: decl.initializer;
+				// The file is prettier-formatted, so its literals are JS objects, not JSON.
+				for (const f of new Function(`return ${init.getText(sf)}`)()) {
+					if (f.label) labels.push(f.label);
+					for (const [, label] of f.labels ?? []) labels.push(label);
+				}
 			}
 		}
-	}
-	return labels;
+		return labels;
+	});
 }
 
 const ACCENTS = {
-	a: "å", b: "ƀ", c: "ç", d: "ð", e: "é", f: "ƒ", g: "ǧ", h: "ĥ", i: "î", j: "ĵ",
-	k: "ķ", l: "ĺ", m: "ɱ", n: "ñ", o: "ö", p: "ƥ", q: "ǫ", r: "ŕ", s: "ş", t: "ţ",
-	u: "ü", v: "ṽ", w: "ŵ", x: "ẋ", y: "ý", z: "ž",
+	a: "å",
+	b: "ƀ",
+	c: "ç",
+	d: "ð",
+	e: "é",
+	f: "ƒ",
+	g: "ǧ",
+	h: "ĥ",
+	i: "î",
+	j: "ĵ",
+	k: "ķ",
+	l: "ĺ",
+	m: "ɱ",
+	n: "ñ",
+	o: "ö",
+	p: "ƥ",
+	q: "ǫ",
+	r: "ŕ",
+	s: "ş",
+	t: "ţ",
+	u: "ü",
+	v: "ṽ",
+	w: "ŵ",
+	x: "ẋ",
+	y: "ý",
+	z: "ž",
 };
 const PAD = "åéîöü";
 
@@ -200,8 +227,22 @@ function build(messages) {
 // Props whose string value is read by a user. `name`/`type`/`id` are deliberately absent -- they
 // are identity far more often than they are copy.
 const DISPLAY_PROPS = new Set([
-	"title", "placeholder", "aria-label", "ariaLabel", "label", "description", "confirmLabel",
-	"cancelLabel", "emptyText", "hint", "summary", "alt", "tooltip", "heading", "subtitle", "caption",
+	"title",
+	"placeholder",
+	"aria-label",
+	"ariaLabel",
+	"label",
+	"description",
+	"confirmLabel",
+	"cancelLabel",
+	"emptyText",
+	"hint",
+	"summary",
+	"alt",
+	"tooltip",
+	"heading",
+	"subtitle",
+	"caption",
 	"content",
 ]);
 
@@ -224,80 +265,76 @@ const COPY_CALLS = new Set(["toast"]);
  *  coverage gate: once a file reads zero here, it cannot silently regain a hardcoded string. */
 export function auditUnwrapped(files) {
 	const perFile = new Map();
-	for (const file of files) {
-		const rel = path.relative(ROOT, file).replace(/\\/g, "/");
-		const sf = ts.createSourceFile(
-			file,
-			fs.readFileSync(file, "utf8"),
-			ts.ScriptTarget.Latest,
-			true,
-			file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-		);
-		const hits = [];
-		// A migrated string is no longer a bare literal here: JSX text becomes `{t("…")}` (an
-		// expression, not JsxText), `title="…"` becomes `title={t("…")}`, and `label: "…"` becomes
-		// `label: t("…")` or `msg("…")` -- all calls, not literals. So anything still matching
-		// below is genuinely unwrapped. Object properties are covered too: inline
-		// `options={[{ label: "Gen 1" }]}` arrays are display text the JSX walk alone would miss.
+	parsed(files, (sourceOf) => {
+		for (const file of files) {
+			const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+			const sf = sourceOf(file);
+			const hits = [];
+			// A migrated string is no longer a bare literal here: JSX text becomes `{t("…")}` (an
+			// expression, not JsxText), `title="…"` becomes `title={t("…")}`, and `label: "…"` becomes
+			// `label: t("…")` or `msg("…")` -- all calls, not literals. So anything still matching
+			// below is genuinely unwrapped. Object properties are covered too: inline
+			// `options={[{ label: "Gen 1" }]}` arrays are display text the JSX walk alone would miss.
 
-		/** String leaves of a rendering expression: literals, ternary arms, `||`/`??`/`&&`
-		 *  fallbacks, concatenation, and template spans. */
-		const leaves = (expr, kind) => {
-			if (!expr) return;
-			if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
-				if (looksLikeCopy(expr.text)) hits.push({ kind, text: expr.text, node: expr });
-			} else if (ts.isTemplateExpression(expr)) {
-				for (const part of [expr.head, ...expr.templateSpans.map((s) => s.literal)]) {
-					if (looksLikeCopy(part.text)) hits.push({ kind, text: part.text, node: part });
+			/** String leaves of a rendering expression: literals, ternary arms, `||`/`??`/`&&`
+			 *  fallbacks, concatenation, and template spans. */
+			const leaves = (expr, kind) => {
+				if (!expr) return;
+				if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
+					if (looksLikeCopy(expr.text)) hits.push({ kind, text: expr.text });
+				} else if (ts.isTemplateExpression(expr)) {
+					for (const part of [expr.head, ...expr.templateSpans.map((s) => s.literal)]) {
+						if (looksLikeCopy(part.text)) hits.push({ kind, text: part.text });
+					}
+				} else if (ts.isConditionalExpression(expr)) {
+					leaves(expr.whenTrue, kind);
+					leaves(expr.whenFalse, kind);
+				} else if (ts.isParenthesizedExpression(expr)) {
+					leaves(expr.expression, kind);
+				} else if (
+					ts.isBinaryExpression(expr) &&
+					["||", "??", "&&", "+"].includes(expr.operatorToken.getText())
+				) {
+					leaves(expr.left, kind);
+					leaves(expr.right, kind);
 				}
-			} else if (ts.isConditionalExpression(expr)) {
-				leaves(expr.whenTrue, kind);
-				leaves(expr.whenFalse, kind);
-			} else if (ts.isParenthesizedExpression(expr)) {
-				leaves(expr.expression, kind);
-			} else if (
-				ts.isBinaryExpression(expr) &&
-				["||", "??", "&&", "+"].includes(expr.operatorToken.getText())
-			) {
-				leaves(expr.left, kind);
-				leaves(expr.right, kind);
-			}
-		};
-		const visit = (n) => {
-			if (ts.isJsxText(n)) {
-				const text = n.text.replace(/\s+/g, " ").trim();
-				if (looksLikeCopy(text)) hits.push({ kind: "text", text, node: n });
-			} else if (
-				ts.isJsxExpression(n) &&
-				(ts.isJsxElement(n.parent) || ts.isJsxFragment(n.parent))
-			) {
-				leaves(n.expression, "text");
-			} else if (ts.isJsxAttribute(n) && DISPLAY_PROPS.has(n.name.getText()) && n.initializer) {
-				const init = n.initializer;
-				if (ts.isJsxExpression(init)) leaves(init.expression, "attr");
-				else leaves(init, "attr");
-			} else if (ts.isPropertyAssignment(n)) {
-				const key = n.name.getText().replace(/["']/g, "");
-				if (DISPLAY_PROPS.has(key)) leaves(n.initializer, "prop");
-			} else if (
-				ts.isCallExpression(n) &&
-				ts.isIdentifier(n.expression) &&
-				COPY_CALLS.has(n.expression.text)
-			) {
-				leaves(n.arguments[0], "call");
-			} else if (
-				(ts.isParameter(n) || ts.isBindingElement(n)) &&
-				n.initializer &&
-				ts.isIdentifier(n.name) &&
-				DISPLAY_PROPS.has(n.name.text)
-			) {
-				leaves(n.initializer, "prop");
-			}
-			ts.forEachChild(n, visit);
-		};
-		visit(sf);
-		if (hits.length) perFile.set(rel, hits);
-	}
+			};
+			const visit = (n) => {
+				if (ts.isJsxText(n)) {
+					const text = n.text.replace(/\s+/g, " ").trim();
+					if (looksLikeCopy(text)) hits.push({ kind: "text", text });
+				} else if (
+					ts.isJsxExpression(n) &&
+					(ts.isJsxElement(n.parent) || ts.isJsxFragment(n.parent))
+				) {
+					leaves(n.expression, "text");
+				} else if (ts.isJsxAttribute(n) && DISPLAY_PROPS.has(n.name.getText()) && n.initializer) {
+					const init = n.initializer;
+					if (ts.isJsxExpression(init)) leaves(init.expression, "attr");
+					else leaves(init, "attr");
+				} else if (ts.isPropertyAssignment(n)) {
+					const key = n.name.getText().replace(/["']/g, "");
+					if (DISPLAY_PROPS.has(key)) leaves(n.initializer, "prop");
+				} else if (
+					ts.isCallExpression(n) &&
+					ts.isIdentifier(n.expression) &&
+					COPY_CALLS.has(n.expression.text)
+				) {
+					leaves(n.arguments[0], "call");
+				} else if (
+					(ts.isParameterDeclaration(n) || ts.isBindingElement(n)) &&
+					n.initializer &&
+					ts.isIdentifier(n.name) &&
+					DISPLAY_PROPS.has(n.name.text)
+				) {
+					leaves(n.initializer, "prop");
+				}
+				n.forEachChild(visit);
+			};
+			visit(sf);
+			if (hits.length) perFile.set(rel, hits);
+		}
+	});
 	return perFile;
 }
 
@@ -336,9 +373,7 @@ export function localeGaps() {
 		.map((f) => {
 			const code = f.replace(/\.json$/, "");
 			const catalog = JSON.parse(fs.readFileSync(path.join(LOCALES, f), "utf8"));
-			const missing = Object.fromEntries(
-				Object.entries(en).filter(([k]) => !(k in catalog)),
-			);
+			const missing = Object.fromEntries(Object.entries(en).filter(([k]) => !(k in catalog)));
 			const orphans = Object.keys(catalog).filter((k) => !(k in en));
 			return { code, total: Object.keys(en).length, missing, orphans };
 		});
@@ -356,10 +391,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 				continue;
 			}
 			clean = false;
-			console.log(`${code}: ${total - n}/${total} translated, ${n} missing, ${orphans.length} orphaned`);
+			console.log(
+				`${code}: ${total - n}/${total} translated, ${n} missing, ${orphans.length} orphaned`,
+			);
 			for (const k of Object.keys(missing).slice(0, 10)) console.log(`    + ${JSON.stringify(k)}`);
 			if (n > 10) console.log(`    ... and ${n - 10} more`);
-			for (const k of orphans.slice(0, 5)) console.log(`    - ${JSON.stringify(k)} (no longer in en)`);
+			for (const k of orphans.slice(0, 5))
+				console.log(`    - ${JSON.stringify(k)} (no longer in en)`);
 			if (write && n) {
 				const out = path.join(LOCALES, `${code}.missing.json`);
 				fs.writeFileSync(out, JSON.stringify(missing, null, "\t") + "\n");
