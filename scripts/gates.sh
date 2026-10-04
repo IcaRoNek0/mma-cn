@@ -20,6 +20,7 @@ check-legacy      node  app            node ../plugins/check-legacy.mjs
 check-unstable    node  app            node ../plugins/check-unstable.mjs
 check-floors      node  app            plugin_deps && node ../plugins/check-floors.mjs
 check-tokens      node  app            node ../plugins/check-tokens.mjs
+check-sidecars    node  .              node plugins/check-sidecars.mjs
 image-dims        node  app            fresh src/components/manual/manual-img-dims.gen.ts -- npm run gen:image-dims
 plugin-types      node  app            fresh ../plugins/types/mma.d.ts -- npm run gen:plugin-types
 plugin-build      node  .              fresh plugins -- node plugins/build-all.mjs

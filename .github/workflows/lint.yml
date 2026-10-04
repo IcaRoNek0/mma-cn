@@ -21,6 +21,8 @@ jobs:
       - run: npm ci
         working-directory: app
       - run: sh scripts/gates.sh --env node
+        env:
+          GATES_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
 
   rust:
     runs-on: ubuntu-22.04
