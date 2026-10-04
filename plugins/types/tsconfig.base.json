@@ -1,6 +1,7 @@
 {
-	"//": "Extend this from a plugin tsconfig. The app hands plugins its own React, deck.gl and luma.gl at runtime, so their types must resolve to the SDK's single copy - a second copy on disk is a second set of class declarations that will not satisfy the first.",
+	"//": "Extend this from a plugin tsconfig. The app hands plugins its own React, deck.gl and luma.gl at runtime, so their types must resolve to the SDK's single copy - a second copy on disk is a second set of class declarations that will not satisfy the first. CSS side-effect imports are resolved by the plugin bundler; retain the TS 5.9 behavior.",
 	"compilerOptions": {
+		"noUncheckedSideEffectImports": false,
 		"paths": {
 			"react": ["./node_modules/@types/react"],
 			"react/*": ["./node_modules/@types/react/*"],

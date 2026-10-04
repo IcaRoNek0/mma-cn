@@ -21,12 +21,5 @@ fn main() {
         serve::run_server();
         return;
     }
-    // `--export-bindings` regenerates ../src/bindings.gen.ts and exits, without
-    // launching the app. Breaks the deadlock when broken bindings block the frontend build.
-    #[cfg(debug_assertions)]
-    if env::args().any(|a| a == "--export-bindings") {
-        app_lib::export_bindings().expect("bindings export failed");
-        return;
-    }
     app_lib::run();
 }

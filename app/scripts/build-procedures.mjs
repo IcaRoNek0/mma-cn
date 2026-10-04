@@ -4,7 +4,7 @@
 //   npm run build:procedures            # all of them
 //   node scripts/build-procedures.mjs timezone svMeta
 import { build } from "esbuild";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,6 +73,7 @@ for (const name of dirs) {
 		absWorkingDir: appDir,
 		logLevel: "warning",
 		metafile: true,
+		write: false,
 	});
 	const bad = forbidden(result.metafile);
 	if (bad.length > 0) {
@@ -80,6 +81,12 @@ for (const name of dirs) {
 			`${name}: procedure bundle reaches ${bad.join(", ")}. Move whatever it needs into a ` +
 				`module with no app or Tauri imports, and import it from there.`,
 		);
+	}
+	// Tauri watches these resources: rewriting identical bundles invalidates Cargo's build.
+	for (const file of result.outputFiles) {
+		if (existsSync(file.path) && readFileSync(file.path).equals(file.contents)) continue;
+		mkdirSync(dirname(file.path), { recursive: true });
+		writeFileSync(file.path, file.contents);
 	}
 	console.log(`[${name}] ok`);
 }

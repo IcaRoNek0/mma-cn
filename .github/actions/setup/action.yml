@@ -30,7 +30,10 @@ runs:
     - if: inputs.rust == 'true'
       uses: swatinem/rust-cache@v2
       with:
-        workspaces: app/src-tauri -> target
+        workspaces: |
+          app/src-tauri -> target
+          app/src-tauri/crates/geocode -> target
+          app/src-tauri/crates/tz -> target
     - shell: bash
       working-directory: app
       run: npm ci
