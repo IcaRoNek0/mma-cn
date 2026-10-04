@@ -13,7 +13,12 @@ describe("check-unstable matches plugin code by member path", () => {
 		try {
 			const file = join(dir, "index.ts");
 			writeFileSync(file, "const { on, ui: { Sidebar } } = MMA;\nMMA.toast('hi');\n");
-			expect([...usedNames(file).keys()].sort()).toEqual(["on", "toast", "ui", "ui.Sidebar"]);
+			expect([...usedNames([file]).get(file).keys()].sort()).toEqual([
+				"on",
+				"toast",
+				"ui",
+				"ui.Sidebar",
+			]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

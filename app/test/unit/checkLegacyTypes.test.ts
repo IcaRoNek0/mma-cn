@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepare } from "../../../plugins/check-legacy.mjs";
-import { compareAll, type CompareJob, type CompareResult } from "./fixtures/legacyCompare";
+import { compareTypes, prepare } from "../../../plugins/check-legacy.mjs";
 
 // The type half of the plugin API promise: check-legacy.mjs fails the build when a stable
 // exported declaration loses a member, gets one renamed, or narrows one between the support
@@ -12,8 +12,12 @@ const U = "\n/** @unstable */\n";
 const typesDir = join(__dirname, "../../../plugins/types");
 const sdk = prepare(readFileSync(join(typesDir, "mma.d.ts"), "utf-8"));
 
-interface Case extends CompareJob {
+interface Case {
 	name: string;
+	before: string;
+	after: string;
+	/** Where the pair sits, for a surface whose imports resolve against a real directory. */
+	dir?: string;
 	missing?: string[];
 	broken?: string[];
 }
@@ -225,12 +229,17 @@ export interface A { consts: { P: typeof c_P } }`,
 ];
 
 describe("check-legacy sees the exported type surface", () => {
-	let results: CompareResult[];
-	beforeAll(async () => {
-		results = await compareAll(CASES);
-	}, 300_000);
-
-	it.each(CASES.map((c, i) => [c.name, c, i] as const))("%s", (_name, c, i) => {
-		expect(results[i]).toEqual({ missing: c.missing ?? [], broken: c.broken ?? [] });
+	it.each(CASES.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+		const dir = c.dir ?? tmpdir();
+		const [before, after] = [join(dir, ".legacy-old.d.ts"), join(dir, ".legacy-new.d.ts")];
+		const files = new Map([
+			[before, c.before],
+			[after, c.after],
+		]);
+		const { missing, broken } = compareTypes(before, after, files);
+		expect({ missing, broken: broken.map((b: { name: string }) => b.name) }).toEqual({
+			missing: c.missing ?? [],
+			broken: c.broken ?? [],
+		});
 	});
 });

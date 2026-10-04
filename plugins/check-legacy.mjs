@@ -9,10 +9,10 @@
 //
 // Run: node plugins/check-legacy.mjs
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ts, withProgram } from "../app/scripts/native-ts.mjs";
 
 // How far back the promise reaches: the oldest release whose stable surface is still
 // guaranteed. Every release from here to HEAD is checked -- an API that shipped stable in any
@@ -22,38 +22,9 @@ const SUPPORT_FLOOR = "0.11.5";
 const pluginsDir = dirname(fileURLToPath(import.meta.url));
 const typesDir = join(pluginsDir, "types");
 const sdkDts = join(typesDir, "mma.d.ts");
-// Resolution is by bare specifier, so any path inside types/ works.
+// Served from memory beside the SDK, so bare specifiers resolve from types/.
 const floorDts = join(typesDir, ".floor.d.ts");
 const headDts = join(typesDir, ".head.d.ts");
-
-if (!existsSync(join(typesDir, "node_modules"))) {
-	console.log("[types] npm ci");
-	execSync("npm ci", { cwd: typesDir, stdio: "inherit" });
-}
-export const ts = createRequire(join(typesDir, "package.json"))("typescript");
-
-// The default lib set is identical for every program built here, so it is parsed once
-// rather than once per comparison.
-const libDir = dirname(ts.getDefaultLibFilePath({ target: ts.ScriptTarget.ESNext })).toLowerCase();
-const libFiles = new Map();
-
-function createProgram(rootNames, options) {
-	const host = ts.createCompilerHost(options);
-	const read = host.getSourceFile.bind(host);
-	host.getSourceFile = (fileName, languageVersion, ...rest) => {
-		if (!fileName.toLowerCase().startsWith(libDir)) return read(fileName, languageVersion, ...rest);
-		const version =
-			typeof languageVersion === "object" ? languageVersion.languageVersion : languageVersion;
-		const key = `${fileName}:${version}`;
-		let file = libFiles.get(key);
-		if (!file) {
-			file = read(fileName, languageVersion, ...rest);
-			if (file) libFiles.set(key, file);
-		}
-		return file;
-	};
-	return ts.createProgram(rootNames, options, host);
-}
 
 const gitOk = (args) => {
 	const r = spawnSync("git", args, { cwd: pluginsDir, encoding: "utf-8" });
@@ -75,67 +46,84 @@ function supportedTags() {
 		.sort((a, b) => cmpVer(a.slice(1), b.slice(1)));
 }
 
+if (!existsSync(join(typesDir, "node_modules"))) {
+	console.log("[types] npm ci");
+	execSync("npm ci", { cwd: typesDir, stdio: "inherit" });
+}
+
+const PROBE_OPTS = {
+	noEmit: true,
+	skipLibCheck: true,
+	strict: true,
+	// Parameter bivariance: a widened parameter is additive, and a narrowed one is already
+	// caught where the type it narrowed to is compared.
+	strictFunctionTypes: false,
+	target: "esnext",
+	module: "esnext",
+	moduleResolution: "bundler",
+};
+
 /** Every dotted member path on the `MMA` interface (`sidecar.request`), mapped to whether
  *  it is unstable. The tag inherits: one `@unstable` on `cmd` covers every command under
  *  it. Nested namespaces are plain object literals, so one level of recursion covers them;
  *  deeper would walk into data types (Location, MapMeta) that are not API surface. */
-export function surfaceOf(dtsPath) {
-	const program = createProgram([dtsPath], {
-		skipLibCheck: true,
-		target: ts.ScriptTarget.ESNext,
-		moduleResolution: ts.ModuleResolutionKind.Bundler,
-	});
-	const checker = program.getTypeChecker();
-	const source = program.getSourceFile(dtsPath);
-	if (!source) throw new Error(`could not load ${dtsPath}`);
+export function surfaceOf(dtsPath, files) {
+	return withProgram(
+		[dtsPath],
+		PROBE_OPTS,
+		({ program, checker }) => {
+			const source = program.getSourceFile(dtsPath);
+			if (!source) throw new Error(`could not load ${dtsPath}`);
 
-	let root = null;
-	ts.forEachChild(source, (node) => {
-		if (ts.isInterfaceDeclaration(node) && node.name.text === "MMA") root = node;
-	});
-	if (!root) throw new Error(`no MMA interface in ${dtsPath}`);
+			const root = source.statements.find(
+				(node) => ts.isInterfaceDeclaration(node) && node.name.text === "MMA",
+			);
+			if (!root) throw new Error(`no MMA interface in ${dtsPath}`);
 
-	const isUnstable = (sym) => sym.getJsDocTags(checker).some((t) => t.name === "unstable");
+			const isUnstable = (sym) => sym.getJsDocTags(checker).some((t) => t.name === "unstable");
 
-	// A whole surface can be tagged at its declaration (`@unstable type ReviewApi = ...`),
-	// which covers everything it contributes. Per-member tags are for mixed modules.
-	const fromUnstableSurface = new Set();
-	for (const clause of root.heritageClauses ?? []) {
-		for (const node of clause.types) {
-			const alias = checker.getSymbolAtLocation(node.expression);
-			if (!alias || !isUnstable(alias)) continue;
-			for (const prop of checker.getPropertiesOfType(checker.getTypeAtLocation(node))) {
-				fromUnstableSurface.add(prop.name);
+			// A whole surface can be tagged at its declaration (`@unstable type ReviewApi = ...`),
+			// which covers everything it contributes. Per-member tags are for mixed modules.
+			const fromUnstableSurface = new Set();
+			for (const clause of root.heritageClauses ?? []) {
+				for (const node of clause.types) {
+					const alias = checker.getSymbolAtLocation(node.expression);
+					if (!alias || !isUnstable(alias)) continue;
+					for (const prop of checker.getPropertiesOfType(checker.getTypeAtLocation(node))) {
+						fromUnstableSurface.add(prop.name);
+					}
+				}
 			}
-		}
-	}
 
-	const surface = new Map();
-	const walk = (type, prefix, depth, inherited) => {
-		for (const prop of checker.getPropertiesOfType(type)) {
-			if (prop.name.startsWith("__@")) continue;
-			const path = prefix ? `${prefix}.${prop.name}` : prop.name;
-			// Members spread from a module land as `name: typeof name`, which carries no
-			// JSDoc of its own -- the tag is on what it points at.
-			const target = checker.getTypeOfSymbolAtLocation(prop, root).getSymbol();
-			const unstable =
-				inherited ||
-				fromUnstableSurface.has(path) ||
-				isUnstable(prop) ||
-				(!!target && isUnstable(target));
-			surface.set(path, unstable);
-			if (depth === 0) continue;
-			const propType = checker.getTypeOfSymbolAtLocation(prop, root);
-			if (
-				propType.getCallSignatures().length === 0 &&
-				checker.getPropertiesOfType(propType).length
-			) {
-				walk(propType, path, depth - 1, unstable);
-			}
-		}
-	};
-	walk(checker.getTypeAtLocation(root), "", 1, false);
-	return surface;
+			const surface = new Map();
+			const walk = (type, prefix, depth, inherited) => {
+				for (const prop of checker.getPropertiesOfType(type)) {
+					if (prop.name.startsWith("__@")) continue;
+					const path = prefix ? `${prefix}.${prop.name}` : prop.name;
+					// Members spread from a module land as `name: typeof name`, which carries no
+					// JSDoc of its own -- the tag is on what it points at.
+					const target = checker.getTypeOfSymbolAtLocation(prop, root).getSymbol();
+					const unstable =
+						inherited ||
+						fromUnstableSurface.has(path) ||
+						isUnstable(prop) ||
+						(!!target && isUnstable(target));
+					surface.set(path, unstable);
+					if (depth === 0) continue;
+					const propType = checker.getTypeOfSymbolAtLocation(prop, root);
+					if (
+						checker.getSignaturesOfType(propType, ts.SignatureKind.Call).length === 0 &&
+						checker.getPropertiesOfType(propType).length
+					) {
+						walk(propType, path, depth - 1, unstable);
+					}
+				}
+			};
+			walk(checker.getTypeAtLocation(root), "", 1, false);
+			return surface;
+		},
+		files,
+	);
 }
 
 /** Both copies of the SDK live in one program, so the two `declare global` blocks would
@@ -146,18 +134,6 @@ export const prepare = (text) =>
 		.replace(/^declare global \{[\s\S]*?^\}\n?/gm, "")
 		.replace(/^\s*(private|protected)\s.*\n/gm, "");
 
-const PROBE_OPTS = {
-	noEmit: true,
-	skipLibCheck: true,
-	strict: true,
-	// Parameter bivariance: a widened parameter is additive, and a narrowed one is already
-	// caught where the type it narrowed to is compared.
-	strictFunctionTypes: false,
-	target: ts.ScriptTarget.ESNext,
-	module: ts.ModuleKind.ESNext,
-	moduleResolution: ts.ModuleResolutionKind.Bundler,
-};
-
 /** Whether a symbol is `@unstable`, reading through the hops a bundled d.ts puts between a
  *  member and its declaration: an alias, or a `declare const x: typeof y`. */
 function unstableIn(checker) {
@@ -166,7 +142,7 @@ function unstableIn(checker) {
 		if (!sym || hops === 0) return false;
 		if (tagged(sym)) return true;
 		if (sym.flags & ts.SymbolFlags.Alias) return unstable(checker.getAliasedSymbol(sym), hops - 1);
-		const node = sym.valueDeclaration?.type;
+		const node = sym.valueDeclaration?.resolve()?.type;
 		if (node && ts.isTypeQueryNode(node)) {
 			return unstable(checker.getSymbolAtLocation(node.exprName), hops - 1);
 		}
@@ -187,7 +163,7 @@ function exportedTypes(checker, source) {
 	for (const exp of checker.getExportsOfModule(mod)) {
 		if (machinery(exp.name)) continue;
 		const sym = exp.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
-		const decl = sym.declarations?.[0];
+		const decl = sym.declarations?.[0]?.resolve();
 		if (!decl) continue;
 		const asType = !!(
 			sym.flags &
@@ -221,24 +197,24 @@ function promiseWalker(checker, sources, probe, removal) {
 	const unstable = unstableIn(checker);
 	// Only the SDK's own declarations are walked; a library type is the library's promise.
 	const declaredHere = (type) =>
-		type.isIntersection()
-			? type.types.some(declaredHere)
-			: ((type.aliasSymbol ?? type.getSymbol())?.declarations ?? []).some((d) =>
-					sources.has(d.getSourceFile()),
+		type.isIntersectionType()
+			? type.getTypes().some(declaredHere)
+			: ((type.getAliasSymbol() ?? type.getSymbol())?.declarations ?? []).some((d) =>
+					sources.has(d.path),
 				);
 	const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined;
 	const seen = new Map();
 	// A generic signature cannot be related across two copies of the SDK (its indexed and
 	// conditional types defer on the type parameter), so only its presence is checked.
-	const generic = (type) =>
-		type.getCallSignatures().some((sig) => (sig.typeParameters ?? []).length > 0);
+	const calls = (type) => checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+	const generic = (type) => calls(type).some((sig) => (sig.typeParameters ?? []).length > 0);
 	const walk = (oldType, newType, o, n, path) => {
-		const pairs = seen.get(oldType) ?? new Set();
-		if (pairs.has(newType)) return;
-		pairs.add(newType);
-		seen.set(oldType, pairs);
+		const pairs = seen.get(oldType.id) ?? new Set();
+		if (pairs.has(newType.id)) return;
+		pairs.add(newType.id);
+		seen.set(oldType.id, pairs);
 
-		if (oldType.isUnion() && oldType.types.some((t) => t.flags & nullish)) {
+		if (oldType.isUnionType() && oldType.getTypes().some((t) => t.flags & nullish)) {
 			// An optional member that turns required narrows what a plugin may pass.
 			probe(`Extract<${o}, null | undefined>`, n, path);
 			[oldType, newType] = [
@@ -257,8 +233,8 @@ function promiseWalker(checker, sources, probe, removal) {
 		const props = checker.getPropertiesOfType(oldType).filter((p) => !p.name.startsWith("__@"));
 		const structured =
 			(oldType.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0 &&
-			oldType.getCallSignatures().length === 0 &&
-			oldType.getConstructSignatures().length === 0 &&
+			calls(oldType).length === 0 &&
+			checker.getSignaturesOfType(oldType, ts.SignatureKind.Construct).length === 0 &&
 			props.length > 0 &&
 			declaredHere(oldType);
 		if (!structured) {
@@ -266,7 +242,7 @@ function promiseWalker(checker, sources, probe, removal) {
 			// promised signature: new asserted assignable to old. A return may gain members,
 			// while one that loses or widens a member fails, as does a new required parameter.
 			// Data compares the other way, where widening is the additive case.
-			if (oldType.getCallSignatures().length > 0) probe(n, o, path);
+			if (calls(oldType).length > 0) probe(n, o, path);
 			else probe(o, n, path);
 			return;
 		}
@@ -289,9 +265,7 @@ function promiseWalker(checker, sources, probe, removal) {
 /** The last two links of a diagnostic chain name the member and the mismatch. */
 const leaf = (d) => {
 	const chain = [];
-	for (let m = d.messageText; m; m = typeof m === "string" ? undefined : m.next?.[0]) {
-		chain.push(typeof m === "string" ? m : m.messageText);
-	}
+	for (let m = d; m; m = m.messageChain?.[0]) chain.push(m.text);
 	return chain.slice(-2).join(" ");
 };
 
@@ -302,17 +276,8 @@ const leaf = (d) => {
  *  additions, optionalisation and widening pass and a narrowed member fails; on functions,
  *  the new signature must satisfy the promised one. `@unstable` members are excluded with
  *  everything under them. Every rule applies at every depth. */
-export function compareTypes(oldPath, newPath) {
-	const dir = dirname(newPath);
+export function compareTypes(oldPath, newPath, files) {
 	const spec = (p) => `./${basename(p).replace(/\.(d\.)?ts$/, "")}`;
-	const read = createProgram([oldPath, newPath], PROBE_OPTS);
-	const checker = read.getTypeChecker();
-	const sources = new Set([read.getSourceFile(oldPath), read.getSourceFile(newPath)]);
-	const oldExports = exportedTypes(checker, read.getSourceFile(oldPath));
-	const newExports = new Map(
-		exportedTypes(checker, read.getSourceFile(newPath)).map((e) => [e.name, e]),
-	);
-
 	const missing = [];
 	const broken = new Map();
 	const lines = [
@@ -321,51 +286,67 @@ export function compareTypes(oldPath, newPath) {
 		"type Assert<A extends B, B> = A;",
 	];
 	const lineOwner = new Map();
-	for (const e of oldExports) {
-		if (e.unstable) continue;
-		const now = newExports.get(e.name);
-		if (!now) {
-			missing.push(e.name);
-			continue;
-		}
-		const removed = [];
-		const walk = promiseWalker(
-			checker,
-			sources,
-			(o, n, path) => {
-				lineOwner.set(lines.length, { name: e.name, path });
-				lines.push(`type _${lines.length} = Assert<${o}, ${n}>;`);
-			},
-			(path) => removed.push(path),
-		);
-		walk(e.type, now.type, e.ref("Old"), now.ref("New"), "");
-		if (removed.length) {
-			// Recorded, then the assignability probe still runs: a member that kept its name
-			// and changed shape is a break of its own, and reporting only the removals would
-			// hide it until a plugin silently misbehaves.
-			broken.set(e.name, `member(s) removed: ${removed.join(", ")}`);
-		}
-	}
+	withProgram(
+		[oldPath, newPath],
+		PROBE_OPTS,
+		({ program, checker }) => {
+			const [oldSource, newSource] = [
+				program.getSourceFile(oldPath),
+				program.getSourceFile(newPath),
+			];
+			const sources = new Set([oldSource.path, newSource.path]);
+			const newExports = new Map(exportedTypes(checker, newSource).map((e) => [e.name, e]));
+			for (const e of exportedTypes(checker, oldSource)) {
+				if (e.unstable) continue;
+				const now = newExports.get(e.name);
+				if (!now) {
+					missing.push(e.name);
+					continue;
+				}
+				const removed = [];
+				const walk = promiseWalker(
+					checker,
+					sources,
+					(o, n, path) => {
+						lineOwner.set(lines.length, { name: e.name, path });
+						lines.push(`type _${lines.length} = Assert<${o}, ${n}>;`);
+					},
+					(path) => removed.push(path),
+				);
+				walk(e.type, now.type, e.ref("Old"), now.ref("New"), "");
+				if (removed.length) {
+					// Recorded, then the assignability probe still runs: a member that kept its name
+					// and changed shape is a break of its own, and reporting only the removals would
+					// hide it until a plugin silently misbehaves.
+					broken.set(e.name, `member(s) removed: ${removed.join(", ")}`);
+				}
+			}
+		},
+		files,
+	);
 
-	const probePath = join(dir, ".probe.ts");
-	try {
-		writeFileSync(probePath, lines.join("\n"));
-		const program = createProgram([probePath], PROBE_OPTS);
-		const source = program.getSourceFile(probePath);
-		for (const d of program.getSemanticDiagnostics(source)) {
-			const owner = lineOwner.get(source.getLineAndCharacterOfPosition(d.start ?? 0).line);
-			if (!owner) continue;
-			const { name, path } = owner;
-			const message = path ? `${path}: ${leaf(d)}` : leaf(d);
-			const prior = broken.get(name);
-			// A removal is already recorded for this type; keep it and add the first shape
-			// break beside it rather than letting either hide the other.
-			if (!prior) broken.set(name, message);
-			else if (!prior.includes(" | ")) broken.set(name, `${prior} | ${message}`);
-		}
-	} finally {
-		rmSync(probePath, { force: true });
-	}
+	const probePath = join(dirname(newPath), ".probe.ts");
+	const probe = new Map(files);
+	probe.set(probePath, lines.join("\n"));
+	withProgram(
+		[probePath],
+		PROBE_OPTS,
+		({ program }) => {
+			const source = program.getSourceFile(probePath);
+			for (const d of program.getSemanticDiagnostics(probePath)) {
+				const owner = lineOwner.get(source.getLineAndCharacterOfPosition(d.pos).line);
+				if (!owner) continue;
+				const { name, path } = owner;
+				const message = path ? `${path}: ${leaf(d)}` : leaf(d);
+				const prior = broken.get(name);
+				// A removal is already recorded for this type; keep it and add the first shape
+				// break beside it rather than letting either hide the other.
+				if (!prior) broken.set(name, message);
+				else if (!prior.includes(" | ")) broken.set(name, `${prior} | ${message}`);
+			}
+		},
+		probe,
+	);
 	return {
 		missing,
 		broken: [...broken].map(([name, message]) => ({ name, message })),
@@ -391,32 +372,28 @@ function main() {
 	// oldest release that did.
 	const promised = new Map();
 	const typeBreaks = new Map();
-	let head;
-	try {
-		head = surfaceOf(sdkDts);
-		writeFileSync(headDts, prepare(readFileSync(sdkDts, "utf-8")));
-		for (const [blob, tag] of blobTags) {
-			const text = spawnSync("git", ["show", blob], {
-				cwd: pluginsDir,
-				encoding: "utf-8",
-			}).stdout;
-			writeFileSync(floorDts, prepare(text));
-			for (const [p, unstable] of surfaceOf(floorDts)) {
-				const prev = promised.get(p);
-				if (prev && !prev.unstable) continue;
-				promised.set(p, { unstable, tag });
-			}
-			const { missing, broken } = compareTypes(floorDts, headDts);
-			for (const name of missing) {
-				if (!typeBreaks.has(name)) typeBreaks.set(name, { tag, message: "no longer exported" });
-			}
-			for (const { name, message } of broken) {
-				if (!typeBreaks.has(name)) typeBreaks.set(name, { tag, message });
-			}
+	const head = surfaceOf(sdkDts);
+	for (const [blob, tag] of blobTags) {
+		const text = spawnSync("git", ["show", blob], {
+			cwd: pluginsDir,
+			encoding: "utf-8",
+		}).stdout;
+		const files = new Map([
+			[floorDts, prepare(text)],
+			[headDts, prepare(readFileSync(sdkDts, "utf-8"))],
+		]);
+		for (const [p, unstable] of surfaceOf(floorDts, files)) {
+			const prev = promised.get(p);
+			if (prev && !prev.unstable) continue;
+			promised.set(p, { unstable, tag });
 		}
-	} finally {
-		rmSync(floorDts, { force: true });
-		rmSync(headDts, { force: true });
+		const { missing, broken } = compareTypes(floorDts, headDts, files);
+		for (const name of missing) {
+			if (!typeBreaks.has(name)) typeBreaks.set(name, { tag, message: "no longer exported" });
+		}
+		for (const { name, message } of broken) {
+			if (!typeBreaks.has(name)) typeBreaks.set(name, { tag, message });
+		}
 	}
 
 	const gone = [...promised.keys()].filter((p) => !head.has(p));
