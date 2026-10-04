@@ -1,13 +1,14 @@
 //! One-time conversion of msgpack `.delta` sidecars to the Arrow commit-delta format.
 //!
 //! Self-contained and disposable: nothing outside this file knows the msgpack shape, and
-//! the app reaches in only through [`convert_msgpack_deltas`], called once at startup.
+//! the app reaches in only through [`convert_msgpack_deltas`], called once at startup, and
+//! [`warn_of_set_aside_deltas`], called once the first window is ready.
 //! When every install has upgraded, delete this file, its test file, its `mod delta_legacy;`
-//! line in `engine.rs`, the startup call in `lib.rs`, the `rmp-serde` dependency, and the
+//! line in `engine.rs`, both calls in `lib.rs`, the `rmp-serde` dependency, and the
 //! non-human-readable branches of `RawExtra`'s serde impls -- nothing else refers to any
 //! of it.
 
-use super::{set_aside_delta, Overlay};
+use super::{set_aside_delta, Overlay, StoreWarning};
 use crate::store::arrow;
 use crate::store::storage;
 use crate::types::{AppError, AppResult, Location};
@@ -15,6 +16,10 @@ use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// A sidecar was set aside at startup, before any window listened for the warning.
+static SET_ASIDE: AtomicBool = AtomicBool::new(false);
 
 /// The msgpack sidecar: the overlay with its dead ids and patches as plain lists.
 #[derive(serde::Deserialize)]
@@ -42,22 +47,50 @@ pub(crate) fn convert_msgpack_deltas() {
     };
     for id in map_ids {
         match (storage::arrow_delta_path(&id), storage::arrow_path(&id)) {
-            (Ok(delta), Ok(base)) => convert_msgpack_delta(&delta, &base),
+            (Ok(delta), Ok(base)) => {
+                if convert_msgpack_delta(&delta, &base) {
+                    SET_ASIDE.store(true, Ordering::Relaxed);
+                }
+            }
             (Err(e), _) | (_, Err(e)) => log::error!("[delta_legacy] {id}: {e}"),
         }
     }
 }
 
-/// Rewrite one msgpack sidecar as an Arrow delta against `base_path`. A missing or
-/// already-Arrow sidecar is left alone; one that cannot be converted is set aside.
-fn convert_msgpack_delta(delta_path: &Path, base_path: &Path) {
+/// Warn of any sidecar startup set aside, now that a window listens.
+pub(crate) fn warn_of_set_aside_deltas() {
+    if SET_ASIDE.swap(false, Ordering::Relaxed) {
+        crate::emit_event(StoreWarning::DeltaSetAside);
+    }
+}
+
+/// Rewrite one msgpack sidecar as an Arrow delta against `base_path`. Only a sidecar that
+/// does not decode is set aside; returns whether it was. Anything else that fails (reading
+/// it, reading its base, writing the result) leaves it as it is for the next startup to try
+/// again: the delta itself is fine, and a map whose base does not read cannot open anyway.
+fn convert_msgpack_delta(delta_path: &Path, base_path: &Path) -> bool {
     if !delta_path.exists() || is_arrow(delta_path) {
-        return;
+        return false;
     }
-    match convert(delta_path, base_path) {
+    let bytes = match fs::read(delta_path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::error!("[delta_legacy] left {delta_path:?} as msgpack: {e}");
+            return false;
+        }
+    };
+    let old = match rmp_serde::from_slice::<MsgpackDelta>(&bytes) {
+        Ok(old) => old,
+        Err(e) => {
+            set_aside_delta(delta_path, &AppError::from(e.to_string()));
+            return true;
+        }
+    };
+    match write_converted(delta_path, base_path, old) {
         Ok(()) => log::info!("[delta_legacy] converted {delta_path:?}"),
-        Err(e) => set_aside_delta(delta_path, &e),
+        Err(e) => log::error!("[delta_legacy] left {delta_path:?} as msgpack: {e}"),
     }
+    false
 }
 
 fn is_arrow(path: &Path) -> bool {
@@ -67,9 +100,7 @@ fn is_arrow(path: &Path) -> bool {
         .is_ok_and(|()| &magic == b"ARROW1")
 }
 
-fn convert(delta_path: &Path, base_path: &Path) -> AppResult<()> {
-    let old: MsgpackDelta =
-        rmp_serde::from_slice(&fs::read(delta_path)?).map_err(|e| AppError::from(e.to_string()))?;
+fn write_converted(delta_path: &Path, base_path: &Path, old: MsgpackDelta) -> AppResult<()> {
     let base = if base_path.exists() {
         Some(arrow::read_arrow_ipc(base_path)?)
     } else {

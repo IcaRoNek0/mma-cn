@@ -83,13 +83,35 @@ fn an_unreadable_sidecar_is_set_aside_as_corrupt() {
     let delta_path = dir.join("m_delta.arrow");
     fs::write(&delta_path, b"definitely not msgpack").unwrap();
 
-    convert_msgpack_delta(&delta_path, &dir.join("m.arrow"));
+    assert!(convert_msgpack_delta(&delta_path, &dir.join("m.arrow")));
 
     assert!(!delta_path.exists());
     assert_eq!(
         fs::read(dir.join("m_delta.corrupt")).unwrap(),
         b"definitely not msgpack"
     );
+}
+
+#[test]
+fn a_sidecar_whose_base_does_not_read_is_left_for_the_next_startup() {
+    let dir = TempDir::new("mma_test_delta_legacy_bad_base");
+    let base_path = dir.join("m.arrow");
+    let delta_path = dir.join("m_delta.arrow");
+    fs::write(&base_path, b"not an arrow file").unwrap();
+    write_msgpack(
+        &delta_path,
+        &MsgpackDelta {
+            adds: vec![loc(10, 10.0, 10.0)],
+            dead_ids: vec![],
+            patches: vec![],
+        },
+    );
+    let before = fs::read(&delta_path).unwrap();
+
+    assert!(!convert_msgpack_delta(&delta_path, &base_path));
+
+    assert_eq!(fs::read(&delta_path).unwrap(), before);
+    assert!(!dir.join("m_delta.corrupt").exists());
 }
 
 #[test]

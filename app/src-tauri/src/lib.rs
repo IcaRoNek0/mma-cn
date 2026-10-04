@@ -76,6 +76,7 @@ fn app_ready() -> u32 {
             .map(|t| t.elapsed().as_millis() as u32)
             .unwrap_or(0);
         log::info!("[startup] app ready in {ms}ms");
+        store::engine::delta_legacy::warn_of_set_aside_deltas();
         ms
     })
 }
