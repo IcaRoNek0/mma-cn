@@ -3,7 +3,7 @@
 # hook runs them all. A `fresh` gate regenerates committed artifacts, so it runs after every
 # other gate rather than racing a reader.
 #
-#   gates.sh                 all gates: node and rust lanes in parallel, then fresh gates
+#   gates.sh                 all gates: bounded parallel lanes, then fresh gates
 #   gates.sh --env node      one environment's gates, in order
 #   gates.sh eslint vitest   the named gates, in order
 #   gates.sh --list
@@ -15,7 +15,7 @@ eslint            node  app            npx eslint src/ test/e2e/
 prettier          node  app            npx prettier --check src test procedures --ignore-path ../.prettierignore
 typecheck         node  app            npm run typecheck
 vitest            node  app            plugin_deps && npx vitest run
-procedures        node  app            npm run test:procedures
+procedures        node  app            procedure_tests
 check-legacy      node  app            node ../plugins/check-legacy.mjs
 check-unstable    node  app            node ../plugins/check-unstable.mjs
 check-floors      node  app            plugin_deps && node ../plugins/check-floors.mjs
@@ -33,7 +33,18 @@ tz                rust  app/src-tauri  cargo test --manifest-path crates/tz/Carg
 bindings          rust  app            fresh src/bindings.gen.ts src/bindings.consts.ts -- npm run gen:bindings
 '
 
-plugin_deps() { node "$root/plugins/build-all.mjs" --install; }
+plugin_deps() {
+	[ "${local_all:-}" = 1 ] || node "$root/plugins/build-all.mjs" --install
+}
+
+procedure_tests() {
+	if [ "${local_all:-}" = 1 ]; then
+		# The startup build already prepared these resources for Cargo.
+		node --test --test-concurrency=1 procedures/*/test/*.test.mjs ../plugins/*/test/*.test.mjs
+	else
+		npm run test:procedures
+	fi
+}
 
 fresh() {
 	paths=
@@ -106,6 +117,44 @@ run() {
 	done
 }
 
+# Commands sharing Cargo's target directory stay together to avoid its build lock.
+# Standalone crates already have separate targets. check-floors swaps the SDK
+# declarations, so it waits for the Node readers while Rust can keep running.
+# GATES_JOBS overrides the detected CPU budget. Vitest is capped at eight workers
+# to limit memory; Cargo can use the remaining cores without competing with it.
+local_checks() (
+	cores=${GATES_JOBS:-$(node -p 'require("node:os").availableParallelism()')}
+	case $cores in
+	"" | *[!0-9]* | 0*) echo '[gates] GATES_JOBS must be a positive integer' >&2; exit 2 ;;
+	esac
+	if [ "$cores" -lt 4 ]; then
+		export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
+		export VITEST_MAX_WORKERS=1
+		export RUST_TEST_THREADS=${RUST_TEST_THREADS:-1}
+		pick node check | run &
+		if [ "$cores" -eq 1 ]; then wait; fi
+		pick rust check | run &
+	else
+		VITEST_MAX_WORKERS=$((cores / 2 - 1))
+		[ "$VITEST_MAX_WORKERS" -le 8 ] || VITEST_MAX_WORKERS=8
+		export VITEST_MAX_WORKERS
+		export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$((cores - VITEST_MAX_WORKERS - 2))}
+		export RUST_TEST_THREADS=${RUST_TEST_THREADS:-$CARGO_BUILD_JOBS}
+		(
+			named vitest | run &
+			named eslint | run &
+			(
+				pick node check | awk -F'\t' '$1 !~ /^(eslint|vitest|check-floors)$/' | run
+				named geocode tz | CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 run
+			) &
+			wait
+			named check-floors | run
+		) &
+		pick rust check | awk -F'\t' '$1 != "geocode" && $1 != "tz"' | run &
+	fi
+	wait
+)
+
 table >/dev/null || exit 2
 
 case ${1:-} in
@@ -133,9 +182,9 @@ trap 'rm -rf "$tmp"' EXIT
 if [ -n "${1:-}" ]; then
 	printf '%s\n' "$selection" | run
 else
-	pick node check | run &
-	pick rust check | run &
-	wait
+	plugin_deps || exit 1
+	local_all=1
+	local_checks || exit $?
 	pick "" fresh | run
 fi
 
