@@ -307,7 +307,7 @@ First-sync seeding when both sides already have pins. Only meaningful on the fir
 
 ### FrameKind
 
-`unstable` · unreleased
+`unstable` · since v0.11.5
 
 ```ts
 FrameKind: { readonly Replace: 0; readonly Patch: 1 }
@@ -489,7 +489,7 @@ When a move target already holds a value, which side survives.
 
 ### NO_SEL
 
-`unstable` · unreleased
+`unstable` · since v0.11.5
 
 ```ts
 NO_SEL: 4294967295
@@ -6383,7 +6383,7 @@ spacing) or `minDistanceM` (keep as many as fit at that spacing).
 
 #### cmd.storeSubscribeFrames
 
-`unstable` · unreleased
+`unstable` · since v0.11.5
 
 ```ts
 cmd.storeSubscribeFrames(
@@ -8081,7 +8081,7 @@ Change the default marker color and repaint.
 
 ### sceneReached
 
-`unstable` · unreleased
+`unstable` · since v0.11.5
 
 ```ts
 sceneReached(version: number): Promise<FrameSummary>

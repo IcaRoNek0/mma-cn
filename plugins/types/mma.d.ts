@@ -3386,8 +3386,8 @@ declare class CellManager {
      *  cells so a full restate does not allocate one array per cell. */
     private selWinner;
     /**
-     * Apply one render frame. Per cell, in order: each removal swap-removes its slot, the
-     * adds append, then the patches restate rows by their slot. Every added or patched row
+     * Apply one render frame. Every cell's removals swap-remove their slots first; then per
+     * cell the adds append and the patches restate rows by their slot. Every added or patched row
      * states the selection painting it, so the base cells and the overlay are written from
      * one fact. A selection section, when present, then restates every cell's membership.
      */

@@ -483,8 +483,8 @@ export class CellManager {
 	private selWinner = new Int32Array(0);
 
 	/**
-	 * Apply one render frame. Per cell, in order: each removal swap-removes its slot, the
-	 * adds append, then the patches restate rows by their slot. Every added or patched row
+	 * Apply one render frame. Every cell's removals swap-remove their slots first; then per
+	 * cell the adds append and the patches restate rows by their slot. Every added or patched row
 	 * states the selection painting it, so the base cells and the overlay are written from
 	 * one fact. A selection section, when present, then restates every cell's membership.
 	 */
@@ -510,6 +510,7 @@ export class CellManager {
 
 		const cellCount = dv.getUint32(off, true);
 		off += 4;
+		const writes: { key: string; add: FrameRows; patch: FrameRows }[] = [];
 		for (let c = 0; c < cellCount; c++) {
 			const key = BASE32[dv.getUint32(off, true)];
 			const nRemove = dv.getUint32(off + 4, true);
@@ -518,12 +519,14 @@ export class CellManager {
 			off += 16;
 			const remove = new Uint32Array(buf, off, nRemove);
 			off += nRemove * 4;
-			const add = rowsAt(buf, off, nAdd);
-			off += nAdd * 20;
-			const patch = rowsAt(buf, off, nPatch);
-			off += nPatch * 20;
+			writes.push({
+				key,
+				add: rowsAt(buf, off, nAdd),
+				patch: rowsAt(buf, off + nAdd * 20, nPatch),
+			});
+			off += (nAdd + nPatch) * 20;
 
-			let cb = this.cells.get(key);
+			const cb = this.cells.get(key);
 			if (cb) {
 				for (const i of remove) {
 					const id = cb.ids[i];
@@ -533,6 +536,12 @@ export class CellManager {
 					this.totalCount--;
 				}
 			}
+		}
+		// All removals land before any write, so a row moved into an earlier cell keeps its overlay entry.
+		for (const { key, add, patch } of writes) {
+			const nAdd = add.key.length;
+			const nPatch = patch.key.length;
+			let cb = this.cells.get(key);
 			if (nAdd > 0) {
 				const from = cb?.count ?? 0;
 				if (cb) {

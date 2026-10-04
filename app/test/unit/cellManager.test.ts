@@ -448,8 +448,11 @@ describe("CellManager", () => {
 		expect(mgr.cells.get("s")!.visible[1]).toBe(255);
 	});
 
-	it("movedFrom carries a selected row's overlay entry across cells", () => {
-		applyDelta(mgr, delta({ added: [entry("s", 1, 10, 20, 0, paint([0, 255, 0]))] }));
+	it.each([
+		["s", "t"],
+		["t", "s"],
+	])("movedFrom carries a selected row's overlay entry from cell %s to %s", (from, to) => {
+		applyDelta(mgr, delta({ added: [entry(from, 1, 10, 20, 0, paint([0, 255, 0]))] }));
 		expect(mgr.overlay.count).toBe(1);
 
 		applyDelta(
@@ -457,27 +460,27 @@ describe("CellManager", () => {
 			delta({
 				added: [
 					{
-						cell: "t",
+						cell: to,
 						id: 1,
 						lng: 99,
 						lat: 88,
 						heading: 0,
 						sel: paint([0, 255, 0]),
-						movedFrom: { cell: "s", cellIndex: 0, id: 1 },
+						movedFrom: { cell: from, cellIndex: 0, id: 1 },
 					},
 				],
 			}),
 		);
 
 		expect(mgr.totalCount).toBe(1);
-		expect(mgr.cells.get("s")!.count).toBe(0);
-		expect(mgr.cells.get("t")!.count).toBe(1);
+		expect(mgr.cells.get(from)!.count).toBe(0);
+		expect(mgr.cells.get(to)!.count).toBe(1);
 		// One overlay entry, following the row rather than dropping and re-adding.
 		expect(mgr.overlay.count).toBe(1);
 		expect(mgr.overlay.ids[0]).toBe(1);
 		expect(mgr.overlay.positions[0]).toBeCloseTo(99);
 		expect(mgr.overlay.positions[1]).toBeCloseTo(88);
-		expect(mgr.cells.get("t")!.visible[0]).toBe(0);
+		expect(mgr.cells.get(to)!.visible[0]).toBe(0);
 	});
 
 	it("setActive hides the active row and restores it, without disturbing selection", () => {
