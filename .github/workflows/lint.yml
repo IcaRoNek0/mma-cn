@@ -123,6 +123,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - run: npm ci
         working-directory: app
+      - run: node plugins/build-all.mjs --install
       - run: npx vitest run
         working-directory: app
       - run: npm run test:procedures

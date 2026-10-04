@@ -1,5 +1,5 @@
 // Build every plugin via the shared build script, then regenerate registry.json.
-// Run: node plugins/build-all.mjs
+// Run: node plugins/build-all.mjs [--install]  (--install stops after installing plugin deps)
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,6 +25,8 @@ for (const dir of plugins) {
 		execSync(cmd, { cwd: dir, stdio: "inherit" });
 	}
 }
+
+if (process.argv.includes("--install")) process.exit(0);
 
 console.log("\nBuilding plugins...");
 try {
