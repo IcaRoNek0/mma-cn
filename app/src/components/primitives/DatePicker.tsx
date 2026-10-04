@@ -133,6 +133,7 @@ function MonthGrid({
 		}
 	};
 
+	// eslint-disable-next-line react-hooks/purity -- the year list ends at today's year
 	const currentYear = new Date().getFullYear();
 	const yearStart = 2007;
 	const years = Array.from({ length: currentYear - yearStart + 1 }, (_, i) => yearStart + i);
@@ -436,6 +437,7 @@ export function DatePicker({
 									captionLayout="dropdown"
 									navLayout="around"
 									startMonth={new Date(2007, 0)}
+									// eslint-disable-next-line react-hooks/purity -- the calendar ends a year past today
 									endMonth={new Date(new Date().getFullYear() + 1, 11)}
 								/>
 								{showTime && !anyYear && (

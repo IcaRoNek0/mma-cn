@@ -49,7 +49,7 @@ function ShadowHtml({ css, html }: { css: string; html: string }) {
 		if (!el) return;
 		const root = el.shadowRoot ?? el.attachShadow({ mode: "open" });
 		// Sanitized by the doclink provider (scripts/handlers stripped); shadow root isolates the doc CSS.
-		// eslint-disable-next-line no-restricted-syntax
+		// eslint-disable-next-line local/restricted-syntax
 		root.innerHTML = `<style>${css}</style><style>${OVERRIDE_CSS}</style><div class="doclink-doc">${html}</div>`;
 	}, [css, html]);
 

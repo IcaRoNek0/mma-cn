@@ -4,8 +4,6 @@
  * These hang WebView2 for 15-20 seconds. Resolved through scope, not callee shape, so
  * `window.prompt(...)` is caught and a local binding (`const prompt = usePrompt()`) is
  * correctly ignored.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 
 const BANNED = new Set(["confirm", "alert", "prompt"]);

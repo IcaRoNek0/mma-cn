@@ -10,8 +10,6 @@
  * checked on every element and in every string a className expression builds. Passing a modifier
  * to the primitive itself (`<NSelect className="nselect--compact">`) is what className is for,
  * and each primitive's own file is exempt from its entries.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 
 const OWNED = {

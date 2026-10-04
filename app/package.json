@@ -20,7 +20,7 @@
 		"build": "npm run gen:plugin-types && npm run gen:plugin-registry && npm run gen:image-dims && npm run gen:i18n && npm run gen:manual-index && npm run build:procedures && vite build",
 		"build:opensv": "node opensv-build/build-opensv.mjs",
 		"format": "prettier --write --ignore-path ../.prettierignore \"src/**/*.{ts,tsx,css,json}\" \"test/**/*.{ts,tsx}\" && cargo fmt --manifest-path src-tauri/Cargo.toml",
-		"lint": "eslint . && npm run check:browser-compat",
+		"lint": "oxlint src test/e2e && npm run check:browser-compat",
 		"check:browser-compat": "node scripts/check-browser-compat.mjs",
 		"preview": "vite preview",
 		"test": "vitest run && npm run test:procedures",
@@ -57,15 +57,14 @@
 	"lint-staged": {
 		"*.{ts,tsx,mjs}": [
 			"prettier --write --ignore-path ../.prettierignore",
-			"eslint --fix"
+			"oxlint --fix --no-error-on-unmatched-pattern"
 		],
 		"*.{json,css,md}": "prettier --write --ignore-path ../.prettierignore"
 	},
 	"devDependencies": {
-		"@photostructure/tz-lookup": "^11.5.0",
-		"@eslint/js": "^10.0.1",
 		"@mdn/browser-compat-data": "^8.0.11",
 		"@mdx-js/rollup": "^3.1.1",
+		"@photostructure/tz-lookup": "^11.5.0",
 		"@tauri-apps/cli": "^2.10.1",
 		"@types/google.maps": "^3.64.0",
 		"@types/mocha": "^10.0.10",
@@ -80,22 +79,19 @@
 		"@wdio/spec-reporter": "^9.27.1",
 		"@wdio/types": "^9.27.1",
 		"esbuild": "^0.28.2",
-		"eslint": "^10.2.1",
-		"eslint-plugin-react-hooks": "^7.1.1",
-		"eslint-plugin-react-refresh": "^0.5.2",
 		"fast-check": "^4.9.0",
-		"globals": "^17.5.0",
 		"husky": "^9.1.7",
 		"image-size": "^2.0.2",
 		"jsdom": "^30.0.1",
 		"lint-staged": "^17.0.5",
+		"oxlint": "^1.86.0",
+		"oxlint-tsgolint": "^7.0.2003",
 		"prettier": "^3.8.3",
 		"react-scan": "^0.5.7",
 		"rollup": "^4.62.2",
 		"rollup-plugin-dts": "^6.4.1",
 		"terser": "^5.47.1",
 		"typescript": "npm:@typescript/typescript6@^6.0.2",
-		"typescript-eslint": "^8.58.2",
 		"vite": "^8.2.1",
 		"vitest": "^5.0.3",
 		"webdriverio": "^9.27.1"

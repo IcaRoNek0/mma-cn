@@ -2,8 +2,6 @@
  * Flags exported functions whose body is solely `return applySelectionUpdate(...)` or
  * `applySelectionUpdate(...)`. These are trivial aliases - callers should apply the pure op
  * through applySelectionUpdate themselves.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 function isGateCall(node) {
 	if (!node) return false;

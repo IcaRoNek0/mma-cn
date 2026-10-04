@@ -8,7 +8,9 @@ const vmTests = globSync("test/unit/**/*.{test,spec}.{ts,tsx}", { cwd: import.me
 	.map((file) => file.replaceAll("\\", "/"))
 	.filter((file) => {
 		const source = readFileSync(path.join(import.meta.dirname, file), "utf8");
-		return source.includes("@vitest-environment jsdom") || source.includes('from "eslint"');
+		return (
+			source.includes("@vitest-environment jsdom") || source.includes('from "oxlint/plugins-dev"')
+		);
 	});
 
 export default defineConfig({

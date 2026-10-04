@@ -7,8 +7,6 @@
  *
  * Nesting is the one exception a spread cannot express: a nested key must come from a
  * module that exports it (see `components/primitives/ui.ts`), not from a literal here.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 export default {
 	meta: {

@@ -33,7 +33,7 @@ The web build (`--features web-serve`) is described in the [README](README.md#ru
 These are what CI runs on every pull request. Run them from `app/`:
 
 ```bash
-npx eslint src/
+npx oxlint
 npx tsc --noEmit -p tsconfig.app.json
 npx vitest run
 cargo test --manifest-path src-tauri/Cargo.toml

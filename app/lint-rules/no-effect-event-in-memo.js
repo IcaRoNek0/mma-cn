@@ -6,16 +6,10 @@
  * components, so the handler silently keeps reading the first render's props and
  * state forever -- no error, no warning, just stale data. `useStableHandler`
  * (lib/hooks) is the house replacement and has no such hole.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 
 const WRAPPERS = new Set(["memo", "forwardRef"]);
-const FUNCTIONS = new Set([
-	"FunctionDeclaration",
-	"FunctionExpression",
-	"ArrowFunctionExpression",
-]);
+const FUNCTIONS = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
 
 function wrappedBy(node) {
 	let child = node;

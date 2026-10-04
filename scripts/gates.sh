@@ -6,14 +6,14 @@
 #
 #   gates.sh                 all gates
 #   gates.sh --env node      one environment's gates
-#   gates.sh eslint vitest   the named gates
+#   gates.sh oxlint vitest   the named gates
 #   gates.sh --list
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 # The cargo lane shares app/src-tauri's target directory, and with it Cargo's build lock.
 GATES='
-eslint            node  eslint  app            npx eslint --concurrency 4 src/ test/e2e/
+oxlint            node  node    app            npx oxlint src/ test/e2e/
 vitest            node  vitest  app            npx vitest run
 check-browser     node  node    app            npm run check:browser-compat
 prettier          node  node    app            npx prettier --check src test procedures --ignore-path ../.prettierignore --cache --cache-strategy content

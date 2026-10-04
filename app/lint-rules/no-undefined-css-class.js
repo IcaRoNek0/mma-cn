@@ -10,8 +10,6 @@
  * Only a *fully orphaned* namespace is reported. A BEM block whose children are
  * styled (`.disambig` with 18 `.disambig__*` rules) is a deliberate anchor, not a
  * mistake, and flagging those would be the noise that gets a rule switched off.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 import fs from "node:fs";
 import path from "node:path";

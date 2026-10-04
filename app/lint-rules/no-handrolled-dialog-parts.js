@@ -10,8 +10,6 @@
  *   footer by another name (use `DialogActions`);
  * - an `__actions` or `__footer` class on an element placed directly in `<DialogContent>`,
  *   `<DialogForm>`, `<ConfirmDialog>` or `<PromptDialog>` (use `DialogActions`).
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 
 const DIALOG_MODULE = /(^|\/)Dialog$/;

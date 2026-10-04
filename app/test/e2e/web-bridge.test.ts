@@ -48,7 +48,7 @@ describe("Web bridge", () => {
 	it("is actually running on the HTTP bridge", async () => {
 		const web = await withApi(async () =>
 			Boolean(
-				// eslint-disable-next-line no-restricted-syntax -- the bridge itself is under test
+				// eslint-disable-next-line local/restricted-syntax -- the bridge itself is under test
 				(window as { __TAURI_INTERNALS__?: { __webserve?: boolean } }).__TAURI_INTERNALS__
 					?.__webserve,
 			),
@@ -83,7 +83,7 @@ describe("Web bridge", () => {
 			await withApi(async (api) => {
 				// listen() can't cross the withApi serialization boundary, and the emulated
 				// event API is the thing under test, not a shortcut around withApi.
-				// eslint-disable-next-line no-restricted-syntax -- the bridge itself is under test
+				// eslint-disable-next-line local/restricted-syntax -- the bridge itself is under test
 				const internals = (
 					window as unknown as {
 						__TAURI_INTERNALS__: {
@@ -127,7 +127,7 @@ describe("Web bridge", () => {
 					__e2eKept: unknown[];
 					__e2eDropped: unknown[];
 				};
-				// eslint-disable-next-line no-restricted-syntax -- the bridge itself is under test
+				// eslint-disable-next-line local/restricted-syntax -- the bridge itself is under test
 				const { invoke, transformCallback } = w.__TAURI_INTERNALS__;
 				const event = "bulk-export-progress";
 				w.__e2eKept = [];

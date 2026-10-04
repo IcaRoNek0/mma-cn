@@ -9,8 +9,6 @@
  *   instead of with `--text-2`;
  * - the `nselect--compact`, `nselect--limited` and `segmented--fill` modifiers written as
  *   classes instead of the `compact`, `limited` and `fill` props.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 
 const CHOICES = new Set(["Checkbox", "Radio"]);

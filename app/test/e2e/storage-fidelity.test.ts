@@ -163,7 +163,7 @@ describe("Field fidelity across multiple save cycles", () => {
 		expect(loaded.createdAt).toBe(1736929800);
 		expect(loaded.extra?.country).toBe("AU");
 		expect(loaded.extra?.altitude).toBeCloseTo(58.2, 1);
-		expect((loaded.extra?.nested as { a: number }).a).toBe(1);
+		expect(loaded.extra?.nested).toMatchObject({ a: 1 });
 	});
 
 	it("updated fields survive save/load without corrupting other fields", async () => {

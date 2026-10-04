@@ -223,8 +223,7 @@ describe("Data integrity - extras", () => {
 		await openMap(map.id);
 
 		const loc = await getLoc(ids[0]);
-		expect((loc.extra?.meta as { source: string; version: number }).source).toBe("import");
-		expect((loc.extra?.meta as { source: string; version: number }).version).toBe(2);
+		expect(loc.extra?.meta).toMatchObject({ source: "import", version: 2 });
 		expect(loc.extra?.arr).toEqual([1, 2, 3]);
 	});
 

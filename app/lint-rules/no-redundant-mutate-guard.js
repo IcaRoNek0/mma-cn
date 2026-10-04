@@ -1,8 +1,6 @@
 /**
  * Flags functions that guard `if (!currentMap) return` before calling `mutate()`.
  * mutate() handles the guard internally via EMPTY_MUTATION - caller guards are redundant.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 function bodyStatements(node) {
 	if (node.body?.type === "BlockStatement") return node.body.body;

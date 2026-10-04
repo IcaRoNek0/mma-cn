@@ -1,16 +1,13 @@
-import { RuleTester } from "eslint";
-import tseslint from "typescript-eslint";
+import { RuleTester } from "oxlint/plugins-dev";
 import { describe, it } from "vitest";
-import rule from "../../eslint-rules/no-effect-event-in-memo.js";
+import rule from "../../lint-rules/no-effect-event-in-memo.js";
 
 RuleTester.describe = describe;
 RuleTester.it = it;
 
 const tester = new RuleTester({
-	languageOptions: {
-		parser: tseslint.parser as never,
-		parserOptions: { ecmaFeatures: { jsx: true }, sourceType: "module" },
-	},
+	eslintCompat: true,
+	languageOptions: { parserOptions: { lang: "tsx" } },
 });
 
 const imports = 'import { memo, forwardRef, useEffectEvent } from "react";\n';

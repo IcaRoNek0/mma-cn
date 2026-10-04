@@ -4,8 +4,6 @@
  * A label forwards hover, active and click to its first labelable descendant, so wrapping
  * a SegmentedControl or several controls makes the first option light up whenever any
  * other one is hovered. Caption a group with `Field` or a plain element instead.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 
 const BUTTONS = new Set(["button", "Button", "SegmentedControl"]);

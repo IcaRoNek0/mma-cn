@@ -6,8 +6,6 @@
  * local `for (const cmd of ...)` keybinding object is NOT flagged), and `*.cmd.foo()`
  * (e.g. `api.cmd.foo()`). Only literal loops count; a parallel `xs.map(cmd.foo)` is
  * a deliberate judgement call and left alone.
- *
- * @type {import('eslint').Rule.RuleModule}
  */
 const LOOP_TYPES = new Set([
 	"ForStatement",

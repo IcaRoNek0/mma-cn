@@ -1,16 +1,13 @@
-import { RuleTester } from "eslint";
-import tseslint from "typescript-eslint";
+import { RuleTester } from "oxlint/plugins-dev";
 import { describe, it } from "vitest";
-import rule from "../../eslint-rules/no-native-dialog.js";
+import rule from "../../lint-rules/no-native-dialog.js";
 
 RuleTester.describe = describe;
 RuleTester.it = it;
 
 const tester = new RuleTester({
-	languageOptions: {
-		parser: tseslint.parser as never,
-		parserOptions: { sourceType: "module" },
-	},
+	eslintCompat: true,
+	languageOptions: { parserOptions: { lang: "ts" } },
 });
 
 const nativeDialog = [{ messageId: "nativeDialog" }];

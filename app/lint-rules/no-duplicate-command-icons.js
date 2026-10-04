@@ -1,9 +1,9 @@
-/** @type {import('eslint').Rule.RuleModule} */
 export default {
 	meta: {
 		type: "problem",
 		messages: {
-			duplicate: "Icon '{{icon}}' is already used by command '{{first}}'. Each command should have a unique icon.",
+			duplicate:
+				"Icon '{{icon}}' is already used by command '{{first}}'. Each command should have a unique icon.",
 		},
 	},
 	create(context) {

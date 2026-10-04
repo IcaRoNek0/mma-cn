@@ -497,7 +497,7 @@ describe("Unicode in all fields", () => {
 		expect(loc.panoId).toBe("CAoSK0FG_東京_éè");
 		expect(loc.extra?.["地名"]).toBe("東京タワー");
 		expect(loc.extra?.["straße"]).toBe("café");
-		expect((loc.extra?.nested as { Адрес: string })["Адрес"]).toBe("Москва");
+		expect(loc.extra?.nested).toMatchObject({ Адрес: "Москва" });
 
 		// Verify tags survived
 		expect(loc.tags).toContain(result.tagIds[0]);

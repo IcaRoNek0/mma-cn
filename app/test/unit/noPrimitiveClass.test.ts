@@ -1,16 +1,13 @@
-import { RuleTester } from "eslint";
-import tseslint from "typescript-eslint";
+import { RuleTester } from "oxlint/plugins-dev";
 import { describe, it } from "vitest";
-import rule from "../../eslint-rules/no-primitive-class.js";
+import rule from "../../lint-rules/no-primitive-class.js";
 
 RuleTester.describe = describe;
 RuleTester.it = it;
 
 const tester = new RuleTester({
-	languageOptions: {
-		parser: tseslint.parser as never,
-		parserOptions: { sourceType: "module", ecmaFeatures: { jsx: true } },
-	},
+	eslintCompat: true,
+	languageOptions: { parserOptions: { lang: "tsx" } },
 });
 
 const cls = (token: string, primitive: string) => [
