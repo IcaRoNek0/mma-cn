@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 use std::thread;
 
 fn transport(send: SendFn) -> Arc<Transport> {
@@ -36,6 +37,7 @@ fn endpoint(name: &'static str, policy: Policy) -> Endpoint {
     Endpoint {
         name: Cow::Borrowed(name),
         policy,
+        idempotent: false,
     }
 }
 
@@ -370,4 +372,78 @@ fn rate_cost_defaults_to_request() {
     assert_eq!(spec.cost, RateCost::Request);
     let spec: RateSpec = serde_json::from_str(r#"{"units":10,"perMs":100,"cost":"row"}"#).unwrap();
     assert_eq!(spec.cost, RateCost::Row);
+}
+
+/// Fails the first send of each request in transit, then answers with its URL.
+fn flaky_send(calls: Arc<AtomicU32>) -> SendFn {
+    let seen: Arc<Mutex<HashSet<String>>> = Arc::default();
+    sync_send(move |req: HttpRequestSpec| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        if seen.lock().unwrap().insert(req.url.clone()) {
+            return Err(AppError("request failed: connection reset".into()));
+        }
+        Ok(HttpResponse {
+            status: 200,
+            body: req.url.into_bytes(),
+        })
+    })
+}
+
+#[test]
+fn an_idempotent_endpoint_sends_a_request_lost_in_transit_again() {
+    let calls = Arc::new(AtomicU32::new(0));
+    let s = session(flaky_send(calls.clone()));
+    let ep = Endpoint {
+        idempotent: true,
+        ..endpoint("e", Policy::default())
+    };
+    let out = s.fetch(&ep, 1, &gets(2));
+
+    assert_eq!(
+        bodies(out),
+        vec![
+            "https://x.test/0".to_string(),
+            "https://x.test/1".to_string()
+        ]
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(s.usage().retries, 2);
+}
+
+#[test]
+fn an_endpoint_not_declared_idempotent_answers_a_lost_request_with_its_error() {
+    let calls = Arc::new(AtomicU32::new(0));
+    let s = session(flaky_send(calls.clone()));
+    let out = s.fetch(&endpoint("e", Policy::default()), 1, &gets(1));
+
+    assert!(matches!(&out[0], Err(e) if e.0.contains("connection reset")));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_cancel_cuts_a_retry_backoff_short() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let trip = cancel.clone();
+    let s = Session::new(
+        Arc::new(Transport {
+            send: sync_send(move |_: HttpRequestSpec| {
+                trip.store(true, Ordering::SeqCst);
+                Ok(HttpResponse {
+                    status: 503,
+                    body: Vec::new(),
+                })
+            }),
+            backoff: Duration::from_secs(60),
+        }),
+        cancel,
+    );
+    let start = Instant::now();
+    let out = s.fetch(&endpoint("e", Policy::default()), 1, &gets(1));
+
+    assert!(matches!(&out[0], Err(e) if e.0 == CANCELLED));
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
 }

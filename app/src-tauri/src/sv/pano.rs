@@ -102,6 +102,7 @@ pub static GET_METADATA: Endpoint = Endpoint {
         retry: None,
         inflight: Some(192),
     },
+    idempotent: true,
 };
 
 pub fn encode_request(pano_ids: &[String]) -> Vec<u8> {
@@ -394,6 +395,7 @@ pub static SINGLE_IMAGE_SEARCH: Endpoint = Endpoint {
         retry: None,
         inflight: Some(512),
     },
+    idempotent: true,
 };
 
 /// Half the Earth's circumference: the radius clamp the Maps JS API applies.

@@ -129,6 +129,7 @@ impl ProcedureDecl {
         Endpoint {
             name: self.entry.clone().into(),
             policy: self.policy.clone(),
+            idempotent: false,
         }
     }
 }

@@ -25,6 +25,7 @@ pub static TILES: Endpoint = Endpoint {
         retry: None,
         inflight: Some(96),
     },
+    idempotent: true,
 };
 
 fn session() -> &'static Session {

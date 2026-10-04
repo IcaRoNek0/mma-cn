@@ -101,6 +101,9 @@ pub struct Policy {
 pub struct Endpoint {
     pub name: Cow<'static, str>,
     pub policy: Policy,
+    /// Every request to it only reads, so one lost in transit (a timeout, a reset
+    /// connection) is sent again under the retry policy, as a retried status is.
+    pub idempotent: bool,
 }
 
 /// One request, in flight. Async because width is counted in requests and not in
@@ -256,6 +259,7 @@ struct Lane {
     limiter: Option<RateLimiter>,
     attempts: u32,
     retry_on: Vec<u16>,
+    retry_transport: bool,
     outstanding: AtomicU32,
     rate_waiting: AtomicU32,
     retries: AtomicU32,
@@ -292,6 +296,7 @@ impl Lane {
             limiter: policy.rate.and_then(RateLimiter::new),
             attempts: attempts.clamp(1, MAX_ATTEMPTS),
             retry_on,
+            retry_transport: endpoint.idempotent,
             outstanding: AtomicU32::new(0),
             rate_waiting: AtomicU32::new(0),
             retries: AtomicU32::new(0),
@@ -416,7 +421,8 @@ impl Session {
     }
 
     /// One request under its lane's retry policy, sleeping the transport's backoff and
-    /// doubling between retried statuses. The lane is paid per attempt.
+    /// doubling between retried statuses (and, for an idempotent endpoint, between failed
+    /// sends). The lane is paid per attempt.
     async fn fetch_one(
         &self,
         lane: &Lane,
@@ -426,7 +432,7 @@ impl Session {
         let aborted = || self.aborted();
         let mut delay = self.transport.backoff;
         for attempt in 0..lane.attempts {
-            let resp = {
+            let answered = {
                 let Some(_slot) = lane.admit(cost, &aborted).await else {
                     return Err(AppError(CANCELLED.into()));
                 };
@@ -437,23 +443,43 @@ impl Session {
                 }
                 let answered = (self.transport.send)(req.clone()).await;
                 record_fetch();
-                answered?
+                answered
             };
-            if !lane.retry_on.contains(&resp.status) || attempt + 1 == lane.attempts {
-                return Ok(resp);
-            }
+            let last = attempt + 1 == lane.attempts;
+            let why = match answered {
+                Ok(resp) if last || !lane.retry_on.contains(&resp.status) => return Ok(resp),
+                Err(e) if last || !lane.retry_transport => return Err(e),
+                Ok(resp) => format!("answered {}", resp.status),
+                Err(e) => format!("failed ({e})"),
+            };
             log::debug!(
-                "[net] {} answered {} on attempt {}, backing off {:?}",
+                "[net] {} {why} on attempt {}, backing off {:?}",
                 lane.name,
-                resp.status,
                 attempt + 1,
                 delay
             );
             lane.retries.fetch_add(1, Ordering::Relaxed);
-            time::sleep(delay).await;
+            if !self.back_off(delay).await {
+                return Err(AppError(CANCELLED.into()));
+            }
             delay = delay.saturating_mul(2);
         }
         unreachable!("attempts is at least 1")
+    }
+
+    /// Sleep out `delay` in steps short enough that a cancel lands fast. False once cancelled.
+    async fn back_off(&self, delay: Duration) -> bool {
+        let until = Instant::now() + delay;
+        loop {
+            if self.aborted() {
+                return false;
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return true;
+            }
+            time::sleep(left.min(ABORT_POLL)).await;
+        }
     }
 }
 
