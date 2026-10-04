@@ -34,7 +34,7 @@ import "./HeatmapSidebar.css";
 const {
   useMapState,
   selectorForPick,
-  ui: { Button, Field, Section, SelectorPicker, Sidebar, Slider, Switch, TextInput },
+  ui: { Button, ConfirmButton, Field, Section, SelectorPicker, Sidebar, Slider, Switch, TextInput },
 } = MMA;
 
 export function HeatmapSidebar({ onClose }: { onClose: () => void }) {
@@ -56,9 +56,9 @@ export function HeatmapSidebar({ onClose }: { onClose: () => void }) {
       title="Heatmap"
       onBack={onClose}
       actions={
-        <Button variant="ghost" small onClick={resetProject}>
+        <ConfirmButton variant="ghost" small onConfirm={resetProject}>
           Reset
-        </Button>
+        </ConfirmButton>
       }
     >
       {layers.map((l, i) => (

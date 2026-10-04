@@ -1368,7 +1368,7 @@ var import_jsx_runtime = __toESM(require_jsx_runtime());
 var {
   useMapState,
   selectorForPick: selectorForPick2,
-  ui: { Button, Field, Section, SelectorPicker, Sidebar, Slider, Switch, TextInput }
+  ui: { Button, ConfirmButton, Field, Section, SelectorPicker, Sidebar, Slider, Switch, TextInput }
 } = MMA;
 function HeatmapSidebar({ onClose }) {
   const [, rerender] = (0, import_react.useState)(0);
@@ -1386,7 +1386,7 @@ function HeatmapSidebar({ onClose }) {
     {
       title: "Heatmap",
       onBack: onClose,
-      actions: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { variant: "ghost", small: true, onClick: resetProject, children: "Reset" }),
+      actions: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConfirmButton, { variant: "ghost", small: true, onConfirm: resetProject, children: "Reset" }),
       children: [
         layers2.map((l, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
           LayerControls,
