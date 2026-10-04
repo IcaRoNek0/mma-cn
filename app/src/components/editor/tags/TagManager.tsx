@@ -160,12 +160,12 @@ export function TagManager() {
 			const parts = t.name.split("/");
 			for (let i = 1; i < parts.length; i++) {
 				const folder = parts.slice(0, i).join("/");
-				if (isAtOrUnder(folder, root)) nextVT[folder] = { color };
+				if (isAtOrUnder(folder, root)) nextVT[folder] = { ...nextVT[folder], color };
 			}
 		}
 		setVirtualTags(nextVT);
 	};
-	// Move folder `oldPath` and everything under it to `newPath`; `folder` replaces its own entry.
+	// Move folder `oldPath` and everything under it to `newPath`; `folder` is merged into its own entry.
 	const renameFolder = (oldPath: string, newPath: string, folder?: VirtualTag) => {
 		const {
 			tagRenames,
@@ -174,7 +174,7 @@ export function TagManager() {
 		} = cascadeRename(oldPath, newPath, tags, virtualTags, aliases);
 		if (tagRenames.length)
 			commitTags(tagRenames.map((r) => ({ id: r.id, patch: { name: r.name } })));
-		if (folder) nextVT[newPath] = folder;
+		if (folder) nextVT[newPath] = { ...nextVT[newPath], ...folder };
 		setVirtualTags(nextVT);
 		setAliases(nextAliases);
 		treeRef.current?.remapExpanded(oldPath, newPath);
