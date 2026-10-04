@@ -4488,6 +4488,47 @@ fn an_undo_mid_run_leaves_later_pages_as_their_own_step() {
 }
 
 #[test]
+fn a_run_an_autosave_lands_in_undoes_whole_after_reopen() {
+    let dir = TempDir::new("mma_test_run_across_autosave");
+    let delta = dir.join("m_delta.bin");
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0), loc(2, 1.0, 0.0)]);
+    let mut group = None;
+    page(&mut store, &mut group, 1, 90.0);
+    autosave(&mut store, &delta);
+    page(&mut store, &mut group, 2, 180.0);
+    autosave(&mut store, &delta);
+
+    let mut store = reopen(&store, &fs::read(&delta).unwrap());
+    assert_eq!(store.edits.undo_len(), 1);
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 0.0);
+    assert_eq!(store.get_loc_by_id(2).unwrap().heading, 0.0);
+}
+
+#[test]
+fn a_page_folded_into_the_run_clears_redo() {
+    let mut store = setup_store_with(&[loc(1, 0.0, 0.0), loc(2, 1.0, 0.0)]);
+    let mut group = None;
+    page(&mut store, &mut group, 1, 90.0);
+    let user_edit = [Update {
+        id: 2,
+        patch: patch!(heading: 45.0),
+    }];
+    apply_updates(&mut store, &user_edit, UndoScope::Entry);
+    undo_and_finish(&mut store);
+    page(&mut store, &mut group, 2, 180.0);
+
+    assert_eq!(
+        (store.edits.undo_len(), store.edits.redo_len()),
+        (1, 0),
+        "the page joins the run, and the undone user edit cannot be redone over it"
+    );
+    undo_and_finish(&mut store);
+    assert_eq!(store.get_loc_by_id(1).unwrap().heading, 0.0);
+    assert_eq!(store.get_loc_by_id(2).unwrap().heading, 0.0);
+}
+
+#[test]
 fn an_unreadable_edit_drops_the_history_rather_than_replay_around_it() {
     let mut store = setup_store_with(&[]);
     click_add(&mut store, 0.0, 0.0);

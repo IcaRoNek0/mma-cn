@@ -66,6 +66,28 @@ impl EditStacks {
         seq
     }
 
+    /// Fold update pairs into the newest edit when it is `seq` and in memory, and give it
+    /// a fresh `seq`: a stored row keeps the edit as it was when stored, so the grown edit
+    /// is stored anew and the old row goes on the next save. Redo is gone, as for any new
+    /// edit. Hands `pairs` back when the newest edit is another.
+    pub(crate) fn fold_into_newest(
+        &mut self,
+        seq: u64,
+        pairs: Vec<(Location, Location)>,
+    ) -> Result<u64, Vec<(Location, Location)>> {
+        let Some(top) = self.undo.last_mut().filter(|top| top.seq == seq) else {
+            return Err(pairs);
+        };
+        let Some(entry) = top.entry.as_mut() else {
+            return Err(pairs);
+        };
+        Arc::make_mut(entry).fold_updates(pairs);
+        top.seq = self.next_seq;
+        self.next_seq += 1;
+        self.redo.clear();
+        Ok(top.seq)
+    }
+
     fn push_undo(&mut self, edit: LoggedEdit) {
         self.undo.push(edit);
         if self.undo.len() > MAX_UNDO_ENTRIES {
@@ -152,9 +174,10 @@ pub(crate) fn seed_next_id(base_max: u32, adds: &[Location], history_max: u32) -
 
 impl Store {
     /// Record the changed (old != new) pairs for undo: into the edit `group` names while
-    /// it is still the newest one, else as a new entry that `group` is pointed at. Any
-    /// edit or undo in between moves the group's entry off the top, so the next batch of
-    /// a grouped run starts fresh. Returns whether anything was recorded.
+    /// it is still the newest one, else as a new entry. Either way `group` is pointed at
+    /// the entry's `seq`, which a fold renews. Any edit or undo in between moves the
+    /// group's entry off the top, so the next batch of a grouped run starts fresh.
+    /// Returns whether anything was recorded.
     pub(super) fn record_update_undo(
         &mut self,
         group: &mut Option<u64>,
@@ -166,16 +189,16 @@ impl Store {
             return false;
         }
         let edits = self.edits.edit();
-        if let Some(seq) = *group {
-            if let Some(top) = edits.undo.last_mut() {
-                if top.seq == seq {
-                    if let Some(entry) = top.entry.as_mut() {
-                        Arc::make_mut(entry).fold_updates(changed);
-                        return true;
-                    }
+        let changed = match *group {
+            Some(seq) => match edits.fold_into_newest(seq, changed) {
+                Ok(seq) => {
+                    *group = Some(seq);
+                    return true;
                 }
-            }
-        }
+                Err(changed) => changed,
+            },
+            None => changed,
+        };
         let (removed, created): (Vec<_>, Vec<_>) = changed.into_iter().unzip();
         *group = Some(edits.record(EditEntry { created, removed }));
         true
