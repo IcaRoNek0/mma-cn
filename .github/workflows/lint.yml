@@ -13,13 +13,7 @@ jobs:
         with:
           # check-legacy and check-floors read mma.d.ts out of release tags.
           fetch-depth: 0
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
+      - uses: ./.github/actions/setup
       - run: sh scripts/gates.sh --env node
         env:
           GATES_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -30,20 +24,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup
         with:
-          components: clippy, rustfmt
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
+          rust: true
       - run: sh scripts/gates.sh --env rust
