@@ -24,9 +24,9 @@ async function downloadInBrowser(srcPath: string, fileName: string): Promise<str
 		}
 		const res = await fetch(url);
 		if (!res.body) throw new Error("export stream unavailable");
-		// Reached only behind the showSaveFilePicker feature test above, which the lint rule
+		// Reached only behind the showSaveFilePicker feature test above, which the compatibility check
 		// can't see; without the picker we never get here and fall through to downloadBlob.
-		// eslint-disable-next-line local/no-unsupported-builtins
+		// browser-compat-disable-next-line -- createWritable is feature-detected above
 		await res.body.pipeTo((await handle.createWritable()) as unknown as WritableStream<Uint8Array>);
 		return handle.name;
 	}

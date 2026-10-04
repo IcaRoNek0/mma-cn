@@ -16,6 +16,9 @@ if [ -n "$STAGED_RS" ]; then
 	(cd .. && rustfmt --edition 2021 $STAGED_RS && git add $STAGED_RS) || exit 1
 fi
 
+# Browser runtime compatibility
+npm run check:browser-compat || exit 1
+
 # TypeScript type check
 echo "[pre-commit] TypeScript..."
 npx tsc --noEmit -p tsconfig.app.json || exit 1

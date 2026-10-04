@@ -12,6 +12,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 
 GATES='
 eslint            node  app            npx eslint src/ test/e2e/
+check-browser     node  app            npm run check:browser-compat
 prettier          node  app            npx prettier --check src test procedures --ignore-path ../.prettierignore
 typecheck         node  app            npm run typecheck
 vitest            node  app            plugin_deps && npx vitest run

@@ -8,7 +8,6 @@ import noDuplicateCommandIcons from "./eslint-rules/no-duplicate-command-icons.j
 import noIpcInLoop from "./eslint-rules/no-ipc-in-loop.js";
 import noRedundantMutateGuard from "./eslint-rules/no-redundant-mutate-guard.js";
 import noSelectionAlias from "./eslint-rules/no-selection-alias.js";
-import noUnsupportedBuiltins from "./eslint-rules/no-unsupported-builtins.js";
 import noPrimitiveClass from "./eslint-rules/no-primitive-class.js";
 import noEffectEventInMemo from "./eslint-rules/no-effect-event-in-memo.js";
 import noNativeDialog from "./eslint-rules/no-native-dialog.js";
@@ -139,7 +138,6 @@ export default defineConfig([
 					"no-duplicate-command-icons": noDuplicateCommandIcons,
 					"no-redundant-mutate-guard": noRedundantMutateGuard,
 					"no-selection-alias": noSelectionAlias,
-					"no-unsupported-builtins": noUnsupportedBuiltins,
 					"no-primitive-class": noPrimitiveClass,
 					"no-effect-event-in-memo": noEffectEventInMemo,
 					"no-native-dialog": noNativeDialog,
@@ -153,8 +151,7 @@ export default defineConfig([
 		},
 		languageOptions: {
 			globals: globals.browser,
-			// `local/no-unsupported-builtins` needs types to tell `someSet.union()` from a
-			// method of our own with the same name. projectService costs ~4s over the suite.
+			// Promise safety and deprecation rules need the TypeScript project service.
 			parser: tseslint.parser,
 			parserOptions: {
 				projectService: {
@@ -171,7 +168,6 @@ export default defineConfig([
 			"no-console": "error",
 			"@typescript-eslint/no-floating-promises": "error",
 			"@typescript-eslint/no-misused-promises": "error",
-			"local/no-unsupported-builtins": "error",
 			"local/no-ipc-in-loop": "warn",
 			"local/no-redundant-mutate-guard": "warn",
 			"local/no-selection-alias": "warn",
