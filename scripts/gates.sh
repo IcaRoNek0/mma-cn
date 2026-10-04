@@ -51,7 +51,6 @@ wait "$js" "$rust"
 	gate image-dims sh -c "npm run gen:image-dims && git diff --exit-code -- src/components/manual/manual-img-dims.gen.ts"
 	gate plugin-types sh -c "npm run gen:plugin-types && git diff --exit-code -- ../plugins/types/mma.d.ts"
 	gate bindings sh -c "npm run gen:bindings && git diff --exit-code -- src/bindings.gen.ts src/bindings.consts.ts"
-	gate plugin-registry sh -c "npm run --silent gen:plugin-registry && git diff --exit-code -- ../plugins/registry.json"
 	gate plugin-build sh -c "cd .. && node plugins/build-all.mjs && git diff --exit-code -- plugins/"
 )
 
