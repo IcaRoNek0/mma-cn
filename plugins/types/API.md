@@ -714,6 +714,8 @@ findings that apply, combined into one number.
 VIRTUAL_FLAGS: 12
 ```
 
+The bits a preview carries that a real location must not.
+
 ## Store
 
 ### addLocations
@@ -1647,6 +1649,8 @@ The nested `sidecar` namespace on the plugin surface.
 ### ui
 
 `stable` · since v0.6.1
+
+The nested `ui` namespace on the plugin surface: the primitives module and nothing else.
 
 #### ui.Bar
 
@@ -3016,22 +3020,25 @@ ghosted.
 
 ```ts
 OP_LABELS: Record<
-  | "has"
-  | "nothas"
-  | "eq"
-  | "neq"
-  | "contains"
-  | "notcontains"
-  | "gt"
-  | "lt"
-  | "gte"
-  | "lte"
   | "between"
+  | "between_anytime"
   | "between_anyyear"
-  | "between_anytime",
+  | "contains"
+  | "eq"
+  | "gt"
+  | "gte"
+  | "has"
+  | "lt"
+  | "lte"
+  | "neq"
+  | "notcontains"
+  | "nothas",
   string
 >
 ```
+
+Display symbol/word for each filter operator. Symbols are language-neutral; only the worded
+operators are marked for translation.
 
 ### panoIdOf
 
@@ -3137,19 +3144,19 @@ rather than the open map's tags.
 
 ```ts
 SELECTIONS: {
-  Locations: SelectionDescriptor<"Locations">;
-  Everything: SelectionDescriptor<"Everything">;
-  Polygon: SelectionDescriptor<"Polygon">;
-  Uncommitted: SelectionDescriptor<"Uncommitted">;
-  Manual: SelectionDescriptor<"Manual">;
   Duplicates: SelectionDescriptor<"Duplicates">;
-  Validation: SelectionDescriptor<"Validation">;
-  Reviewed: SelectionDescriptor<"Reviewed">;
-  Intersection: SelectionDescriptor<"Intersection">;
-  Union: SelectionDescriptor<"Union">;
-  Invert: SelectionDescriptor<"Invert">;
+  Everything: SelectionDescriptor<"Everything">;
   Filter: SelectionDescriptor<"Filter">;
+  Intersection: SelectionDescriptor<"Intersection">;
+  Invert: SelectionDescriptor<"Invert">;
+  Locations: SelectionDescriptor<"Locations">;
+  Manual: SelectionDescriptor<"Manual">;
+  Polygon: SelectionDescriptor<"Polygon">;
   Ranked: SelectionDescriptor<"Ranked">;
+  Reviewed: SelectionDescriptor<"Reviewed">;
+  Uncommitted: SelectionDescriptor<"Uncommitted">;
+  Union: SelectionDescriptor<"Union">;
+  Validation: SelectionDescriptor<"Validation">;
 }
 ```
 
@@ -3410,6 +3417,8 @@ Load the full rule bodies for the given `ids`.
 MAP_LOCAL_TYPES: readonly ["Locations", "Manual", "Validation", "Reviewed"]
 ```
 
+Selection types that cannot be saved as rules because they are bound to the open map.
+
 ### saveCurrentSelections
 
 `unstable` · since v0.10.3
@@ -3586,6 +3595,8 @@ CSS_VAR_SETTINGS: readonly (readonly [
 ])[]
 ```
 
+App settings exposed as CSS custom properties on `:root`.
+
 ### DATE_TIMEZONES
 
 `unstable` · since v0.10.3
@@ -3604,7 +3615,7 @@ DEFAULTS: {
   showLinksControl: boolean;
   clickToGo: boolean;
   showRoadLabels: boolean;
-  defaultMovementMode: "moving" | "no-move" | "nmpz";
+  defaultMovementMode: "moving" | "nmpz" | "no-move";
   showCar: boolean;
   showCrosshair: boolean;
   showCompass: boolean;
@@ -3639,27 +3650,27 @@ DEFAULTS: {
   customCss: string;
   enableSeen: boolean;
   enableSeenThumbnails: boolean;
-  seenResolution: "low" | "medium" | "high";
+  seenResolution: "high" | "low" | "medium";
   mapPanSpeed: number;
   panoLookSpeed: number;
   slowModifier: number;
   showFps: boolean;
-  mapListFields: ("locationCount" | "lastOpened" | "created")[];
+  mapListFields: ("created" | "lastOpened" | "locationCount")[];
   /** Ids of map-row badge sources that are hidden. */
   hiddenMapBadges: string[];
   /** Read once at boot; changing it relaunches the app rather than re-rendering. */
-  language: "en" | "de" | "es" | "fr" | "ja" | "pl" | "ru" | "zh-Hans" | "en-XA";
+  language: "de" | "en" | "en-XA" | "es" | "fr" | "ja" | "pl" | "ru" | "zh-Hans";
   /** Every distance the UI shows or accepts; stored values stay metric. */
-  units: "auto" | "metric" | "imperial";
+  units: "auto" | "imperial" | "metric";
   /** Reopen the maps that were open when the session last ended (main window closed). */
   restoreSession: boolean;
   /** Offer pre-release builds to the updater as well as full releases. */
   prereleaseUpdates: boolean;
   /** Discord Rich Presence: off, generic (no map name), or full (map name + count). */
-  discordPresence: "off" | "generic" | "full";
+  discordPresence: "full" | "generic" | "off";
   /** Per-label color overrides (hex), keyed by lowercased label name. Shared across all maps. */
   labelColors: Record<string, string>;
-  geocodeProvider: "local" | "nominatim" | "google";
+  geocodeProvider: "google" | "local" | "nominatim";
   nominatimApiKey: string;
   panToImported: boolean;
   /** With no location open, Enter shows a center crosshair and opens the location under it. */
@@ -3677,7 +3688,7 @@ DEFAULTS: {
   /** What the layer opacity hotkeys restore a layer to when toggling it back on. */
   opacityToggleMode: "full" | "previous";
   /** Initial color mode for newly drawn polygon selections. Recoloring by hand overrides either mode. */
-  polygonColorMode: "random" | "fixed";
+  polygonColorMode: "fixed" | "random";
   polygonColor: RGB;
   panoDotScaled: boolean;
   tagViewMode: "flat" | "tree";
@@ -3690,9 +3701,9 @@ DEFAULTS: {
   /** Gap between tag pills (px), shared by flat and tree views via `--tag-gap`. */
   tagGap: number;
   animateTagReorder: boolean;
-  borderDetail: "medium" | "light" | "heavy";
-  subdivisionDetail: "off" | "adm1";
-  previewAspectRatio: "4 / 3" | "16 / 10" | "16 / 9" | "21 / 9" | "32 / 9" | "free";
+  borderDetail: "heavy" | "light" | "medium";
+  subdivisionDetail: "adm1" | "off";
+  previewAspectRatio: "16 / 10" | "16 / 9" | "21 / 9" | "32 / 9" | "4 / 3" | "free";
   tagSuggestionLimit: number;
   /** Local REST transport for window.MMA (Settings > Advanced). */
   remoteApi: boolean;
@@ -3731,7 +3742,7 @@ EXACT_DATE_FORMATS: {
 `unstable` · since v0.10.3
 
 ```ts
-GEOCODE_PROVIDER_LABELS: Record<"local" | "nominatim" | "google", string>
+GEOCODE_PROVIDER_LABELS: Record<"google" | "local" | "nominatim", string>
 ```
 
 ### GEOCODE_PROVIDERS
@@ -3793,7 +3804,7 @@ MAP_LIST_FIELDS: {
 `unstable` · since v0.10.3
 
 ```ts
-MOVEMENT_CYCLE: ("moving" | "no-move" | "nmpz")[]
+MOVEMENT_CYCLE: ("moving" | "nmpz" | "no-move")[]
 ```
 
 ### MOVEMENT_MODES
@@ -3873,89 +3884,91 @@ PREVIEW_ASPECT_RATIOS: {
 
 ```ts
 PRIVATE_SETTINGS: ReadonlySet<
-  | "showCameraBadges"
-  | "showLinksControl"
+  | "activeLocationColor"
+  | "animateTagReorder"
+  | "borderDetail"
   | "clickToGo"
-  | "showRoadLabels"
-  | "defaultMovementMode"
-  | "showCar"
-  | "showCrosshair"
-  | "showCompass"
-  | "showCompassTape"
-  | "showZoom"
-  | "showReturnToSpawn"
-  | "showJumpButtons"
-  | "showMapLinks"
-  | "showCoordinateDisplay"
-  | "showFullscreenButton"
-  | "showScreenshotButton"
-  | "showPanoMetadata"
-  | "exactDateFormat"
-  | "dateTimezone"
-  | "showNavArrow"
-  | "showGroundArrow"
-  | "hidePanoUI"
-  | "hideNavWithUI"
-  | "fullscreenMap"
-  | "showFullscreenMapMeta"
-  | "showFullscreenMiniLocationPreview"
-  | "fullscreenMiniLocationScale"
-  | "showFullscreenMinimap"
-  | "fullscreenMinimapScale"
-  | "fullscreenMinimapCloseDelay"
-  | "showFullscreenTagbar"
-  | "showFullscreenDatePicker"
-  | "showFullscreenReviewBar"
-  | "showFullscreenGeocode"
   | "customCss"
+  | "dateTimezone"
+  | "defaultMovementMode"
+  | "discordPresence"
   | "enableSeen"
   | "enableSeenThumbnails"
-  | "seenResolution"
-  | "mapPanSpeed"
-  | "panoLookSpeed"
-  | "slowModifier"
-  | "showFps"
-  | "mapListFields"
-  | "hiddenMapBadges"
-  | "language"
-  | "units"
-  | "restoreSession"
-  | "prereleaseUpdates"
-  | "discordPresence"
-  | "labelColors"
-  | "geocodeProvider"
-  | "nominatimApiKey"
-  | "panToImported"
   | "enterOpensCenter"
-  | "pastePadding"
+  | "exactDateFormat"
   | "followActiveInReview"
-  | "markerColor"
-  | "activeLocationColor"
+  | "fullscreenMap"
+  | "fullscreenMiniLocationScale"
+  | "fullscreenMinimapCloseDelay"
+  | "fullscreenMinimapScale"
+  | "geocodeProvider"
+  | "hiddenMapBadges"
+  | "hideNavWithUI"
+  | "hidePanoUI"
   | "importPreviewColor"
+  | "labelColors"
+  | "language"
+  | "mapListFields"
+  | "mapPanSpeed"
+  | "markerColor"
+  | "nominatimApiKey"
+  | "opacityToggleMode"
+  | "panToImported"
+  | "panoDotColor"
+  | "panoDotScaled"
+  | "panoLookSpeed"
+  | "pastePadding"
+  | "pinnedCommands"
+  | "polygonColor"
+  | "polygonColorMode"
+  | "prereleaseUpdates"
+  | "previewAspectRatio"
+  | "remoteApi"
+  | "remoteApiKey"
+  | "restoreSession"
+  | "seenResolution"
+  | "showCameraBadges"
+  | "showCar"
+  | "showCompass"
+  | "showCompassTape"
+  | "showCoordinateDisplay"
+  | "showCrosshair"
+  | "showFps"
+  | "showFullscreenButton"
+  | "showFullscreenDatePicker"
+  | "showFullscreenGeocode"
+  | "showFullscreenMapMeta"
+  | "showFullscreenMiniLocationPreview"
+  | "showFullscreenMinimap"
+  | "showFullscreenReviewBar"
+  | "showFullscreenTagbar"
+  | "showGroundArrow"
+  | "showJumpButtons"
+  | "showLinksControl"
+  | "showMapLinks"
+  | "showNavArrow"
+  | "showPanoMetadata"
+  | "showReturnToSpawn"
+  | "showRoadLabels"
+  | "showScreenshotButton"
+  | "showZoom"
+  | "slowModifier"
+  | "subdivisionDetail"
   | "svTrail"
   | "svTrailColor"
   | "svTrailPosition"
-  | "panoDotColor"
-  | "opacityToggleMode"
-  | "polygonColorMode"
-  | "polygonColor"
-  | "panoDotScaled"
+  | "tagFolderColor"
+  | "tagFolderColorMode"
+  | "tagGap"
+  | "tagSortMode"
+  | "tagSuggestionLimit"
   | "tagViewMode"
   | "truncateTagPaths"
-  | "tagFolderColorMode"
-  | "tagFolderColor"
-  | "tagSortMode"
-  | "tagGap"
-  | "animateTagReorder"
-  | "borderDetail"
-  | "subdivisionDetail"
-  | "previewAspectRatio"
-  | "tagSuggestionLimit"
-  | "remoteApi"
-  | "remoteApiKey"
-  | "pinnedCommands"
+  | "units"
 >
 ```
+
+Settings holding private information that should not be exfiltrated.
 
 ### resetSettings
 
@@ -4018,6 +4031,8 @@ TAG_FOLDER_COLOR_MODES: {
 ```ts
 TAG_SUGGESTION_LIMITS: readonly [5, 10, 25, 50, 0]
 ```
+
+Tag-suggestion list cap stops (slider indices); 0 = unlimited ("All").
 
 ### TAG_VIEW_MODES
 
@@ -4445,7 +4460,7 @@ Set the map list directly without a disk read.
 useMapBadges(): Map<string, MapBadge[]>
 ```
 
-Reactive {@link getMapBadges}.
+Reactive getMapBadges.
 
 ### useMapList
 
@@ -4717,7 +4732,7 @@ The raw command layer under the app-level API; any of them can change in a relea
 
 `unstable` · since v0.4.0
 
-Commands
+Every Rust command, typed. Any of them can change in a release.
 
 #### cmd.appReady
 
@@ -6988,6 +7003,8 @@ Projections valid for a field type, in display order (first = dialog default).
 RANGE_ID: "range"
 ```
 
+The "Range" partition option (numeric binning).
+
 ## Procedures
 
 Running procedures directly, outside a registered provider.
@@ -8343,6 +8360,8 @@ a real failure toasts and rethrows.
 ### _test
 
 `unstable` · since v0.6.1
+
+The nested `_test` namespace on the plugin surface.
 
 #### _test.closeMap
 

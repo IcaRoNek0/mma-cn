@@ -1,7 +1,7 @@
 // Bundle the plugin type surface (mma.d.ts) from the app's source.
 // Two stages: tsc emits real .d.ts files (JSDoc survives declaration emit),
 // then rollup-plugin-dts rolls them into one file.
-const { execFileSync, execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -14,8 +14,10 @@ const out = path.resolve(__dirname, "mma.d.ts");
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mma-dts-"));
   try {
-    execSync(
-      `npx tsc -p tsconfig.app.json --declaration --emitDeclarationOnly --noEmit false --rootDir src --outDir "${tmp}"`,
+    const tsc = path.join(appDir, "node_modules", "@typescript", "native", "bin", "tsc");
+    execFileSync(
+      process.execPath,
+      [tsc, "-p", "tsconfig.app.json", "--declaration", "--emitDeclarationOnly", "--noEmit", "false", "--rootDir", "src", "--outDir", tmp],
       { cwd: appDir, stdio: "inherit" },
     );
 
@@ -105,9 +107,10 @@ ${line}`);
     content = `/// <reference types="google.maps" />\n\n` + content;
     rejectBackendSpelling(content);
     fs.writeFileSync(out, content);
-    propagateUnstable();
-    stampUnpromisedExports();
-    await generateApiMarkdown();
+    const native = await import(pathToFileURL(path.join(appDir, "scripts", "native-ts.mjs")).href);
+    propagateUnstable(native);
+    stampUnpromisedExports(native);
+    await generateApiMarkdown(native);
     console.log("Generated plugins/types/mma.d.ts");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -137,6 +140,30 @@ function rejectBackendSpelling(content) {
   }
 }
 
+// One program over the bundle as it stands on disk, with its `MMA` interface.
+function withBundle({ ts, withProgram }, use) {
+  const text = fs.readFileSync(out, "utf-8");
+  const options = { skipLibCheck: true, target: "esnext" };
+  return withProgram([out], options, ({ checker, program }) => {
+    const source = program.getSourceFile(out);
+    const root = source.statements.find((n) => ts.isInterfaceDeclaration(n) && n.name.text === "MMA");
+    if (!root) throw new Error("no MMA interface in the bundle");
+    return use({ checker, source, root });
+  }, new Map([[out, text]]));
+}
+
+// The tag names on a node's own doc comment. A variable's comment sits on its statement.
+const jsDocTagNames = (ts, node) =>
+  ((ts.isVariableDeclaration(node) ? node.parent.parent : node).jsDoc || []).flatMap((doc) =>
+    (doc.tags || []).map((t) => t.tagName.text),
+  );
+
+// The declarations of `sym` in `source`, as nodes.
+const declarationsIn = (source, sym) =>
+  ((sym && sym.declarations) || []).filter((d) => d.path === source.path).map((d) => d.resolve());
+
+const callSignatures = (ts, checker, type) => checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+
 // A member spread from a module reaches its const through an export alias and, when the
 // bundler renamed it, a `typeof` const. Every hop is a declaration a reader can hover.
 function declarationHops(ts, checker) {
@@ -144,13 +171,13 @@ function declarationHops(ts, checker) {
     const hops = [];
     for (let s = sym, i = 0; s && i < 4; i++) {
       const next = s.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(s) : null;
-      const decl = (next || s).declarations?.[0];
+      const decl = (next || s).declarations?.[0]?.resolve();
       const query = decl && ts.isVariableDeclaration(decl) && decl.type && ts.isTypeQueryNode(decl.type)
         ? checker.getSymbolAtLocation(decl.type.exprName)
         : null;
       if (next) hops.push(next);
       if (query) hops.push(query);
-      s = query || (next !== s ? next : null);
+      s = query || (next && next.id !== s.id ? next : null);
     }
     return hops;
   };
@@ -162,7 +189,7 @@ function memberUnstable(ts, checker) {
   const hopsOf = declarationHops(ts, checker);
   const tagged = (sym) =>
     sym.valueDeclaration
-      ? ts.getJSDocTags(sym.valueDeclaration).some((t) => t.tagName.text === "unstable")
+      ? jsDocTagNames(ts, sym.valueDeclaration.resolve()).includes("unstable")
       : sym.getJsDocTags(checker).some((t) => t.name === "unstable");
   return (prop, target) => [prop, target, ...hopsOf(prop)].some((s) => s && tagged(s));
 }
@@ -170,89 +197,81 @@ function memberUnstable(ts, checker) {
 // `@unstable` is declared once -- on a surface (`type ReviewApi`) or a namespace (`cmd`) --
 // but a plugin author hovers the member, not the surface. Stamp it onto every member the
 // tag covers so the warning is visible where the call is written.
-function propagateUnstable() {
-  const ts = require(path.join(appDir, "node_modules", "typescript"));
-  const program = ts.createProgram([out], { skipLibCheck: true, target: ts.ScriptTarget.ESNext });
-  const checker = program.getTypeChecker();
-  const source = program.getSourceFile(out);
+function propagateUnstable(native) {
+  const { ts } = native;
+  const edits = withBundle(native, ({ checker, source, root }) => {
+    const tagged = (sym) => sym.getJsDocTags(checker).some((t) => t.name === "unstable");
 
-  let root = null;
-  ts.forEachChild(source, (n) => {
-    if (ts.isInterfaceDeclaration(n) && n.name.text === "MMA") root = n;
-  });
-  if (!root) throw new Error("no MMA interface in the bundle");
-
-  const tagged = (sym) => sym.getJsDocTags(checker).some((t) => t.name === "unstable");
-
-  // Where a doc comment can actually go. A symbol's declaration is sometimes the type
-  // node (`() => void`), which is not a place a reader would ever look.
-  const documentable = (d) => {
-    if (ts.isVariableDeclaration(d)) return d.parent && d.parent.parent;
-    // A const's type is often an anonymous literal or function type; the tag belongs on the const.
-    if (d.parent && ts.isVariableDeclaration(d.parent) && d.parent.type === d) {
-      return documentable(d.parent);
-    }
-    return ts.isFunctionDeclaration(d) ||
-      ts.isPropertySignature(d) ||
-      ts.isMethodSignature(d) ||
-      ts.isPropertyAssignment(d) ||
-      ts.isInterfaceDeclaration(d) ||
-      ts.isTypeAliasDeclaration(d)
-      ? d
-      : null;
-  };
-  const targets = new Set();
-  const declaredThrough = declarationHops(ts, checker);
-
-  // Every member a tagged surface contributes.
-  const fromUnstableSurface = new Set();
-  for (const clause of root.heritageClauses || []) {
-    for (const node of clause.types) {
-      const alias = checker.getSymbolAtLocation(node.expression);
-      if (!alias || !tagged(alias)) continue;
-      for (const prop of checker.getPropertiesOfType(checker.getTypeAtLocation(node))) {
-        fromUnstableSurface.add(prop.name);
+    // Where a doc comment can actually go. A symbol's declaration is sometimes the type
+    // node (`() => void`), which is not a place a reader would ever look.
+    const documentable = (d) => {
+      if (ts.isVariableDeclaration(d)) return d.parent && d.parent.parent;
+      // A const's type is often an anonymous literal or function type; the tag belongs on the const.
+      if (d.parent && ts.isVariableDeclaration(d.parent) && d.parent.type === d) {
+        return documentable(d.parent);
       }
-    }
-  }
+      return ts.isFunctionDeclaration(d) ||
+        ts.isPropertySignatureDeclaration(d) ||
+        ts.isMethodSignatureDeclaration(d) ||
+        ts.isPropertyAssignment(d) ||
+        ts.isInterfaceDeclaration(d) ||
+        ts.isTypeAliasDeclaration(d)
+        ? d
+        : null;
+    };
+    const targets = new Set();
+    const declaredThrough = declarationHops(ts, checker);
 
-  const collect = (type, depth, inherited) => {
-    for (const prop of checker.getPropertiesOfType(type)) {
-      const propType = checker.getTypeOfSymbolAtLocation(prop, root);
-      const target = propType.getSymbol();
-      const unstable =
-        inherited ||
-        fromUnstableSurface.has(prop.name) ||
-        tagged(prop) ||
-        (!!target && tagged(target));
-      if (unstable) {
-        for (const sym of [prop, target, ...declaredThrough(prop)]) {
-          for (const d of (sym && sym.declarations) || []) {
-            const node = documentable(d);
-            if (node && node.getSourceFile() === source) targets.add(node);
-          }
+    // Every member a tagged surface contributes.
+    const fromUnstableSurface = new Set();
+    for (const clause of root.heritageClauses || []) {
+      for (const node of clause.types) {
+        const alias = checker.getSymbolAtLocation(node.expression);
+        if (!alias || !tagged(alias)) continue;
+        for (const prop of checker.getPropertiesOfType(checker.getTypeAtLocation(node))) {
+          fromUnstableSurface.add(prop.name);
         }
       }
-      if (depth > 0 && propType.getCallSignatures().length === 0) {
-        collect(propType, depth - 1, unstable);
-      }
     }
-  };
-  collect(checker.getTypeAtLocation(root), 1, false);
 
-  console.log(`Propagated @unstable to ${stampUnstable(ts, source, targets)} members`);
+    const collect = (type, depth, inherited) => {
+      for (const prop of checker.getPropertiesOfType(type)) {
+        const propType = checker.getTypeOfSymbolAtLocation(prop, root);
+        const target = propType.getSymbol();
+        const unstable =
+          inherited ||
+          fromUnstableSurface.has(prop.name) ||
+          tagged(prop) ||
+          (!!target && tagged(target));
+        if (unstable) {
+          for (const sym of [prop, target, ...declaredThrough(prop)]) {
+            for (const d of declarationsIn(source, sym)) {
+              const node = documentable(d);
+              if (node) targets.add(node);
+            }
+          }
+        }
+        if (depth > 0 && callSignatures(ts, checker, propType).length === 0) {
+          collect(propType, depth - 1, unstable);
+        }
+      }
+    };
+    collect(checker.getTypeAtLocation(root), 1, false);
+    return stampEdits(source, targets);
+  });
+
+  console.log(`Propagated @unstable to ${applyEdits(edits)} members`);
 }
 
-// Add `@unstable` to the doc comment of each node, or give it one, and rewrite the d.ts.
-function stampUnstable(ts, source, nodes) {
-  // Highest offset first, so earlier edits keep their positions.
-  const full = source.getFullText();
+// The edits that add `@unstable` to the doc comment of each node, or give it one.
+function stampEdits(source, nodes) {
+  const full = source.text;
   const edits = [];
   for (const node of nodes) {
     const docs = node.jsDoc;
     if (docs && docs.length) {
       const last = docs[docs.length - 1];
-      const text = last.getText();
+      const text = last.getText(source);
       if (text.includes("@unstable")) continue;
       // Just before the closing `*/`. On a multi-line block that spot is the start of the
       // closing line, which needs its own ` *  ` prefix; on a one-liner it is mid-line.
@@ -261,19 +280,21 @@ function stampUnstable(ts, source, nodes) {
       const indent = full.slice(lineStart, at);
       edits.push(
         indent.trim() === ""
-          ? { at, insert: `*  @unstable
-${indent}` }
+          ? { at, insert: `*  @unstable\n${indent}` }
           : { at, insert: "@unstable " },
       );
     } else {
       const start = node.getStart(source);
       const col = start - source.getLineStarts()[source.getLineAndCharacterOfPosition(start).line];
-      edits.push({ at: start, insert: `/** @unstable */
-${" ".repeat(col)}` });
+      edits.push({ at: start, insert: `/** @unstable */\n${" ".repeat(col)}` });
     }
   }
-  edits.sort((a, b) => b.at - a.at);
+  return edits;
+}
 
+// Rewrites the d.ts with `edits`, highest offset first so earlier edits keep their positions.
+function applyEdits(edits) {
+  edits.sort((a, b) => b.at - a.at);
   let text = fs.readFileSync(out, "utf-8");
   for (const e of edits) text = text.slice(0, e.at) + e.insert + text.slice(e.at);
   fs.writeFileSync(out, text);
@@ -284,70 +305,63 @@ ${" ".repeat(col)}` });
 // the bundle exports -- a command's result, a settings shape, a bundler namespace alias --
 // is stamped `@unstable`, so the type gate in check-legacy holds exactly what plugins can
 // get their hands on through the stable surface.
-function stampUnpromisedExports() {
-  const ts = require(path.join(appDir, "node_modules", "typescript"));
-  const program = ts.createProgram([out], { skipLibCheck: true, target: ts.ScriptTarget.ESNext });
-  const checker = program.getTypeChecker();
-  const source = program.getSourceFile(out);
+function stampUnpromisedExports(native) {
+  const { ts } = native;
+  const edits = withBundle(native, ({ checker, source, root }) => {
+    const taggedNode = (n) => jsDocTagNames(ts, n).includes("unstable");
+    const unstableMember = memberUnstable(ts, checker);
+    const resolve = (sym) => (sym && sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym);
 
-  let root = null;
-  ts.forEachChild(source, (n) => {
-    if (ts.isInterfaceDeclaration(n) && n.name.text === "MMA") root = n;
-  });
-  if (!root) throw new Error("no MMA interface in the bundle");
+    const reached = new Set([root]);
+    const visit = (sym) => {
+      for (const d of declarationsIn(source, resolve(sym))) {
+        if (reached.has(d) || taggedNode(d)) continue;
+        reached.add(d);
+        walk(d);
+      }
+    };
+    const walk = (node) => {
+      if (node !== root && node.parent && taggedNode(node) && !ts.isVariableDeclaration(node)) return;
+      if (ts.isTypeReferenceNode(node)) visit(checker.getSymbolAtLocation(node.typeName));
+      else if (ts.isExpressionWithTypeArguments(node)) visit(checker.getSymbolAtLocation(node.expression));
+      else if (ts.isTypeQueryNode(node)) visit(checker.getSymbolAtLocation(node.exprName));
+      else if (ts.isExportSpecifier(node)) visit(checker.getExportSpecifierLocalTargetSymbol(node));
+      node.forEachChild(walk);
+    };
 
-  const taggedNode = (n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "unstable");
-  const unstableMember = memberUnstable(ts, checker);
-  const resolve = (sym) => (sym && sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym);
-
-  const reached = new Set([root]);
-  const visit = (sym) => {
-    for (const d of resolve(sym)?.declarations || []) {
-      if (d.getSourceFile() !== source || reached.has(d) || taggedNode(d)) continue;
-      reached.add(d);
-      walk(d);
+    for (const prop of checker.getPropertiesOfType(checker.getTypeAtLocation(root))) {
+      if (unstableMember(prop, checker.getTypeOfSymbolAtLocation(prop, root).getSymbol())) continue;
+      visit(prop);
     }
-  };
-  const walk = (node) => {
-    if (node !== root && node.parent && taggedNode(node) && !ts.isVariableDeclaration(node)) return;
-    if (ts.isTypeReferenceNode(node)) visit(checker.getSymbolAtLocation(node.typeName));
-    else if (ts.isExpressionWithTypeArguments(node)) visit(checker.getSymbolAtLocation(node.expression));
-    else if (ts.isTypeQueryNode(node)) visit(checker.getSymbolAtLocation(node.exprName));
-    else if (ts.isExportSpecifier(node)) visit(checker.getExportSpecifierLocalTargetSymbol(node));
-    ts.forEachChild(node, walk);
-  };
 
-  for (const prop of checker.getPropertiesOfType(checker.getTypeAtLocation(root))) {
-    if (unstableMember(prop, checker.getTypeOfSymbolAtLocation(prop, root).getSymbol())) continue;
-    visit(prop);
-  }
-
-  const documentable = (d) =>
-    ts.isVariableDeclaration(d) ? d.parent && d.parent.parent : d;
-  // rollup-plugin-dts names a module's members `module_Name` inside its namespace. The alias
-  // is how the bundle is assembled, not a name a plugin should import.
-  const bundlerAlias = (name, decls) =>
-    decls.every((d) => {
-      const ref = ts.isTypeAliasDeclaration(d) && ts.isTypeReferenceNode(d.type) ? d.type.typeName
-        : ts.isVariableDeclaration(d) && d.type && ts.isTypeQueryNode(d.type) ? d.type.exprName
-        : null;
-      return !!ref && ts.isIdentifier(ref) && name.endsWith(`_${ref.text}`);
-    });
-  const unpromised = new Set();
-  for (const exp of checker.getExportsOfModule(checker.getSymbolAtLocation(source))) {
-    // The per-module aliases api.ts assembles MMA from carry the surface tags themselves.
-    if (/Api$/.test(exp.name)) continue;
-    const decls = (resolve(exp).declarations || []).filter((d) => d.getSourceFile() === source);
-    if (decls.length === 0 || (decls.some((d) => reached.has(d)) && !bundlerAlias(exp.name, decls))) continue;
-    for (const d of decls) unpromised.add(documentable(d));
-  }
-  console.log(`Stamped @unstable on ${stampUnstable(ts, source, unpromised)} exports no stable member reaches`);
+    const documentable = (d) =>
+      ts.isVariableDeclaration(d) ? d.parent && d.parent.parent : d;
+    // rollup-plugin-dts names a module's members `module_Name` inside its namespace. The alias
+    // is how the bundle is assembled, not a name a plugin should import.
+    const bundlerAlias = (name, decls) =>
+      decls.every((d) => {
+        const ref = ts.isTypeAliasDeclaration(d) && ts.isTypeReferenceNode(d.type) ? d.type.typeName
+          : ts.isVariableDeclaration(d) && d.type && ts.isTypeQueryNode(d.type) ? d.type.exprName
+          : null;
+        return !!ref && ts.isIdentifier(ref) && name.endsWith(`_${ref.text}`);
+      });
+    const unpromised = new Set();
+    for (const exp of checker.getExportsOfModule(checker.getSymbolAtLocation(source))) {
+      // The per-module aliases api.ts assembles MMA from carry the surface tags themselves.
+      if (/Api$/.test(exp.name)) continue;
+      const decls = declarationsIn(source, resolve(exp));
+      if (decls.length === 0 || (decls.some((d) => reached.has(d)) && !bundlerAlias(exp.name, decls))) continue;
+      for (const d of decls) unpromised.add(documentable(d));
+    }
+    return stampEdits(source, unpromised);
+  });
+  console.log(`Stamped @unstable on ${applyEdits(edits)} exports no stable member reaches`);
 }
 
 // The release each member path (`addLocations`, `ui.Sidebar`) first shipped in, read from the
 // `mma.d.ts` at every release tag. Names only: no libraries resolve, so each release parses in
 // milliseconds. Empty without tags (a shallow clone), and the reference then omits "since".
-function firstReleases(ts) {
+function firstReleases(native) {
   const git = (args, input) => {
     try {
       return execFileSync("git", args, {
@@ -381,15 +395,17 @@ function firstReleases(ts) {
   const contents = git(["cat-file", "--batch"], distinct.join("\n") + "\n");
 
   // `--batch` prints `<sha> blob <size>` then exactly <size> bytes per object.
-  const namesByBlob = new Map();
+  const files = new Map();
   const bytes = Buffer.from(contents, "utf-8");
   let at = 0;
   for (const sha of distinct) {
     const eol = bytes.indexOf(10, at);
     const size = Number(bytes.subarray(at, eol).toString().split(" ")[2]);
-    namesByBlob.set(sha, memberNames(ts, bytes.subarray(eol + 1, eol + 1 + size).toString("utf-8")));
+    files.set(path.join(__dirname, `.release-${sha}.d.ts`), bytes.subarray(eol + 1, eol + 1 + size).toString("utf-8"));
     at = eol + 1 + size + 1;
   }
+  const names = memberNames(native, files);
+  const namesByBlob = new Map(distinct.map((sha, i) => [sha, names[i]]));
 
   const first = new Map();
   tags.forEach((tag, i) => {
@@ -398,71 +414,41 @@ function firstReleases(ts) {
   return first;
 }
 
-function memberNames(ts, text) {
-  const file = "/sdk.d.ts";
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.ESNext, true);
-  const host = ts.createCompilerHost({});
-  const read = host.getSourceFile;
-  host.getSourceFile = (name, ...rest) => (name === file ? source : read(name, ...rest));
-  const checker = ts
-    .createProgram([file], { noLib: true, noResolve: true, types: [] }, host)
-    .getTypeChecker();
-
-  // Older releases spell the surface `type MMA = typeof mma` or `type MMAApi = typeof mmaApi`.
-  let root = null;
-  ts.forEachChild(source, (n) => {
-    const named = ts.isInterfaceDeclaration(n) || ts.isTypeAliasDeclaration(n);
-    if (named && /^MMA(\$1|Api)?$/.test(n.name.text) && (!root || n.name.text === "MMA")) root = n;
-  });
-  const names = new Set();
-  if (!root) return names;
-  const surface = checker.getDeclaredTypeOfSymbol(checker.getSymbolAtLocation(root.name));
-  for (const prop of checker.getPropertiesOfType(surface)) {
-    names.add(prop.name);
-    const type = checker.getTypeOfSymbolAtLocation(prop, root);
-    if (type.getCallSignatures().length > 0) continue;
-    for (const inner of checker.getPropertiesOfType(type)) names.add(`${prop.name}.${inner.name}`);
-  }
-  return names;
+// Each release's member paths, in the order of `files`.
+function memberNames({ ts, withProgram }, files) {
+  const options = { noLib: true, noResolve: true, types: [] };
+  return withProgram([...files.keys()], options, ({ checker, program }) => [...files.keys()].map((file) => {
+    const source = program.getSourceFile(file);
+    // Older releases spell the surface `type MMA = typeof mma` or `type MMAApi = typeof mmaApi`.
+    let root = null;
+    for (const n of source.statements) {
+      const named = ts.isInterfaceDeclaration(n) || ts.isTypeAliasDeclaration(n);
+      if (named && /^MMA(\$1|Api)?$/.test(n.name.text) && (!root || n.name.text === "MMA")) root = n;
+    }
+    const names = new Set();
+    if (!root) return names;
+    const surface = checker.getDeclaredTypeOfSymbol(checker.getSymbolAtLocation(root.name));
+    const props = checker.getPropertiesOfType(surface);
+    const types = checker.getTypeOfSymbol(props);
+    props.forEach((prop, i) => {
+      names.add(prop.name);
+      const inner = checker.getPropertiesOfType(types[i]);
+      if (inner.length === 0 || callSignatures(ts, checker, types[i]).length > 0) return;
+      for (const p of inner) names.add(`${prop.name}.${p.name}`);
+    });
+    return names;
+  }), files);
 }
 
 // The human-readable companion to mma.d.ts: one section per API surface on the MMA
 // interface, each member with its badges, signature and doc. Stable surfaces come first.
 // Output-only -- regenerated with the d.ts, never hand-edited.
-async function generateApiMarkdown() {
-  const ts = require(path.join(appDir, "node_modules", "typescript"));
+async function generateApiMarkdown(native) {
+  const { ts } = native;
   const { format } = await import(pathToFileURL(path.join(appDir, "node_modules", "oxfmt", "dist", "index.js")).href);
-  const program = ts.createProgram([out], { skipLibCheck: true, target: ts.ScriptTarget.ESNext });
-  const checker = program.getTypeChecker();
-  const source = program.getSourceFile(out);
-
-  let root = null;
-  ts.forEachChild(source, (n) => {
-    if (ts.isInterfaceDeclaration(n) && n.name.text === "MMA") root = n;
-  });
-  if (!root) throw new Error("no MMA interface in the bundle");
-
-  const since = firstReleases(ts);
-  const unstableMember = memberUnstable(ts, checker);
-  const flags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope;
-  const typeText = (type) => checker.typeToString(type, root, flags);
+  const since = firstReleases(native);
+  const flags = ts.NodeBuilderFlags.NoTruncation | ts.NodeBuilderFlags.UseAliasDefinedOutsideCurrentScope;
   const NL = "\n";
-
-  // Doc and tags can live on the aliased declaration rather than the property symbol.
-  const describe = (prop, propType) => {
-    const symbols = [prop, propType.getSymbol()].filter(Boolean);
-    const doc = symbols
-      .map((s) => ts.displayPartsToString(s.getDocumentationComment(checker)).trim())
-      .find(Boolean);
-    const deprecated = symbols
-      .flatMap((s) => s.getJsDocTags(checker))
-      .find((t) => t.name === "deprecated");
-    return {
-      doc: doc || "",
-      unstable: unstableMember(prop, propType.getSymbol()),
-      deprecated: deprecated ? ts.displayPartsToString(deprecated.text).trim() : null,
-    };
-  };
 
   // Every code block is formatted in one oxfmt pass. Each is a declaration of a placeholder
   // name (a dotted path like `ui.Button` would not parse), preceded by a marker comment.
@@ -488,49 +474,6 @@ async function generateApiMarkdown() {
   };
   const key = (name) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name));
 
-  // A destructured parameter prints as its whole binding pattern; `props` reads better.
-  // Types are printed as declared, so a named type (`AppSettings`) is not expanded in place.
-  const parameter = (p) => {
-    const decl = p.valueDeclaration;
-    if (!decl || !ts.isParameter(decl)) return `${p.name}: ${typeText(checker.getTypeOfSymbolAtLocation(p, root))}`;
-    const rest = decl.dotDotDotToken ? "..." : "";
-    const name = ts.isIdentifier(decl.name) ? p.name : "props";
-    const optional = checker.isOptionalParameter(decl) ? "?" : "";
-    const type = decl.type ? decl.type.getText() : typeText(checker.getTypeOfSymbolAtLocation(p, root));
-    return `${rest}${name}${optional}: ${type}`;
-  };
-  const signature = (name, type) => {
-    const sigs = type.getCallSignatures();
-    const declaration = sigs.length
-      ? sigs
-          .map((sig) => {
-            const typeParams = sig.declaration?.typeParameters
-              ? `<${sig.declaration.typeParameters.map((tp) => tp.getText()).join(", ")}>`
-              : "";
-            const params = sig.parameters.map(parameter).join(", ");
-            const returns = sig.declaration?.type
-              ? sig.declaration.type.getText()
-              : typeText(checker.getReturnTypeOfSignature(sig));
-            return `declare function __member${typeParams}(${params}): ${returns};`;
-          })
-          .join(NL)
-      : `declare const __member: ${typeText(type)};`;
-    return block(name, declaration);
-  };
-
-  // An object of plain values (an enum-like const, a defaults table) reads best whole.
-  const valueTable = (name, props) => {
-    const body = props
-      .map((p) => {
-        const type = checker.getTypeOfSymbolAtLocation(p, root);
-        const { doc } = describe(p, type);
-        const comment = doc ? `/** ${doc.replace(/\s*\n\s*/g, " ")} */${NL}` : "";
-        return `${comment}${key(p.name)}: ${typeText(type)};`;
-      })
-      .join(NL);
-    return block(name, `declare const __member: {${NL}${body}${NL}};`);
-  };
-
   const badges = (path, { unstable, deprecated }) =>
     [
       unstable ? "`unstable`" : "`stable`",
@@ -547,56 +490,122 @@ async function generateApiMarkdown() {
       : []),
     ...(info.doc ? [info.doc, ""] : []),
   ];
-  const entry = (path, prop, propType, level) => {
-    const info = describe(prop, propType);
-    return {
-      lines: [...header(level, path, info), signature(path, propType), "", ...prose(info)],
-      unstable: info.unstable,
-    };
-  };
 
-  const surfaces = [];
-  for (const clause of root.heritageClauses || []) {
-    for (const node of clause.types) {
-      const alias = checker.getSymbolAtLocation(node.expression);
-      if (!alias) continue;
-      const members = [];
-      const props = checker.getPropertiesOfType(checker.getTypeAtLocation(node));
-      for (const prop of props.sort((a, b) => a.name.localeCompare(b.name))) {
-        const propType = checker.getTypeOfSymbolAtLocation(prop, root);
-        // A namespace-like member (e.g. `cmd`) gets its members as sub-entries. Only
-        // properties declared in this bundle count -- an array or other lib-typed value
-        // must not have its built-in methods enumerated.
-        let inner = [];
-        if (propType.getCallSignatures().length === 0 && !checker.isArrayLikeType(propType)) {
-          const ownProp = (p) => (p.declarations || []).some((d) => d.getSourceFile() === source);
-          inner = checker.getPropertiesOfType(propType).filter(ownProp);
-        }
-        const innerType = (p) => checker.getTypeOfSymbolAtLocation(p, root);
-        const info = describe(prop, propType);
-        if (inner.length > 3 && inner.some((p) => innerType(p).getCallSignatures().length > 0)) {
-          members.push({ lines: [...header(3, prop.name, info), ...prose(info)], unstable: info.unstable });
-          for (const p of inner.sort((a, b) => a.name.localeCompare(b.name))) {
-            members.push(entry(`${prop.name}.${p.name}`, p, innerType(p), 4));
+  const surfaces = withBundle(native, ({ checker, source, root }) => {
+    const unstableMember = memberUnstable(ts, checker);
+    const hopsOf = declarationHops(ts, checker);
+    const typeText = (type) => checker.typeToString(type, root, flags);
+
+    // Doc and tags can live on any declaration the member reaches rather than the property symbol.
+    const describe = (prop, propType) => {
+      const symbols = [prop, propType.getSymbol(), ...hopsOf(prop)].filter(Boolean);
+      const doc = symbols.map((s) => s.getDocumentationComment(checker).trim()).find(Boolean);
+      const deprecated = symbols
+        .flatMap((s) => s.getJsDocTags(checker))
+        .find((t) => t.name === "deprecated");
+      return {
+        doc: doc || "",
+        unstable: unstableMember(prop, propType.getSymbol()),
+        deprecated: deprecated ? (deprecated.text || "").trim() : null,
+      };
+    };
+
+    // A destructured parameter prints as its whole binding pattern; `props` reads better.
+    // Types are printed as declared, so a named type (`AppSettings`) is not expanded in place.
+    const parameter = (p) => {
+      const decl = p.valueDeclaration?.resolve();
+      if (!decl || !ts.isParameterDeclaration(decl)) return `${p.name}: ${typeText(checker.getTypeOfSymbolAtLocation(p, root))}`;
+      const rest = decl.dotDotDotToken ? "..." : "";
+      const name = ts.isIdentifier(decl.name) ? p.name : "props";
+      const optional = decl.questionToken ? "?" : "";
+      const type = decl.type ? decl.type.getText() : typeText(checker.getTypeOfSymbolAtLocation(p, root));
+      return `${rest}${name}${optional}: ${type}`;
+    };
+    const signature = (name, type) => {
+      const sigs = callSignatures(ts, checker, type);
+      const declaration = sigs.length
+        ? sigs
+            .map((sig) => {
+              const decl = sig.declaration?.resolve();
+              const typeParams = decl?.typeParameters?.length
+                ? `<${decl.typeParameters.map((tp) => tp.getText()).join(", ")}>`
+                : "";
+              const params = sig.getParameters().map(parameter).join(", ");
+              const returns = decl?.type
+                ? decl.type.getText()
+                : typeText(checker.getReturnTypeOfSignature(sig));
+              return `declare function __member${typeParams}(${params}): ${returns};`;
+            })
+            .join(NL)
+        : `declare const __member: ${typeText(type)};`;
+      return block(name, declaration);
+    };
+
+    // An object of plain values (an enum-like const, a defaults table) reads best whole.
+    const valueTable = (name, props) => {
+      const body = props
+        .map((p) => {
+          const type = checker.getTypeOfSymbolAtLocation(p, root);
+          const { doc } = describe(p, type);
+          const comment = doc ? `/** ${doc.replace(/\s*\n\s*/g, " ")} */${NL}` : "";
+          return `${comment}${key(p.name)}: ${typeText(type)};`;
+        })
+        .join(NL);
+      return block(name, `declare const __member: {${NL}${body}${NL}};`);
+    };
+
+    const entry = (path, prop, propType, level) => {
+      const info = describe(prop, propType);
+      return {
+        lines: [...header(level, path, info), signature(path, propType), "", ...prose(info)],
+        unstable: info.unstable,
+      };
+    };
+
+    const surfaces = [];
+    for (const clause of root.heritageClauses || []) {
+      for (const node of clause.types) {
+        const alias = checker.getSymbolAtLocation(node.expression);
+        if (!alias) continue;
+        const members = [];
+        const props = [...checker.getPropertiesOfType(checker.getTypeAtLocation(node))];
+        for (const prop of props.sort((a, b) => a.name.localeCompare(b.name))) {
+          const propType = checker.getTypeOfSymbolAtLocation(prop, root);
+          // A namespace-like member (e.g. `cmd`) gets its members as sub-entries. Only
+          // properties declared in this bundle count -- an array or other lib-typed value
+          // must not have its built-in methods enumerated.
+          let inner = [];
+          if (callSignatures(ts, checker, propType).length === 0 && !checker.isArrayLikeType(propType)) {
+            const ownProp = (p) => (p.declarations || []).some((d) => d.path === source.path);
+            inner = checker.getPropertiesOfType(propType).filter(ownProp);
           }
-        } else if (inner.length > 3) {
-          members.push({
-            lines: [...header(3, prop.name, info), valueTable(prop.name, inner), "", ...prose(info)],
-            unstable: info.unstable,
-          });
-        } else {
-          members.push(entry(prop.name, prop, propType, 3));
+          const innerType = (p) => checker.getTypeOfSymbolAtLocation(p, root);
+          const info = describe(prop, propType);
+          if (inner.length > 3 && inner.some((p) => callSignatures(ts, checker, innerType(p)).length > 0)) {
+            members.push({ lines: [...header(3, prop.name, info), ...prose(info)], unstable: info.unstable });
+            for (const p of inner.sort((a, b) => a.name.localeCompare(b.name))) {
+              members.push(entry(`${prop.name}.${p.name}`, p, innerType(p), 4));
+            }
+          } else if (inner.length > 3) {
+            members.push({
+              lines: [...header(3, prop.name, info), valueTable(prop.name, inner), "", ...prose(info)],
+              unstable: info.unstable,
+            });
+          } else {
+            members.push(entry(prop.name, prop, propType, 3));
+          }
         }
+        if (members.length === 0) continue;
+        surfaces.push({
+          name: alias.name.replace(/Api$/, ""),
+          doc: alias.getDocumentationComment(checker).trim(),
+          members,
+          unstable: members.every((m) => m.unstable),
+        });
       }
-      if (members.length === 0) continue;
-      surfaces.push({
-        name: alias.name.replace(/Api$/, ""),
-        doc: ts.displayPartsToString(alias.getDocumentationComment(checker)).trim(),
-        members,
-        unstable: members.every((m) => m.unstable),
-      });
     }
-  }
+    return surfaces;
+  });
 
   await formatBlocks();
   const render = (line) => (typeof line === "string" ? line : ["```ts", line.text, "```"].join(NL));

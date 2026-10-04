@@ -76,20 +76,20 @@ type FieldType = (typeof FieldType)[keyof typeof FieldType];
  * @unstable
  */
 declare const FirstSyncMode: {
-    /** Both maps keep everything; nothing is deleted. */
+    /** Both maps keep everything; nothing is deleted. @unstable */
     readonly Merge: "merge";
-    /** Locations only on this map are deleted so it matches the remote map. */
+    /** Locations only on this map are deleted so it matches the remote map. @unstable */
     readonly MirrorFromRemote: "mirrorFromRemote";
-    /** Locations only on the remote map are deleted so it matches this map. */
+    /** Locations only on the remote map are deleted so it matches this map. @unstable */
     readonly MirrorFromLocal: "mirrorFromLocal";
 };
 /** @unstable */
 type FirstSyncMode = (typeof FirstSyncMode)[keyof typeof FirstSyncMode];
 /** @unstable */
 declare const IssueState: {
-    /** The issue is still open. */
+    /** The issue is still open. @unstable */
     readonly Open: "open";
-    /** The issue has been closed. */
+    /** The issue has been closed. @unstable */
     readonly Closed: "closed";
 };
 /** @unstable */
@@ -125,9 +125,9 @@ declare const RateCost: {
 type RateCost = (typeof RateCost)[keyof typeof RateCost];
 /** Which side won a resolved conflict. @unstable */
 declare const ResolutionSide: {
-    /** This map's version won the conflict. */
+    /** This map's version won the conflict. @unstable */
     readonly Local: "local";
-    /** The remote map's version won the conflict. */
+    /** The remote map's version won the conflict. @unstable */
     readonly Remote: "remote";
 };
 /** @unstable */
@@ -146,13 +146,13 @@ declare const Sink: {
 type Sink = (typeof Sink)[keyof typeof Sink];
 /** What started a sync pass. @unstable */
 declare const SyncTrigger: {
-    /** Sync now was pressed. */
+    /** Sync now was pressed. @unstable */
     readonly Manual: "manual";
-    /** Live sync ran it, after an edit or on its schedule. */
+    /** Live sync ran it, after an edit or on its schedule. @unstable */
     readonly Live: "live";
-    /** Linking the map ran its first sync. */
+    /** Linking the map ran its first sync. @unstable */
     readonly Link: "link";
-    /** Resolving held conflicts ran it. */
+    /** Resolving held conflicts ran it. @unstable */
     readonly Resolve: "resolve";
 };
 /** @unstable */
@@ -217,9 +217,9 @@ declare const ValidationFlag: {
 type ValidationFlag = (typeof ValidationFlag)[keyof typeof ValidationFlag];
 /** Which way a link carries changes. @unstable */
 declare const SyncDirection: {
-    /** Changes travel both ways, and conflicts wait for review. */
+    /** Changes travel both ways, and conflicts wait for review. @unstable */
     readonly Bidirectional: "bidirectional";
-    /** Changes only come in from the remote, which wins every conflict. */
+    /** Changes only come in from the remote, which wins every conflict. @unstable */
     readonly PullOnly: "pullOnly";
 };
 /** @unstable */
@@ -314,9 +314,9 @@ declare const BUILTIN_FIELDS: readonly [{
 }];
 /** What a render frame does to the scene. @unstable */
 declare const FrameKind: {
-    /** Clears the scene, then adds every row the frame carries. */
+    /** Clears the scene, then adds every row the frame carries. @unstable */
     readonly Replace: 0;
-    /** Changes the scene in place. */
+    /** Changes the scene in place. @unstable */
     readonly Patch: 1;
 };
 /** @unstable */
@@ -449,14 +449,17 @@ declare const PROJECTIONS: readonly [{
 }];
 /** Every sync provider: which way it carries changes, and what it keeps of a map. @unstable */
 declare const SYNC_PROVIDERS: {
+    /** @unstable */
     readonly file: {
         readonly direction: "pullOnly";
         readonly shape: "local";
     };
+    /** @unstable */
     readonly geoguessr: {
         readonly direction: "bidirectional";
         readonly shape: "geoguessr";
     };
+    /** @unstable */
     readonly "map-making.app": {
         readonly direction: "bidirectional";
         readonly shape: "mapMaking";
@@ -486,12 +489,15 @@ declare const consts_ERROR_CODES: typeof ERROR_CODES;
 declare const consts_FieldType: typeof FieldType;
 /** @unstable */
 export type consts_FieldType = FieldType;
+/** @unstable */
 declare const consts_FirstSyncMode: typeof FirstSyncMode;
 /** @unstable */
 export type consts_FirstSyncMode = FirstSyncMode;
+/** @unstable */
 declare const consts_FrameKind: typeof FrameKind;
 /** @unstable */
 export type consts_FrameKind = FrameKind;
+/** @unstable */
 declare const consts_IssueState: typeof IssueState;
 /** @unstable */
 export type consts_IssueState = IssueState;
@@ -518,17 +524,21 @@ export type consts_RankingStrategy = RankingStrategy;
 declare const consts_RateCost: typeof RateCost;
 /** @unstable */
 export type consts_RateCost = RateCost;
+/** @unstable */
 declare const consts_ResolutionSide: typeof ResolutionSide;
 /** @unstable */
 export type consts_ResolutionSide = ResolutionSide;
 declare const consts_SCRATCH_MAP_ID: typeof SCRATCH_MAP_ID;
+/** @unstable */
 declare const consts_SYNC_PROVIDERS: typeof SYNC_PROVIDERS;
 declare const consts_Sink: typeof Sink;
 /** @unstable */
 export type consts_Sink = Sink;
+/** @unstable */
 declare const consts_SyncDirection: typeof SyncDirection;
 /** @unstable */
 export type consts_SyncDirection = SyncDirection;
+/** @unstable */
 declare const consts_SyncTrigger: typeof SyncTrigger;
 /** @unstable */
 export type consts_SyncTrigger = SyncTrigger;
