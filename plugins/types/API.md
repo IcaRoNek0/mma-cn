@@ -4732,7 +4732,7 @@ The raw command layer under the app-level API; any of them can change in a relea
 
 `unstable` · since v0.4.0
 
-Every Rust command, typed. Any of them can change in a release.
+Every backend command, typed. Any of them can change in a release.
 
 #### cmd.appReady
 

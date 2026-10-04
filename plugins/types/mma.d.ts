@@ -5493,7 +5493,7 @@ declare namespace review {
 
 /** @unstable */
 export type Cmd = typeof commands$1;
-/** Every Rust command, typed. Any of them can change in a release. @unstable */
+/** Every backend command, typed. Any of them can change in a release. @unstable */
 declare const cmd: Cmd;
 
 /** @unstable */
