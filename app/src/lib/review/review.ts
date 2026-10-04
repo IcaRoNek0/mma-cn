@@ -283,8 +283,7 @@ export async function reviewDelete(): Promise<void> {
 		flushSave();
 		scheduleProjection();
 	} else {
-		if (next)
-			persist({ ...next, status: "done" }); // survivors remain, resumable as done
+		if (next) persist({ ...next, status: "done" }); // survivors remain, resumable as done
 		else cmd.storeReviewDelete(s.id).catch(() => {});
 		await closeSession();
 	}

@@ -76,7 +76,8 @@ export async function addRows(rows: SeedRow[]): Promise<number[]> {
 		async (api, batch, scope) => {
 			const a = api as unknown as Record<string, unknown>;
 			const make = a.createLocation as
-				((lat: number, lng: number) => Record<string, unknown>) | undefined;
+				| ((lat: number, lng: number) => Record<string, unknown>)
+				| undefined;
 			const locs = (batch as SeedRow[]).map((r) => {
 				const base = make
 					? make(r.lat, r.lng)
@@ -121,7 +122,8 @@ export async function addFixture(
 		async (api, batch, scope) => {
 			const a = api as unknown as Record<string, unknown>;
 			const make = a.createLocation as
-				((lat: number, lng: number) => Record<string, unknown>) | undefined;
+				| ((lat: number, lng: number) => Record<string, unknown>)
+				| undefined;
 			const locs = (batch as Record<string, unknown>[]).map((r) => {
 				const lat = Number(r.lat);
 				const lng = Number(r.lng);
@@ -173,7 +175,8 @@ export async function runEnrich(force = true): Promise<EnrichRun> {
 			const enrichAll = a.enrichAll as (t: unknown, o: unknown) => Promise<unknown>;
 			const start = Date.now();
 			const res = (await enrichAll(scope, { force: doForce })) as
-				{ id?: string; success?: unknown[]; failed?: unknown[] }[] | undefined;
+				| { id?: string; success?: unknown[]; failed?: unknown[] }[]
+				| undefined;
 			const durationMs = Date.now() - start;
 			const outcomes = (res ?? []).map((o) => ({
 				id: String(o.id ?? "?"),

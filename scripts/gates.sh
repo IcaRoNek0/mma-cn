@@ -16,7 +16,7 @@ GATES='
 vitest            node  -       app            npx vitest run
 oxlint            node  -       app            npx oxlint src/ test/e2e/
 check-browser     node  -       app            npm run check:browser-compat
-prettier          node  -       app            npx prettier --check src test procedures --ignore-path ../.prettierignore --cache --cache-strategy content
+oxfmt             node  -       app            npx oxfmt --check src test procedures
 typecheck         node  -       app            npm run typecheck
 procedures        node  -       app            npm run test:procedures
 check-legacy      node  -       app            node ../plugins/check-legacy.mjs

@@ -5,6 +5,7 @@ const { execFileSync, execSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
 const repoRoot = path.resolve(__dirname, "../..");
 const appDir = path.join(repoRoot, "app");
@@ -430,7 +431,7 @@ function memberNames(ts, text) {
 // Output-only -- regenerated with the d.ts, never hand-edited.
 async function generateApiMarkdown() {
   const ts = require(path.join(appDir, "node_modules", "typescript"));
-  const prettier = require(path.join(appDir, "node_modules", "prettier"));
+  const { format } = await import(pathToFileURL(path.join(appDir, "node_modules", "oxfmt", "dist", "index.js")).href);
   const program = ts.createProgram([out], { skipLibCheck: true, target: ts.ScriptTarget.ESNext });
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(out);
@@ -463,7 +464,7 @@ async function generateApiMarkdown() {
     };
   };
 
-  // Every code block is formatted in one prettier pass. Each is a declaration of a placeholder
+  // Every code block is formatted in one oxfmt pass. Each is a declaration of a placeholder
   // name (a dotted path like `ui.Button` would not parse), preceded by a marker comment.
   const blocks = [];
   const block = (name, declaration) => {
@@ -474,7 +475,8 @@ async function generateApiMarkdown() {
   const formatBlocks = async () => {
     const marker = "// @@block";
     const joined = blocks.map((b) => marker + NL + b.declaration).join(NL);
-    const formatted = await prettier.format(joined, { parser: "typescript", printWidth: 88 });
+    const { code: formatted, errors } = await format("api.ts", joined, { printWidth: 88 });
+    if (errors.length > 0) throw new Error(`API.md code blocks failed to format: ${errors[0].message}`);
     const chunks = formatted.split(marker + NL).slice(1);
     if (chunks.length !== blocks.length) throw new Error("API.md code blocks lost their markers");
     blocks.forEach((b, i) => {

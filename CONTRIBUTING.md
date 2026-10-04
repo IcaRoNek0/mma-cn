@@ -40,7 +40,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D clippy::correctness
 ```
 
-`npm run format` runs prettier and rustfmt.
+`npm run format` runs oxfmt and rustfmt.
 
 Some files are generated and committed. Regenerate and commit them when you change their source:
 

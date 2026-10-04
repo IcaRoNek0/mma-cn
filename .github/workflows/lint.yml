@@ -16,9 +16,7 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v5
         with:
-          path: |
-            app/node_modules/.cache/prettier
-            app/node_modules/.vitest-cache
+          path: app/node_modules/.vitest-cache
           key: ${{ runner.os }}-node-gates-v1-${{ hashFiles('app/package-lock.json', 'plugins/**/package-lock.json', '.nvmrc', 'app/vitest.config.ts') }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-node-gates-v1-${{ hashFiles('app/package-lock.json', 'plugins/**/package-lock.json', '.nvmrc', 'app/vitest.config.ts') }}-

@@ -24,7 +24,11 @@ export type PanoDestination = string | google.maps.LatLngLiteral;
 export type PanoFrame = CameraFrame & { zoom?: number };
 export type ShowResult = { status: "shown"; pano: Pano | null } | { status: "superseded" };
 export type PanoEvent =
-	"pov_changed" | "zoom_changed" | "links_changed" | "status_changed" | "pano_changed";
+	| "pov_changed"
+	| "zoom_changed"
+	| "links_changed"
+	| "status_changed"
+	| "pano_changed";
 export type PanoViewer = ReturnType<typeof createPano>;
 
 const REVEAL_MS = 280;

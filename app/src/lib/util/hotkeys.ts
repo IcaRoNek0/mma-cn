@@ -11,10 +11,16 @@ type QuicktagSlot = (typeof QUICKTAG_SLOTS)[number];
 /** Derived from the def table: the raw UI defs below plus the generated
  *  quicktag slots. Command-level bindings are keyed by registry id (string). */
 export type HotkeyAction =
-	(typeof STATIC_HOTKEY_DEFS)[number]["action"] | `quicktag${QuicktagSlot}`;
+	| (typeof STATIC_HOTKEY_DEFS)[number]["action"]
+	| `quicktag${QuicktagSlot}`;
 
 export type HotkeyGroup =
-	"Commands" | "Global" | "Map Navigation" | "Location Editor" | "Quicktag" | "Review";
+	| "Commands"
+	| "Global"
+	| "Map Navigation"
+	| "Location Editor"
+	| "Quicktag"
+	| "Review";
 
 export interface HotkeyDef {
 	action: HotkeyAction;

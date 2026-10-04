@@ -19,7 +19,7 @@
 		"build:procedures": "node scripts/build-procedures.mjs",
 		"build": "npm run gen:plugin-types && npm run gen:plugin-registry && npm run gen:image-dims && npm run gen:i18n && npm run gen:manual-index && npm run build:procedures && vite build",
 		"build:opensv": "node opensv-build/build-opensv.mjs",
-		"format": "prettier --write --ignore-path ../.prettierignore \"src/**/*.{ts,tsx,css,json}\" \"test/**/*.{ts,tsx}\" && cargo fmt --manifest-path src-tauri/Cargo.toml",
+		"format": "oxfmt src test && cargo fmt --manifest-path src-tauri/Cargo.toml",
 		"lint": "oxlint src test/e2e && npm run check:browser-compat",
 		"check:browser-compat": "node scripts/check-browser-compat.mjs",
 		"preview": "vite preview",
@@ -56,10 +56,10 @@
 	},
 	"lint-staged": {
 		"*.{ts,tsx,mjs}": [
-			"prettier --write --ignore-path ../.prettierignore",
+			"oxfmt --no-error-on-unmatched-pattern",
 			"oxlint --fix --no-error-on-unmatched-pattern"
 		],
-		"*.{json,css,md}": "prettier --write --ignore-path ../.prettierignore"
+		"*.{json,css,md}": "oxfmt --no-error-on-unmatched-pattern"
 	},
 	"devDependencies": {
 		"@mdn/browser-compat-data": "^8.0.11",
@@ -84,9 +84,9 @@
 		"image-size": "^2.0.2",
 		"jsdom": "^30.0.1",
 		"lint-staged": "^17.0.5",
+		"oxfmt": "^0.71.0",
 		"oxlint": "^1.86.0",
 		"oxlint-tsgolint": "^7.0.2003",
-		"prettier": "^3.8.3",
 		"react-scan": "^0.5.7",
 		"rollup": "^4.62.2",
 		"rollup-plugin-dts": "^6.4.1",

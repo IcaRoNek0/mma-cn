@@ -51,7 +51,9 @@ import {
 import "./pivot.css";
 
 type Axis =
-	{ kind: "all" } | { kind: "active" } | { kind: "field"; key: string; buckets: number | null };
+	| { kind: "all" }
+	| { kind: "active" }
+	| { kind: "field"; key: string; buckets: number | null };
 
 const TAGS_FIELD_KEY = "__tags__";
 const FIELD_PREFIX = "field:";
