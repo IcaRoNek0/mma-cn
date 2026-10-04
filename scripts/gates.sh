@@ -1,8 +1,8 @@
 #!/bin/sh
 # Every CI gate, defined once. CI runs `gates.sh --env <env>` per environment; the pre-push
-# hook runs them all. Lanes run in parallel and each runs its gates in order. The `fresh`
-# lane regenerates committed artifacts, so it runs after every other lane rather than racing
-# a reader.
+# hook runs them all. Lanes run in parallel and each runs its gates in order; a gate in lane
+# `-` shares nothing and runs on its own. The `fresh` lane regenerates committed artifacts, so
+# it runs after every other lane rather than racing a reader.
 #
 #   gates.sh                 all gates
 #   gates.sh --env node      one environment's gates
@@ -13,17 +13,17 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 
 # The cargo lane shares app/src-tauri's target directory, and with it Cargo's build lock.
 GATES='
-oxlint            node  node    app            npx oxlint src/ test/e2e/
-vitest            node  vitest  app            npx vitest run
-check-browser     node  node    app            npm run check:browser-compat
-prettier          node  node    app            npx prettier --check src test procedures --ignore-path ../.prettierignore --cache --cache-strategy content
-typecheck         node  node    app            npm run typecheck
-procedures        node  node    app            npm run test:procedures
-check-legacy      node  node    app            node ../plugins/check-legacy.mjs
-check-unstable    node  node    app            node ../plugins/check-unstable.mjs
-check-floors      node  node    app            node ../plugins/check-floors.mjs
-check-tokens      node  node    app            node ../plugins/check-tokens.mjs
-check-sidecars    node  node    .              node plugins/check-sidecars.mjs
+vitest            node  -       app            npx vitest run
+oxlint            node  -       app            npx oxlint src/ test/e2e/
+check-browser     node  -       app            npm run check:browser-compat
+prettier          node  -       app            npx prettier --check src test procedures --ignore-path ../.prettierignore --cache --cache-strategy content
+typecheck         node  -       app            npm run typecheck
+procedures        node  -       app            npm run test:procedures
+check-legacy      node  -       app            node ../plugins/check-legacy.mjs
+check-unstable    node  -       app            node ../plugins/check-unstable.mjs
+check-floors      node  -       app            node ../plugins/check-floors.mjs
+check-tokens      node  -       app            node ../plugins/check-tokens.mjs
+check-sidecars    node  -       .              node plugins/check-sidecars.mjs
 image-dims        node  fresh   app            fresh src/components/manual/manual-img-dims.gen.ts -- npm run gen:image-dims
 plugin-types      node  fresh   app            fresh ../plugins/types/mma.d.ts -- npm run gen:plugin-types
 plugin-build      node  fresh   .              fresh plugins -- node plugins/build-all.mjs
@@ -31,8 +31,8 @@ cargo-fmt         rust  cargo   app/src-tauri  cargo fmt --all -- --check
 clippy            rust  cargo   app/src-tauri  cargo clippy -- -D clippy::correctness
 cargo-test        rust  cargo   app/src-tauri  cargo test --lib
 mma-geo           rust  cargo   app/src-tauri  cargo test -p mma-geo
-geocode           rust  crates  app/src-tauri  cargo test --manifest-path crates/geocode/Cargo.toml
-tz                rust  crates  app/src-tauri  cargo test --manifest-path crates/tz/Cargo.toml
+geocode           rust  -       app/src-tauri  cargo test --manifest-path crates/geocode/Cargo.toml
+tz                rust  -       app/src-tauri  cargo test --manifest-path crates/tz/Cargo.toml
 bindings          rust  fresh   app            fresh src/bindings.gen.ts src/bindings.consts.ts -- npm run gen:bindings
 '
 
@@ -59,6 +59,7 @@ table() {
 		fresh/fresh\ *) ;;
 		fresh/* | */fresh\ *) echo "[gates] $name: the fresh lane holds exactly the fresh commands" >&2 && exit 2 ;;
 		esac
+		[ "$lane" != - ] || lane=$name
 		printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$env" "$lane" "$dir" "$cmd"
 	done
 }
