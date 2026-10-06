@@ -1,3 +1,12 @@
+## v0.11.6 - 2026-10-06
+- Street View tiles and panorama info retry after a dropped connection, and canceling stops right away
+- Heatmap's Reset asks before clearing its layers and custom gradients
+- Fixed undo after a long edit like enrichment only reverting part of it after reopening the map
+- Fixed unsaved edits from older versions being set aside when they could not be converted
+- Fixed editing an empty tag folder losing its place in the tag order
+- Fixed a selected marker losing its highlight after moving on the map
+- Fixed a window closed while minimized reopening unmaximized
+
 ## v0.11.5 - 2026-10-03
 - Map opening & closing is significantly faster - **breaking change** - upon update, undo history is cleared once on map open.
 - Importing locations updates their markers without redrawing the whole map
