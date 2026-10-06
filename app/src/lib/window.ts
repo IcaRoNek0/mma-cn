@@ -168,7 +168,9 @@ const maximizedKey = (label: string) => `win-maximized:${label}`;
 /** Persist this window's geometry, plus the maximized bit the plugin no longer tracks. */
 export async function saveWindowState(): Promise<void> {
 	try {
-		localStorage.setItem(maximizedKey(appWindow.label), String(await appWindow.isMaximized()));
+		// A minimized window reads as unmaximized, so its last visible state stands.
+		if (!(await appWindow.isMinimized()))
+			localStorage.setItem(maximizedKey(appWindow.label), String(await appWindow.isMaximized()));
 	} catch {
 		/* geometry still restores; only the maximized bit is lost */
 	}

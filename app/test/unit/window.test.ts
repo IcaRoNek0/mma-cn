@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
 	WINDOWS,
 	labelOf,
@@ -7,8 +7,12 @@ import {
 	hashOf,
 	identityFromHash,
 	titleOf,
+	appWindow,
+	saveWindowState,
 	type WindowIdentity,
 } from "@/lib/window";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async () => {} }));
 
 const list: WindowIdentity = { type: "list" };
 const editor: WindowIdentity = { type: "editor", mapId: "abc-123" };
@@ -43,5 +47,26 @@ describe("window codecs", () => {
 		expect(titleOf(list, "Japan")).toBe("Japan · Map Making App");
 		expect(titleOf(editor, "Japan")).toBe("Japan · Map Making App");
 		expect(titleOf(editor, null)).not.toBe(titleOf(list, null));
+	});
+});
+
+describe("saveWindowState", () => {
+	const key = `win-maximized:${appWindow.label}`;
+	const setWindow = (maximized: boolean, minimized: boolean) =>
+		Object.assign(appWindow, {
+			isMaximized: async () => maximized,
+			isMinimized: async () => minimized,
+		});
+
+	it("a minimized window keeps the maximized bit it had while visible", async () => {
+		setWindow(true, false);
+		await saveWindowState();
+		expect(localStorage.getItem(key)).toBe("true");
+		setWindow(false, true);
+		await saveWindowState();
+		expect(localStorage.getItem(key)).toBe("true");
+		setWindow(false, false);
+		await saveWindowState();
+		expect(localStorage.getItem(key)).toBe("false");
 	});
 });
