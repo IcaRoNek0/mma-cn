@@ -39,7 +39,7 @@ fn a_msgpack_sidecar_converts_to_an_arrow_delta_that_reloads_to_the_same_overlay
         },
     );
 
-    convert_msgpack_delta(&delta_path, &base_path);
+    assert!(!convert_msgpack_delta(&delta_path, &base_path).unwrap());
 
     assert!(is_arrow(&delta_path));
     assert_eq!(
@@ -66,7 +66,7 @@ fn a_msgpack_sidecar_of_a_map_with_no_base_converts_to_its_adds() {
         },
     );
 
-    convert_msgpack_delta(&delta_path, &dir.join("m.arrow"));
+    assert!(!convert_msgpack_delta(&delta_path, &dir.join("m.arrow")).unwrap());
 
     assert_eq!(
         reload(&delta_path),
@@ -83,7 +83,7 @@ fn an_unreadable_sidecar_is_set_aside_as_corrupt() {
     let delta_path = dir.join("m_delta.arrow");
     fs::write(&delta_path, b"definitely not msgpack").unwrap();
 
-    assert!(convert_msgpack_delta(&delta_path, &dir.join("m.arrow")));
+    assert!(convert_msgpack_delta(&delta_path, &dir.join("m.arrow")).unwrap());
 
     assert!(!delta_path.exists());
     assert_eq!(
@@ -93,7 +93,7 @@ fn an_unreadable_sidecar_is_set_aside_as_corrupt() {
 }
 
 #[test]
-fn a_sidecar_whose_base_does_not_read_is_left_for_the_next_startup() {
+fn a_sidecar_whose_base_does_not_read_is_left_in_place_and_fails_the_conversion() {
     let dir = TempDir::new("mma_test_delta_legacy_bad_base");
     let base_path = dir.join("m.arrow");
     let delta_path = dir.join("m_delta.arrow");
@@ -108,7 +108,7 @@ fn a_sidecar_whose_base_does_not_read_is_left_for_the_next_startup() {
     );
     let before = fs::read(&delta_path).unwrap();
 
-    assert!(!convert_msgpack_delta(&delta_path, &base_path));
+    assert!(convert_msgpack_delta(&delta_path, &base_path).is_err());
 
     assert_eq!(fs::read(&delta_path).unwrap(), before);
     assert!(!dir.join("m_delta.corrupt").exists());
@@ -125,7 +125,7 @@ fn an_arrow_sidecar_is_left_untouched() {
     .unwrap();
     let before = fs::read(&delta_path).unwrap();
 
-    convert_msgpack_delta(&delta_path, &dir.join("m.arrow"));
+    assert!(!convert_msgpack_delta(&delta_path, &dir.join("m.arrow")).unwrap());
 
     assert_eq!(fs::read(&delta_path).unwrap(), before);
     assert!(!dir.join("m_delta.corrupt").exists());
@@ -136,7 +136,7 @@ fn a_missing_sidecar_stays_missing() {
     let dir = TempDir::new("mma_test_delta_legacy_missing");
     let delta_path = dir.join("m_delta.arrow");
 
-    convert_msgpack_delta(&delta_path, &dir.join("m.arrow"));
+    assert!(!convert_msgpack_delta(&delta_path, &dir.join("m.arrow")).unwrap());
 
     assert!(!delta_path.exists());
     assert!(!dir.join("m_delta.corrupt").exists());

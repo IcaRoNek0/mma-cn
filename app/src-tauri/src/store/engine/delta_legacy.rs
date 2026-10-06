@@ -1,12 +1,13 @@
 //! One-time conversion of msgpack `.delta` sidecars to the Arrow commit-delta format.
 //!
 //! Self-contained and disposable: nothing outside this file knows the msgpack shape, and
-//! the app reaches in only through [`convert_msgpack_deltas`], called once at startup, and
-//! [`warn_of_set_aside_deltas`], called once the first window is ready.
+//! the app reaches in only through [`convert_msgpack_deltas`], called once at startup,
+//! [`warn_of_set_aside_deltas`], called once the first window is ready, and
+//! [`convert_msgpack_delta`], called as a map opens.
 //! When every install has upgraded, delete this file, its test file, its `mod delta_legacy;`
-//! line in `engine.rs`, both calls in `lib.rs`, the `rmp-serde` dependency, and the
-//! non-human-readable branches of `RawExtra`'s serde impls -- nothing else refers to any
-//! of it.
+//! line in `engine.rs`, both calls in `lib.rs`, the call in `open_claimed_map`, the
+//! `rmp-serde` dependency, and the non-human-readable branches of `RawExtra`'s serde impls
+//! -- nothing else refers to any of it.
 
 use super::{set_aside_delta, Overlay, StoreWarning};
 use crate::store::arrow;
@@ -47,11 +48,14 @@ pub(crate) fn convert_msgpack_deltas() {
     };
     for id in map_ids {
         match (storage::arrow_delta_path(&id), storage::arrow_path(&id)) {
-            (Ok(delta), Ok(base)) => {
-                if convert_msgpack_delta(&delta, &base) {
-                    SET_ASIDE.store(true, Ordering::Relaxed);
+            (Ok(delta), Ok(base)) => match convert_msgpack_delta(&delta, &base) {
+                Ok(set_aside) => {
+                    if set_aside {
+                        SET_ASIDE.store(true, Ordering::Relaxed);
+                    }
                 }
-            }
+                Err(e) => log::error!("[delta_legacy] {e}"),
+            },
             (Err(e), _) | (_, Err(e)) => log::error!("[delta_legacy] {id}: {e}"),
         }
     }
@@ -66,31 +70,24 @@ pub(crate) fn warn_of_set_aside_deltas() {
 
 /// Rewrite one msgpack sidecar as an Arrow delta against `base_path`. Only a sidecar that
 /// does not decode is set aside; returns whether it was. Anything else that fails (reading
-/// it, reading its base, writing the result) leaves it as it is for the next startup to try
-/// again: the delta itself is fine, and a map whose base does not read cannot open anyway.
-fn convert_msgpack_delta(delta_path: &Path, base_path: &Path) -> bool {
+/// it, reading its base, writing the result) leaves it as it is and is the error: the delta
+/// itself is fine, so the map must not open without it.
+pub(crate) fn convert_msgpack_delta(delta_path: &Path, base_path: &Path) -> AppResult<bool> {
     if !delta_path.exists() || is_arrow(delta_path) {
-        return false;
+        return Ok(false);
     }
-    let bytes = match fs::read(delta_path) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("[delta_legacy] left {delta_path:?} as msgpack: {e}");
-            return false;
-        }
-    };
+    let left = |e: AppError| AppError(format!("left {delta_path:?} as msgpack: {e}"));
+    let bytes = fs::read(delta_path).map_err(|e| left(e.into()))?;
     let old = match rmp_serde::from_slice::<MsgpackDelta>(&bytes) {
         Ok(old) => old,
         Err(e) => {
             set_aside_delta(delta_path, &AppError::from(e.to_string()));
-            return true;
+            return Ok(true);
         }
     };
-    match write_converted(delta_path, base_path, old) {
-        Ok(()) => log::info!("[delta_legacy] converted {delta_path:?}"),
-        Err(e) => log::error!("[delta_legacy] left {delta_path:?} as msgpack: {e}"),
-    }
-    false
+    write_converted(delta_path, base_path, old).map_err(left)?;
+    log::info!("[delta_legacy] converted {delta_path:?}");
+    Ok(false)
 }
 
 fn is_arrow(path: &Path) -> bool {

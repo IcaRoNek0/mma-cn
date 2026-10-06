@@ -107,6 +107,7 @@ async fn open_claimed_map(
                 log::debug!("[store_open] no base file, empty batch");
                 (RecordBatch::new_empty(schema()), None)
             };
+            delta_legacy::convert_msgpack_delta(&delta_path, &path)?;
             let delta = load_delta(&delta_path);
             (batch, handle, delta)
         };
