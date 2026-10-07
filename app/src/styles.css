@@ -3032,6 +3032,29 @@ input.date-picker__trigger:focus {
 	padding: 0.25rem;
 	z-index: 100;
 }
+.psv-metadata-panel {
+	width: min(360px, calc(100vw - 32px));
+	max-height: min(70vh, 560px);
+	overflow: auto;
+	background: var(--surface-3);
+	color: var(--text-1);
+	border: 1px solid var(--border-subtle);
+	box-shadow: var(--shadow-4);
+	border-radius: var(--radius-3);
+	padding: 0.75rem;
+	z-index: 100;
+}
+.psv-metadata-panel__header,
+.psv-metadata-panel__copy { display: flex; align-items: center; gap: 0.5rem; }
+.psv-metadata-panel__header { justify-content: space-between; margin-bottom: 0.5rem; }
+.psv-metadata-panel__header button,
+.psv-metadata-panel__copy button { background: none; border: 0; color: var(--text-2); cursor: pointer; padding: 0.25rem; }
+.psv-metadata-panel dl { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 0.35rem 0.5rem; margin: 0; font-size: 0.82rem; }
+.psv-metadata-panel dt { color: var(--text-2); }
+.psv-metadata-panel dd { margin: 0; overflow-wrap: anywhere; }
+.psv-metadata-panel code { font-size: 0.75rem; }
+.psv-metadata-panel details { margin-top: 0.75rem; }
+.psv-metadata-panel pre { max-height: 180px; overflow: auto; font-size: 0.68rem; white-space: pre-wrap; }
 .date-picker__popover .rdp-root {
 	--rdp-accent-color: var(--accent);
 	--rdp-accent-background-color: var(--accent-muted);
@@ -6303,3 +6326,7 @@ div:has(> div.gmnoprint > div.gm-style-cc [title="Keyboard shortcuts"]) {
 		height: 3.75rem;
 	}
 }
+
+.psv-metadata-panel__row { display: contents; }
+.psv-metadata-panel__copy span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.psv-metadata-panel__copy button { flex-shrink: 0; min-width: 32px; min-height: 32px; }

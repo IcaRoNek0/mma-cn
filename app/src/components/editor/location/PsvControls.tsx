@@ -7,13 +7,79 @@ import {
 	mdiLoading,
 	mdiMinus,
 	mdiPlus,
+	mdiInformationOutline,
+	mdiContentCopy,
+	mdiClose,
 } from "@mdi/js";
+import * as Popover from "@radix-ui/react-popover";
 import { Icon } from "@/components/primitives/Icon";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { useSettings } from "@/store/settings";
 import type { PsvMoveMarker, PsvPanoramaController } from "@/lib/sv/panoSingleton";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
+
+
+function PsvMetadataControl({ panorama }: { panorama: PsvPanoramaController }) {
+	const [metadata, setMetadata] = useState(() => panorama.getMetadata());
+	useEffect(() => {
+		const update = () => setMetadata(panorama.getMetadata());
+		const listener = panorama.addListener("pano_changed", update);
+		update();
+		return () => listener.remove();
+	}, [panorama]);
+	const copy = async (value: string) => {
+		try {
+			await navigator.clipboard.writeText(value);
+			toast(t("Copied"));
+		} catch {
+			toast(t("Copy failed"));
+		}
+	};
+	const rows: readonly (readonly [string, string, boolean?])[] = metadata ? [
+		["panoid", metadata.panoId, true],
+		[t("Coordinates") + " (GCJ-02)", `${metadata.position.lat}, ${metadata.position.lng}`, true],
+		[t("Source"), metadata.source],
+		[t("Address"), metadata.address ?? "—"],
+		[t("Altitude"), metadata.altitude == null ? "—" : `${metadata.altitude} m`],
+		[t("Heading"), `${metadata.heading}°`],
+		[t("Pitch"), `${metadata.pitch}°`],
+		[t("North offset"), `${metadata.northOffset}°`],
+	] as const : [];
+	return (
+		<div className="embed-controls__control" style={{ inset: "auto auto 56px 0" }}>
+			<Popover.Root>
+				<div className="map-control map-control--button">
+					<Tooltip content={t("Street View metadata")} side="right">
+						<Popover.Trigger asChild>
+							<button aria-label={t("Street View metadata")}><Icon path={mdiInformationOutline} /></button>
+						</Popover.Trigger>
+					</Tooltip>
+				</div>
+				<Popover.Portal>
+					<Popover.Content className="psv-metadata-panel" side="right" align="end" sideOffset={8} collisionPadding={12} aria-label={t("Street View metadata")}>
+						<div className="psv-metadata-panel__header">
+							<strong>{t("Street View metadata")}</strong>
+							<Popover.Close aria-label={t("Close")}><Icon path={mdiClose} /></Popover.Close>
+						</div>
+						{metadata ? <>
+							<dl>{rows.map(([label, value, canCopy]) => (
+								<div key={label} className="psv-metadata-panel__row">
+									<dt>{label}</dt>
+									<dd className={canCopy ? "psv-metadata-panel__copy" : undefined}>
+										<span>{value}</span>
+										{canCopy && <button aria-label={label === "panoid" ? t("Copy panoid") : t("Copy coordinates")} onClick={() => void copy(value)}><Icon path={mdiContentCopy} /></button>}
+									</dd>
+								</div>
+							))}</dl>
+							<details><summary>{t("Full metadata")}</summary><pre>{JSON.stringify(metadata, null, 2)}</pre></details>
+						</> : <p>{t("No panorama metadata available")}</p>}
+					</Popover.Content>
+				</Popover.Portal>
+			</Popover.Root>
+		</div>
+	);
+}
 
 export const PsvMoveControls = memo(function PsvMoveControls({
 	panorama,
@@ -109,6 +175,7 @@ export const PsvControls = memo(function PsvControls({
 
 	return (
 		<div className="embed-controls">
+			<PsvMetadataControl panorama={panorama} />
 			{settings.defaultMovementMode === "moving" && <PsvMoveControls panorama={panorama} />}
 			{settings.showFullscreenButton && (
 				<div className="embed-controls__control" style={{ inset: "0 0 auto auto" }}>

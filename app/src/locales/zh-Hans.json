@@ -1290,5 +1290,13 @@
 	"{n}h ago": "{n} 小时前",
 	"{n}m ago": "{n} 分钟前",
 	"{pct}% of locations": "{pct}% 的位置",
-	"{selected} of {total} selected ({locations} locations)": "已选 {selected} / {total}（{locations} 个位置）"
+	"{selected} of {total} selected ({locations} locations)": "已选 {selected} / {total}（{locations} 个位置）",
+	"Street View metadata": "街景元数据",
+	"Copy panoid": "复制 panoid",
+	"Full metadata": "完整元数据",
+	"No panorama metadata available": "暂无街景元数据",
+	"North offset": "北向偏移",
+	"Copied": "已复制",
+	"Source": "来源",
+	"Address": "地址"
 }
