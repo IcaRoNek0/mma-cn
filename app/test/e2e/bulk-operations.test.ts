@@ -10,12 +10,10 @@ import {
 	seedLocs,
 } from "./helpers";
 import type { Location } from "@/bindings.gen";
-import type { EnrichOutcome } from "@/lib/sv/enrich";
+import { LocationFlag } from "@/bindings.consts";
 
 const OFFICIAL_PANO = "-zrYsLR4Fh-cfJG_EMZ1-A";
 const OFFICIAL_COORDS = { lat: 52.10947502806108, lng: 34.90131410856584 };
-const LoadAsPanoId = 1;
-
 function loc(overrides: Partial<Location> = {}): Location {
 	return createLocation({ lat: 0, lng: 0, ...overrides });
 }
@@ -36,16 +34,34 @@ describe("Bulk operations -- enrichAll", () => {
 		];
 		locIds = await addLocs(locs);
 	});
-	it("enriches locations with panoId", async () => {
-		const result = await withApi(async (api) => {
-			return await api.enrichAll(await api.fetchAllLocations());
+	it("resolves panoIds and reports a success count plus the failed ids", async () => {
+		const summary = await withApi(async (api) => {
+			const res = await api.enrichAll({ type: "Everything" }, { force: true });
+			return res.map((o) => ({ id: o.id, succeeded: o.succeeded, failed: o.failed }));
 		});
 
-		const meta = result.find((r: EnrichOutcome) => r.id === "enrichMeta");
-		expect(meta!.success.length).toBeGreaterThanOrEqual(2);
+		// Only passes that did work are reported. Every fixture location resolves and
+		// enriches under the mock, so nothing fails.
+		expect(summary.length).toBeGreaterThan(0);
+		for (const s of summary) {
+			expect(s.succeeded).toBeGreaterThan(0);
+			expect(s.failed).toEqual([]);
+		}
 
-		const l = await getLoc(locIds[0]);
-		expect(l.extra?.countryCode).toBeTruthy();
+		for (const id of locIds) {
+			const l = await getLoc(id);
+			expect(l.panoId).toBeTruthy();
+		}
+	});
+
+	it("hands back the ids of the rows a provider failed", async () => {
+		// Open ocean: no coverage, so pano resolution fails the row by id.
+		const [oceanId] = await addLocs([loc({ lat: 0, lng: 0 })]);
+		const failed = await withApi(async (api) => {
+			const res = await api.enrichAll({ type: "Everything" }, { force: true });
+			return res.find((o) => o.id === "panoResolve")?.failed ?? null;
+		});
+		expect(failed).toEqual([oceanId]);
 	});
 
 	it("resolves panoId from coords for locations without one", async () => {
@@ -55,7 +71,7 @@ describe("Bulk operations -- enrichAll", () => {
 		if (hadPano) return; // already resolved from previous test run
 
 		await withApi(async (api) => {
-			return await api.enrichAll(await api.fetchAllLocations(), { force: true });
+			return await api.enrichAll({ type: "Everything" }, { force: true });
 		});
 
 		const after = await getLoc(locIds[2]);
@@ -67,40 +83,33 @@ describe("Bulk operations -- enrichAll", () => {
 		await closeMap();
 		await deleteMap(map.id);
 		map.id = await createAndOpenMap("E2E Bulk Enrich Undo");
-		const locs = [
-			loc({ lat: OFFICIAL_COORDS.lat, lng: OFFICIAL_COORDS.lng, panoId: OFFICIAL_PANO }),
-		];
+		const locs = [loc({ lat: OFFICIAL_COORDS.lat, lng: OFFICIAL_COORDS.lng })];
 		const newIds = await addLocs(locs);
 		const undoLocId = newIds[0];
 
-		// Verify not enriched initially
 		const before = await getLoc(undoLocId);
-		expect(before.extra?.countryCode).toBeFalsy();
+		expect(before.panoId).toBeFalsy();
 
-		// Run enrichment
 		await withApi(async (api) => {
-			return await api.enrichAll(await api.fetchAllLocations(), { force: true });
+			await api.enrichAll({ type: "Everything" }, { force: true });
+			return "ok";
 		});
 
-		// Verify enriched
 		const enriched = await getLoc(undoLocId);
 		expect(enriched.panoId).toBeTruthy();
-		expect(enriched.extra?.countryCode).toBeTruthy();
 
-		// Undo until enrichment is gone (but stop before undoing the addLocations)
+		// Undo until the resolved pano is gone (but stop before undoing the addLocations).
 		await withApi(async (api, id) => {
 			for (let i = 0; i < 100; i++) {
-				api.undo();
-				await new Promise((r) => setTimeout(r, 300));
+				await api.undo();
 				const loc = await api.fetchLocation(id);
-				if (!loc || !loc.extra?.countryCode) break;
+				if (!loc || !loc.panoId) break;
 			}
 			return "ok";
 		}, undoLocId);
 
 		const reverted = await getLoc(undoLocId);
-		expect(reverted).not.toBeNull();
-		expect(reverted.extra?.countryCode).toBeFalsy();
+		expect(reverted.panoId).toBeFalsy();
 	});
 });
 
@@ -120,96 +129,59 @@ describe("Bulk operations -- bulkPinToPano", () => {
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 			}),
 		];
 		locIds = await addLocs(locs);
 	});
 	it("pins unpinned locations and resolves panoId from coords", async () => {
-		const count = await withApi(async (api) => {
-			return await api.bulkPinToPano(await api.fetchAllLocations());
+		const outcome = await withApi(async (api) => {
+			return await api.bulkPinToPano({ type: "Everything" });
 		});
 
-		// pin-1 (no pano) and pin-2 (has pano, not pinned) should be pinned
-		// pin-3 is already pinned
-		expect(count).toBe(2);
+		// pin-1 (no pano) is resolved and pinned, pin-2 (has pano, not pinned) keeps its pano
+		// and is pinned, pin-3 is already pinned
+		expect(outcome).toEqual({ succeeded: 2, failed: [], resolved: 1 });
 
 		const l1 = await getLoc(locIds[0]);
 		expect(l1.panoId).toBeTruthy();
-		expect(l1.flags & LoadAsPanoId).toBeTruthy();
+		expect(l1.flags & LocationFlag.LoadAsPanoId).toBeTruthy();
 
 		const l2 = await getLoc(locIds[1]);
-		expect(l2.flags & LoadAsPanoId).toBeTruthy();
+		expect(l2.flags & LocationFlag.LoadAsPanoId).toBeTruthy();
 	});
 
 	it("skips already-pinned locations without force", async () => {
-		const count = await withApi(async (api) => {
-			return await api.bulkPinToPano(await api.fetchAllLocations());
+		const outcome = await withApi(async (api) => {
+			return await api.bulkPinToPano({ type: "Everything" });
 		});
 
-		expect(count).toBe(0);
+		expect(outcome).toEqual({ succeeded: 0, failed: [], resolved: 0 });
 	});
 
-	it("re-pins all with force", async () => {
-		const count = await withApi(async (api) => {
-			return await api.bulkPinToPano(await api.fetchAllLocations(), { force: true });
+	it("re-resolves every pinned location with force", async () => {
+		const outcome = await withApi(async (api) => {
+			return await api.bulkPinToPano({ type: "Everything" }, { force: true });
 		});
 
-		expect(count).toBe(3);
+		expect(outcome).toEqual({ succeeded: 0, failed: [], resolved: 3 });
 	});
-});
 
-// ============================================================================
-// needsEnrichment predicate
-// ============================================================================
-
-describe("Bulk operations -- needsEnrichment", () => {
-	it("returns true for locations without countryCode", async () => {
+	it("unpins by clearing the flag and keeps every pano id", async () => {
 		const result = await withApi(async (api) => {
-			const base = {
-				id: 0,
-				lat: 0,
-				lng: 0,
-				heading: 0,
-				pitch: 0,
-				zoom: 0,
-				panoId: null,
-				flags: 0,
-				tags: [],
-				createdAt: 0,
-				modifiedAt: null,
-			};
-			return [
-				api.needsEnrichment({ ...base, extra: undefined }),
-				api.needsEnrichment({ ...base, extra: {} }),
-				api.needsEnrichment({ ...base, extra: { altitude: 100 } }),
-			];
+			return await api.applyFieldOp(
+				{ type: "Everything" },
+				{ kind: "set", key: "loadAsPanoId", value: false },
+				true,
+			);
 		});
-		expect(result).toEqual([true, true, true]);
-	});
 
-	it("is field-aware: needs enrichment unless every requested field is present", async () => {
-		const fields = ["countryCode", "altitude"];
-		const result = await withApi(async (api, f) => {
-			const base = {
-				id: 0,
-				lat: 0,
-				lng: 0,
-				heading: 0,
-				pitch: 0,
-				zoom: 0,
-				panoId: null,
-				flags: 0,
-				tags: [],
-				createdAt: 0,
-				modifiedAt: null,
-			};
-			return [
-				api.needsEnrichment({ ...base, extra: { countryCode: "US" } }, f),
-				api.needsEnrichment({ ...base, extra: { countryCode: "US", altitude: 100 } }, f),
-			];
-		}, fields);
-		expect(result).toEqual([true, false]);
+		expect(result.changed).toBe(3);
+		for (const id of locIds) {
+			const l = await getLoc(id);
+			expect(l.flags & LocationFlag.LoadAsPanoId).toBe(0);
+			expect(l.panoId).toBeTruthy();
+		}
 	});
 });
 
@@ -220,39 +192,128 @@ describe("Bulk operations -- needsEnrichment", () => {
 describe("Bulk operations -- cancel preserves progress", () => {
 	useMap("E2E Bulk Cancel");
 
+	const N = 50_000;
+
 	before(async () => {
-		// Create enough locations to span multiple batches
-		await seedLocs(500, (i) => ({
-			lat: 52.109 + i * 0.0001,
-			lng: 34.901 + i * 0.0001,
+		// Enough rows for several engine pages, none resolved yet.
+		await seedLocs(N, (i) => ({
+			lat: 52.109 + (i % 1000) * 0.0001,
+			lng: 34.901 + Math.floor(i / 1000) * 0.0001,
 		}));
 	});
-	it("enrichAll with abort preserves completed batches", async () => {
+	it("a cancelled run keeps the pages it applied and lands no more", async () => {
 		const result = await withApi(async (api) => {
+			// Pano resolution on its own, one instance, so pages apply one at a time and a
+			// cancel after the first progress report leaves a partial run. It has to be a
+			// procedure that fetches: `rate` is charged per request, so a pure-compute
+			// procedure such as timezone finishes every page before the first report lands.
+			const controller = new AbortController();
 			try {
-				const controller = new AbortController();
-				// Cancel after 2 seconds
-				setTimeout(() => controller.abort(), 2000);
-				await api.enrichAll(await api.fetchAllLocations(), {
-					signal: controller.signal,
-					force: true,
-				});
+				await api._test.runProcedure(
+					{
+						entry: api._test.procedureEntry("panoResolve"),
+						batch: { mode: "chunk", size: 200 },
+						instances: 1,
+						// Paced per request, so the run outlasts the round trip of its first progress
+						// report and the batch declined by the cancel drains in well under a second.
+						rate: { units: 400, perMs: 1000 },
+					},
+					{ type: "Everything" },
+					{
+						id: "panoResolve",
+						signal: controller.signal,
+						onProgress: (done) => {
+							if (done > 0) controller.abort();
+						},
+					},
+				);
 				return { cancelled: false };
 			} catch (e) {
-				if (e instanceof Error && e.name === "AbortError") {
-					const locs = await api.fetchAllLocations();
-					const enriched = locs.filter((l) => l.extra?.countryCode != null).length;
-					return { cancelled: true, enriched };
-				}
+				if (e instanceof Error && e.name === "AbortError") return { cancelled: true };
 				return { error: e instanceof Error ? e.message : String(e) };
 			}
 		});
+		expect(result.cancelled).toBe(true);
 
-		if (result.cancelled) {
-			// Some locations should have been enriched before cancel
-			expect(result.enriched).toBeGreaterThan(0);
-			expect(result.enriched).toBeLessThan(500);
-		}
-		// If it finished before the 2s timeout, that's also fine
+		// Cancel stops the run before its next batch, and the engine lets the run go only
+		// once the batch in flight has drained, so nothing can land after this.
+		await browser.waitUntil(
+			() => withApi(async (api) => (await api.cmd.procedureActivity()).runs.length === 0),
+			{ timeoutMsg: "the cancelled run never ended" },
+		);
+		const settled = await withApi(
+			async (api) => (await api.fetchAllLocations()).filter((l) => l.panoId != null).length,
+		);
+		// The page that reported progress stays applied, and the cancel left the rest unrun.
+		expect(settled).toBeGreaterThan(0);
+		expect(settled).toBeLessThan(N);
+	});
+});
+
+// ============================================================================
+// Field ops: set / expression / clear run in Rust over a selector, one undo entry each
+// ============================================================================
+
+describe("Bulk operations -- field ops", () => {
+	useMap("E2E Bulk Field Ops");
+	let ids: number[];
+
+	before(async () => {
+		ids = await addLocs([
+			loc({ extra: { a: 10 } }),
+			loc({ extra: { a: -10 } }),
+			loc({ extra: { b: 1 } }),
+		]);
+	});
+
+	it("an expression writes per row, names the rows it cannot evaluate, and undoes as one entry", async () => {
+		const r = await withApi(
+			(api, ids) =>
+				api.applyFieldOp(
+					{ type: "Locations", locations: ids, name: null },
+					{ kind: "expr", key: "h", expr: "mod(a + 180, 360)" },
+					true,
+				),
+			ids,
+		);
+		expect(r.changed).toBe(2);
+		expect(r.failed).toEqual([ids[2]]);
+		expect((await getLoc(ids[0])).extra?.h).toBe(190);
+		expect((await getLoc(ids[1])).extra?.h).toBe(170);
+		expect((await getLoc(ids[2])).extra?.h).toBeUndefined();
+
+		await withApi(async (api) => {
+			await api.undo();
+			return "ok";
+		});
+		expect((await getLoc(ids[0])).extra?.h).toBeUndefined();
+		expect((await getLoc(ids[1])).extra?.h).toBeUndefined();
+	});
+
+	it("a constant set patches a writable built-in column and a clear drops extra keys", async () => {
+		const set = await withApi(
+			(api, ids) =>
+				api.applyFieldOp(
+					{ type: "Locations", locations: ids, name: null },
+					{ kind: "set", key: "heading", value: 90 },
+					true,
+				),
+			ids,
+		);
+		expect(set.changed).toBe(3);
+		expect((await getLoc(ids[2])).heading).toBe(90);
+
+		const cleared = await withApi(
+			(api, ids) =>
+				api.applyFieldOp(
+					{ type: "Locations", locations: ids, name: null },
+					{ kind: "delete", keys: ["a"] },
+					true,
+				),
+			ids,
+		);
+		expect(cleared.changed).toBe(2);
+		expect((await getLoc(ids[0])).extra?.a).toBeUndefined();
+		expect((await getLoc(ids[2])).extra?.b).toBe(1);
 	});
 });

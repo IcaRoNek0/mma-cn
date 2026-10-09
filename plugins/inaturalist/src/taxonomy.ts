@@ -1,3 +1,5 @@
+const { storage, getVisibleTags, updateTags } = MMA;
+
 export interface TaxonInfo {
 	id: number;
 	name: string;
@@ -149,14 +151,14 @@ export async function sortTagsByTaxonomy(
 	onProgress?: (p: SortProgress) => void,
 	signal?: AbortSignal,
 ): Promise<SortResult> {
-	const storage = MMA.storage("inaturalist");
-	const tags = MMA.getVisibleTags();
+	const store = storage("inaturalist");
+	const tags = getVisibleTags();
 	if (tags.length === 0) return { sorted: 0, skipped: 0, created: 0 };
 
 	const ancestorCacheKey = "taxo_ancestors";
 	const detailCacheKey = `taxo_details_${opts.lang}`;
-	const ancestorCache: Record<string, number[]> = storage.get(ancestorCacheKey, {});
-	const detailCache: Record<string, TaxonInfo> = storage.get(detailCacheKey, {});
+	const ancestorCache: Record<string, number[]> = store.get(ancestorCacheKey, {});
+	const detailCache: Record<string, TaxonInfo> = store.get(detailCacheKey, {});
 
 	const ranksToUse = new Set(opts.deep ? DEEP_RANKS : FLAT_RANKS);
 	const allNeededIds = new Set<number>();
@@ -204,7 +206,7 @@ export async function sortTagsByTaxonomy(
 		}
 	}
 
-	storage.set(ancestorCacheKey, ancestorCache);
+	store.set(ancestorCacheKey, ancestorCache);
 
 	const missingDetailIds = [...allNeededIds].filter((id) => !detailCache[String(id)]);
 	if (missingDetailIds.length > 0) {
@@ -213,7 +215,7 @@ export async function sortTagsByTaxonomy(
 		for (const [id, info] of details) {
 			detailCache[String(id)] = info;
 		}
-		storage.set(detailCacheKey, detailCache);
+		store.set(detailCacheKey, detailCache);
 	}
 
 	if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -250,15 +252,15 @@ export async function sortTagsByTaxonomy(
 
 	if (renames.length > 0) {
 		onProgress?.({ phase: "Renaming tags", current: 0, total: renames.length });
-		await MMA.updateTags(renames.map((r) => ({ id: r.id, patch: { name: r.name } })));
+		await updateTags(renames.map((r) => ({ id: r.id, patch: { name: r.name } })));
 	}
 
 	return { sorted: renames.length, skipped, created: 0 };
 }
 
 export function clearTaxonomyCache() {
-	const storage = MMA.storage("inaturalist");
-	for (const key of storage.keys()) {
-		if (key.startsWith("taxo_")) storage.remove(key);
+	const store = storage("inaturalist");
+	for (const key of store.keys()) {
+		if (key.startsWith("taxo_")) store.remove(key);
 	}
 }

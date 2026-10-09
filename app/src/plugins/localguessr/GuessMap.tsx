@@ -20,7 +20,7 @@ import { google } from "@/lib/sv/opensv";
 import type { MapMouseEvent } from "maplibre-gl";
 import { useLocalStorage, getLocal } from "@/lib/hooks/useLocalStorage";
 import { type MapEmbedPrefs, DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
-import { cmd } from "@/lib/commands";
+import { query } from "@/store/useMapStore";
 import type { LatLng, MapTypeKey } from "@/types";
 import { useT } from "@/lib/i18n";
 import { createGuessPinLayer } from "./guessMapLayers";
@@ -107,8 +107,8 @@ function useGuessMapHost(
 				// After a kind-switch we restore the saved camera so the user
 				// sees the same area they were just looking at.
 				if (!showResult && !savedCameraRef.current) {
-					cmd
-						.storeBounds(false)
+					query({ type: "Everything" })
+						.bounds()
 						.then((bounds) => {
 							if (cancelled || !hostRef.current || !bounds) return;
 							hostRef.current.fitBounds(
@@ -233,8 +233,8 @@ function useGuessMapHost(
 		const host = hostRef.current;
 		if (!host || !ready) return;
 		let cancelled = false;
-		cmd
-			.storeBounds(false)
+		query({ type: "Everything" })
+			.bounds()
 			.then((bounds) => {
 				if (cancelled || !hostRef.current) return;
 				if (bounds) {
@@ -552,7 +552,7 @@ export function GuessMap({
 					>
 						<button
 							type="button"
-							className="gg-guess-map__control gg-guess-map__control--increase"
+							className="gg-guess-map__control"
 							disabled={mapSize >= MAX_SIZE}
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={(e) => {
@@ -566,7 +566,7 @@ export function GuessMap({
 						</button>
 						<button
 							type="button"
-							className="gg-guess-map__control gg-guess-map__control--decrease"
+							className="gg-guess-map__control"
 							disabled={mapSize <= MIN_SIZE}
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={(e) => {
@@ -592,7 +592,7 @@ export function GuessMap({
 						</button>
 						<button
 							type="button"
-							className="gg-guess-map__control gg-guess-map__control--basemap"
+							className="gg-guess-map__control"
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={(e) => {
 								e.stopPropagation();

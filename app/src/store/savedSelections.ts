@@ -1,74 +1,53 @@
-import type { Selection, SelectionProps } from "@/bindings.gen";
-import { buildSelection } from "./selections";
-import { getSettings, setSetting } from "./settings";
-import { addSelections, getTag, getVisibleTags } from "./useMapStore";
+/** Saved selection rules: portable named rules that persist across maps. A rule stores a
+ *  `Selector` tree plus the tag names its `Tag` leaves carried at save time, so it can
+ *  re-resolve against whatever map is open. */
+
+import type { SavedSelection, SavedSelectionInfo, Selection, Selector } from "@/bindings.gen";
+import type { RGB } from "@/lib/util/color";
+import {
+	addSelection,
+	buildSelection,
+	childSelections,
+	selectionDisplayName,
+	tagIdOf,
+	tagSelector,
+	withChildren,
+} from "./selections";
 import { cmd } from "@/lib/commands";
-import { t } from "@/lib/i18n";
+import { importLegacySavedSelections } from "./migrations";
+import { bridgeAcrossWindows, emit, useEventValue } from "@/lib/events";
+import { log } from "@/lib/util/log";
+import { applySelectionUpdate, getTag, getVisibleTags } from "./useMapStore";
 
-export interface SavedSelectionItem {
-	props: SavedSelectionProps;
-	color: [number, number, number];
-}
-
-export interface SavedSelection {
-	id: string;
-	name: string;
-	items: SavedSelectionItem[];
-	createdAt: number;
-}
-
-/** Selection types bound to the open map (raw location ids, review sessions): a rule
- *  built from them would be a frozen snapshot, so they are never saved. Everything else
- *  is saveable as-is. */
-export const MAP_LOCAL_TYPES = ["Locations", "Manual", "ValidationState", "Reviewed"] as const;
-export type MapLocalType = (typeof MAP_LOCAL_TYPES)[number];
-
-type MapLocalProps = Extract<SelectionProps, { type: MapLocalType }>;
-type PortableProps = Exclude<SelectionProps, MapLocalProps>;
-
-export type SavedSelectionProps =
-	| Exclude<PortableProps, { type: "Tag" | "Intersection" | "Union" | "Invert" }>
-	| { type: "TagName"; tagName: string }
-	| { type: "Intersection"; selections: SavedSelectionProps[] }
-	| { type: "Union"; selections: SavedSelectionProps[] }
-	| { type: "Invert"; selections: SavedSelectionProps[] };
+/** Selection types that cannot be saved as rules because they are bound to the open map. */
+export const MAP_LOCAL_TYPES = ["Locations", "Manual", "Validation", "Reviewed"] as const;
 
 const MAP_LOCAL_SET: ReadonlySet<string> = new Set(MAP_LOCAL_TYPES);
 
-function isMapLocal(props: SelectionProps): props is MapLocalProps {
-	return MAP_LOCAL_SET.has(props.type);
+/** A selector that matches nothing -- what a `Tag` leaf becomes when its saved name
+ *  doesn't exist on this map. The rule stays intact; the dead leaf just contributes
+ *  nothing to it. */
+const NOTHING: Selector = { type: "Locations", locations: [], name: null };
+
+/** Whether the selector tree contains only portable types (no map-local leaves). */
+export function isSaveable(selector: Selector): boolean {
+	if (MAP_LOCAL_SET.has(selector.type)) return false;
+	return childSelections(selector).every((c) => isSaveable(c.selector));
 }
 
-export function selectionToSaved(sel: Selection): SavedSelectionProps | null {
-	return propsToSaved(sel.props);
-}
-
-function propsToSaved(props: SelectionProps): SavedSelectionProps | null {
-	if (isMapLocal(props)) return null;
-
-	switch (props.type) {
-		case "Tag": {
-			const tag = getTag(props.tagId);
-			if (!tag) return null;
-			return { type: "TagName", tagName: tag.name };
-		}
-
-		case "Intersection":
-		case "Union":
-		case "Invert": {
-			const children = props.selections
-				.map((child) => propsToSaved(child.props))
-				.filter((c): c is SavedSelectionProps => c !== null);
-			if (children.length === 0) return null;
-			return { type: props.type, selections: children };
-		}
-
-		default:
-			return props;
+/** The name of every `Tag` leaf in the tree, keyed by id. */
+function captureTagNames(selector: Selector, out: Record<number, string> = {}) {
+	const tagId = tagIdOf(selector);
+	if (tagId != null) {
+		const tag = getTag(tagId);
+		if (tag) out[tagId] = tag.name;
+	} else {
+		for (const child of childSelections(selector)) captureTagNames(child.selector, out);
 	}
+	return out;
 }
 
-/** Visible tags only — a saved selection must not resurrect a soft-deleted ghost. */
+/** Visible tags only -- a saved selection must not resurrect a soft-deleted ghost. */
 function resolveTagByName(tagName: string): number | null {
 	const lower = tagName.toLowerCase();
 	for (const tag of getVisibleTags()) {
@@ -77,133 +56,168 @@ function resolveTagByName(tagName: string): number | null {
 	return null;
 }
 
-/** Resolve a saved rule against the open map, or null when it no longer applies
- *  (e.g. the tag name doesn't exist here). */
-export function savedToSelectionProps(saved: SavedSelectionProps): SelectionProps | null {
-	switch (saved.type) {
-		case "TagName": {
-			const tagId = resolveTagByName(saved.tagName);
-			if (tagId === null) return null;
-			return { type: "Tag", tagId };
-		}
-
-		case "Intersection":
-		case "Union":
-		case "Invert": {
-			const children = saved.selections
-				.map((child) => savedToSelectionProps(child))
-				.filter((c): c is SelectionProps => c !== null);
-			if (children.length === 0) return null;
-			const builtChildren = children.map((p) => buildSelection(p));
-			return { type: saved.type, selections: builtChildren };
-		}
-
-		default:
-			return saved;
+/** The saved tree against the open map: each `Tag` leaf re-resolves by the name it was
+ *  saved under, and one whose name is gone here selects nothing. Composites are rebuilt
+ *  so their keys follow the remapped ids; per-child colors survive. */
+function remap(selector: Selector, tagNames: Record<number, string>): Selector {
+	const tagId = tagIdOf(selector);
+	if (tagId != null) {
+		const name = tagNames[tagId];
+		const id = name != null ? resolveTagByName(name) : getTag(tagId) ? tagId : null;
+		return id === null ? NOTHING : tagSelector(id);
 	}
-}
-
-// Resolution
-
-/** Resolve a saved selection to the union of its items' matching location ids. */
-export async function resolveSavedSelectionIds(id: string): Promise<Set<number>> {
-	const ids = new Set<number>();
-	const saved = getSavedSelections().find((s) => s.id === id);
-	if (saved) {
-		const propsList = saved.items
-			.map((item) => savedToSelectionProps(item.props))
-			.filter((p): p is SelectionProps => p !== null);
-		const resolved = await Promise.all(propsList.map((p) => cmd.storeResolveSelection(p)));
-		for (const arr of resolved) for (const locId of arr) ids.add(locId);
-	}
-	return ids;
-}
-
-// Display
-
-/** Short human-readable description of a saved-selection rule. */
-export function describeRule(props: SavedSelectionProps): string {
-	switch (props.type) {
-		case "Everything":
-			return t("All");
-		case "Polygon":
-			return props.polygon.properties?.name || t("Polygon");
-		case "TagName":
-			return t("Tag: {name}", { name: props.tagName });
-		case "Untagged":
-			return t("Untagged");
-		case "Unpanned":
-			return t("Unpanned");
-		case "PanoIds":
-			return t("Has Pano ID");
-		case "NotPanoIds":
-			return t("No Pano ID");
-		case "Uncommitted":
-			return t("Uncommitted");
-		case "Duplicates":
-			return t("Dupes ({distance}m)", { distance: props.distance });
-		case "Filter":
-			return t("{field} {op} {value}", {
-				field: props.field,
-				op: props.op,
-				value: String(props.value),
-			});
-		case "TopK":
-			return props.ascending
-				? t("Bottom {k} by {field}", { k: props.k, field: props.field })
-				: t("Top {k} by {field}", { k: props.k, field: props.field });
-		// Boolean composites read as a formal expression, so only the operator tokens translate.
-		case "Intersection":
-			return props.selections.map(describeRule).join(` ${t("AND")} `);
-		case "Union":
-			return props.selections.map(describeRule).join(` ${t("OR")} `);
-		case "Invert":
-			return t("NOT ({selections})", {
-				selections: props.selections.map(describeRule).join(", "),
-			});
-	}
-	const unhandled: never = props;
-	return unhandled;
-}
-
-// CRUD
-
-/** All saved selection rules (global, name-based; shared across maps). */
-export function getSavedSelections(): SavedSelection[] {
-	return getSettings().savedSelections;
-}
-
-export function saveCurrentSelections(name: string, selections: Selection[]): boolean {
-	const items: SavedSelectionItem[] = [];
-	for (const sel of selections) {
-		const props = selectionToSaved(sel);
-		if (props) items.push({ props, color: sel.color });
-	}
-	if (items.length === 0) return false;
-
-	const entry: SavedSelection = {
-		id: crypto.randomUUID(),
-		name,
-		items,
-		createdAt: Date.now(),
-	};
-	setSetting("savedSelections", [...getSavedSelections(), entry]);
-	return true;
-}
-
-export function deleteSavedSelection(id: string): void {
-	setSetting(
-		"savedSelections",
-		getSavedSelections().filter((s) => s.id !== id),
+	const children = childSelections(selector);
+	if (children.length === 0) return selector;
+	return withChildren(
+		selector,
+		children.map((child) => ({
+			...buildSelection(remap(child.selector, tagNames)),
+			color: child.color,
+		})),
 	);
 }
 
-export function applySavedSelection(saved: SavedSelection): number {
-	const batch: SelectionProps[] = [];
-	for (const item of saved.items) {
-		const props = savedToSelectionProps(item.props);
-		if (props) batch.push(props);
+/** One part of a saved rule: what its chip reads as, and what it resolves to here. The
+ *  label comes from the tree as saved, so a tag this map doesn't have still reads by the
+ *  name it was saved under. */
+export interface SavedPart {
+	label: string;
+	color: RGB;
+	selector: Selector;
+}
+
+/** A rule's parts: its top-level `Union` is the list it was saved from, anything else is
+ *  a single part. */
+export function savedParts(saved: SavedSelection): SavedPart[] {
+	const { selector, tagNames } = saved;
+	const parts: Selection[] =
+		selector.type === "Union"
+			? selector.selections.map((s) => ({ ...buildSelection(s.selector), color: s.color }))
+			: [{ ...buildSelection(selector), color: saved.color }];
+	return parts.map((part) => ({
+		label: selectionDisplayName(part, tagNames),
+		color: part.color,
+		selector: remap(part.selector, tagNames),
+	}));
+}
+
+// A rule body can be ~1.7MB of JSON (a `Polygon` leaf inlines every coordinate), so JS
+// holds the index and fetches bodies on demand.
+
+/** The rule index, or null before it has been read. */
+let index: SavedSelectionInfo[] | null = null;
+/** Stable stand-in while the index is unread: a fresh literal would break the snapshot identity
+ *  `useSyncExternalStore` relies on. */
+const NO_RULES: SavedSelectionInfo[] = [];
+/** Bodies that have been fetched. `null` records a rule that isn't there, so a miss is
+ *  never re-requested on every render. */
+const bodies = new Map<string, SavedSelection | null>();
+let indexLoad: Promise<void> | null = null;
+
+/** The rules that exist, as identity only. Empty until the index loads: the first
+ *  call starts the read and `saved-selections:changed` announces it. */
+export function getSavedSelectionIndex(): SavedSelectionInfo[] {
+	if (index === null) void loadIndex();
+	return index ?? NO_RULES;
+}
+
+/** React hook: the saved selection index, re-rendering on changes. */
+export function useSavedSelectionIndex(): SavedSelectionInfo[] {
+	return useEventValue("saved-selections:changed", getSavedSelectionIndex);
+}
+
+/** Load the full rule bodies for the given `ids`. */
+export async function loadSavedSelections(ids: string[]): Promise<SavedSelection[]> {
+	const missing = ids.filter((id) => !bodies.has(id));
+	if (missing.length > 0) {
+		const rows = await cmd.storeGetSavedSelections(missing);
+		for (const id of missing) bodies.set(id, null);
+		for (const row of rows) bodies.set(row.id, row);
 	}
-	if (batch.length > 0) addSelections(batch);
-	return batch.length;
+	return ids.map((id) => bodies.get(id)).filter((r): r is SavedSelection => r != null);
+}
+
+/** Every rule with its body. */
+export async function loadAllSavedSelections(): Promise<SavedSelection[]> {
+	await loadIndex();
+	return loadSavedSelections((index ?? []).map((r) => r.id));
+}
+
+/** A saved rule as a single `Selector`, resolved against the open map. Matches nothing
+ *  until the body arrives; fetching it emits `saved-selections:changed`, so a caller that
+ *  re-reads on that event gets the real tree. */
+export function savedSelector(id: string): Selector {
+	const saved = bodies.get(id);
+	if (saved) return remap(saved.selector, saved.tagNames);
+	if (!bodies.has(id)) {
+		void loadSavedSelections([id]).then((rows) => {
+			if (rows.length > 0) emit("saved-selections:changed");
+		});
+	}
+	return NOTHING;
+}
+
+/** A rule is only ever inserted or deleted, never edited, so id and name identify the
+ *  whole list. */
+const fingerprint = (rows: SavedSelectionInfo[]) => rows.map((r) => `${r.id}:${r.name}`).join("|");
+
+/** Reread the index. Emits only on a real change, so the cross-window bridge settles
+ *  after one round instead of echoing. Bodies of rules that are gone are dropped. */
+async function reloadIndex(): Promise<void> {
+	const next = await cmd.storeListSavedSelections();
+	const changed = index === null || fingerprint(next) !== fingerprint(index);
+	index = next;
+	const live = new Set(next.map((r) => r.id));
+	for (const id of bodies.keys()) if (!live.has(id)) bodies.delete(id);
+	if (changed) emit("saved-selections:changed");
+}
+
+function loadIndex(): Promise<void> {
+	// Never rejects: the index is read lazily from render paths, so a failure logs and
+	// leaves the list empty rather than surfacing as an unhandled rejection.
+	indexLoad ??= (async () => {
+		await importLegacySavedSelections();
+		await reloadIndex();
+	})()
+		.catch((e) => log.error("[saved-selections] index read failed:", e))
+		.finally(() => {
+			indexLoad = null;
+		});
+	return indexLoad;
+}
+
+bridgeAcrossWindows("saved-selections:changed", () => void reloadIndex());
+
+/** Persists the saveable selections as one rule. False when none of them are saveable. */
+export async function saveCurrentSelections(
+	name: string,
+	selections: Selection[],
+): Promise<boolean> {
+	const saveable = selections.filter((s) => isSaveable(s.selector));
+	if (saveable.length === 0) return false;
+	const selector: Selector =
+		saveable.length === 1 ? saveable[0].selector : { type: "Union", selections: saveable };
+	const saved = await cmd.storeSaveSelection(
+		name,
+		selector,
+		captureTagNames(selector),
+		saveable[0].color,
+	);
+	bodies.set(saved.id, saved);
+	await reloadIndex();
+	return true;
+}
+
+/** Permanently delete a saved selection rule. */
+export async function deleteSavedSelection(id: string): Promise<void> {
+	await cmd.storeDeleteSavedSelection(id);
+	await reloadIndex();
+}
+
+/** Adds the rule's parts to the sidebar, resolved against the open map. Returns how many
+ *  were added. */
+export function applySavedSelection(saved: SavedSelection): number {
+	const parts = savedParts(saved);
+	if (parts.length > 0) void applySelectionUpdate(addSelection(...parts.map((p) => p.selector)));
+	return parts.length;
 }

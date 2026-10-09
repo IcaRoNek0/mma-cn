@@ -4,7 +4,7 @@ import type { MapHost } from "@/lib/map/host";
 import { addClickInterceptor } from "@/lib/map/mapState";
 import { latLngToWorld } from "@/lib/geo/mercator";
 import { distMeters } from "@/lib/geo/geo";
-import { formatDistance } from "@/lib/geo/scoring";
+import { formatDistance } from "@/lib/util/format";
 import { emit as emitEvent, useEventValue } from "@/lib/events";
 
 // --- Measure tool state ---
@@ -99,11 +99,11 @@ export function measureLength(): number {
 function hitNode(host: MapHost, ll: LatLng): number | null {
 	const scale = 2 ** host.getZoom();
 	const a = latLngToWorld(ll);
-	for (let i = mState.points.length - 1; i >= 0; i--) {
-		const b = latLngToWorld({ lat: mState.points[i][1], lng: mState.points[i][0] });
-		if (Math.hypot((a.x - b.x) * scale, (a.y - b.y) * scale) <= MEASURE_NODE_PX) return i;
-	}
-	return null;
+	const i = mState.points.findLastIndex(([lng, lat]) => {
+		const b = latLngToWorld({ lat, lng });
+		return Math.hypot((a.x - b.x) * scale, (a.y - b.y) * scale) <= MEASURE_NODE_PX;
+	});
+	return i === -1 ? null : i;
 }
 
 export function useIsMeasuring(): boolean {

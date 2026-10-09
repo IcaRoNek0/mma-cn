@@ -1,0 +1,631 @@
+//! map-making.app sync provider: protobuf pull decode, chunked edit-batch push.
+//! The pure halves (protobuf decode, push chunking) are factored out of IO so they test
+//! without a network; see sync_map_making.test.rs.
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use vali_data::decode::Reader;
+
+use crate::net::proxy;
+use crate::store::storage;
+use crate::sync::{
+    canon_tags, sync_flags, IdentityModel, NormalizedSyncLocation, ProviderSpec, PushBatch,
+    PushedId, RemoteSnapshot, SyncDirection, SyncProvider,
+};
+use crate::types::shape::MapShape;
+use crate::types::{AppError, AppResult, ErrCode};
+use crate::util::blocking;
+
+const BASE_URL: &str = "https://map-making.app";
+
+/// Ops per edit request; bounds failure cost, not a server limit.
+const PUSH_CHUNK: usize = 200_000;
+
+/// The remote's bulk edit action.
+const EDIT_ACTION_BULK: u32 = 8;
+
+const SECRET_NAME: &str = "map-making.app";
+
+/// The API key, cached from the OS credential store.
+static KEY: storage::SessionCell = storage::SessionCell::new(SECRET_NAME);
+
+pub(crate) struct MapMakingProvider {
+    pub api_key: String,
+}
+
+// --- read shape -------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LatLng {
+    pub lat: f64,
+    pub lng: f64,
+}
+
+/// Decoded from a pull. `author`/`created_at`/`pano_date` are remote-owned and ignored by the
+/// contract; kept for fidelity.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct MmLocation {
+    pub id: i64,
+    pub location: LatLng,
+    pub pano_id: Option<String>,
+    pub heading: f64,
+    pub pitch: f64,
+    pub zoom: Option<f64>,
+    pub flags: u32,
+    pub tags: Vec<String>,
+    pub author: Option<u32>,
+    pub created_at: Option<u64>,
+    pub pano_date: Option<u64>,
+}
+
+impl Default for LatLng {
+    fn default() -> Self {
+        LatLng { lat: 0.0, lng: 0.0 }
+    }
+}
+
+// --- write shape (LocationInput, camelCase JSON) ----------------------------
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocationInput {
+    id: i64,
+    location: LatLng,
+    pano_id: Option<String>,
+    heading: f64,
+    pitch: f64,
+    zoom: Option<f64>,
+    flags: u32,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct EditRequest {
+    edits: Vec<Edit>,
+}
+
+#[derive(Serialize)]
+struct Edit {
+    action: EditAction,
+    create: Vec<LocationInput>,
+    remove: Vec<i64>,
+}
+
+#[derive(Serialize)]
+struct EditAction {
+    #[serde(rename = "type")]
+    kind: u32,
+}
+
+/// Write shape from the read shape. `id` is the caller-assigned negative placeholder.
+fn to_input(item: &MmLocation, id: i64) -> LocationInput {
+    LocationInput {
+        id,
+        location: item.location.clone(),
+        pano_id: item.pano_id.clone(),
+        heading: item.heading,
+        pitch: item.pitch,
+        zoom: item.zoom,
+        flags: item.flags,
+        tags: item.tags.clone(),
+    }
+}
+
+// --- SyncProvider impl ------------------------------------------------------
+
+impl SyncProvider for MapMakingProvider {
+    type Raw = MmLocation;
+
+    fn spec(&self) -> &'static ProviderSpec {
+        &Self::SPEC
+    }
+
+    fn remote_id_of(&self, item: &MmLocation, _index: usize) -> i64 {
+        item.id
+    }
+
+    fn normalize(&self, item: &MmLocation) -> NormalizedSyncLocation {
+        NormalizedSyncLocation {
+            lat: item.location.lat,
+            lng: item.location.lng,
+            heading: item.heading,
+            pitch: item.pitch,
+            zoom: item.zoom.unwrap_or(0.0),
+            pano_id: item.pano_id.clone(),
+            flags: sync_flags(item.flags),
+            tags: canon_tags(item.tags.iter().cloned()),
+            extra: None,
+        }
+    }
+
+    // Server owns id/createdAt: id 0 means "not yet assigned"; push swaps in a negative placeholder.
+    fn materialize(&self, n: &NormalizedSyncLocation) -> MmLocation {
+        MmLocation {
+            id: 0,
+            location: LatLng {
+                lat: n.lat,
+                lng: n.lng,
+            },
+            pano_id: n.pano_id.clone(),
+            heading: n.heading,
+            pitch: n.pitch,
+            zoom: Some(n.zoom),
+            flags: n.flags,
+            tags: n.tags.clone(),
+            author: None,
+            created_at: None,
+            pano_date: None,
+        }
+    }
+
+    fn pull(&self, remote_map_id: &str) -> AppResult<RemoteSnapshot<MmLocation>> {
+        let url = format!("{BASE_URL}/api/maps/{remote_map_id}/locations");
+        let resp = proxy::sync_client()
+            .get(&url)
+            .header("authorization", format!("API {}", self.api_key))
+            .header("accept", "application/protobuf")
+            .send()?;
+        let status = resp.status().as_u16();
+        let body = resp.bytes()?;
+        if !(200..300).contains(&status) {
+            return Err(api_error(status, &body));
+        }
+        Ok(RemoteSnapshot {
+            tags: vec![],
+            locations: decode_response(&body).map_err(|e| AppError(format!("{e:#}")))?,
+            token: None,
+        })
+    }
+
+    fn push(
+        &self,
+        remote_map_id: &str,
+        batch: &PushBatch<MmLocation>,
+        _token: Option<i64>,
+        commit: &mut dyn FnMut(&[PushedId]) -> AppResult<()>,
+    ) -> AppResult<Vec<PushedId>> {
+        let mut post = |part: &PushPart| self.post_edit(remote_map_id, part);
+        push_apply(batch, PUSH_CHUNK, commit, &mut post)
+    }
+}
+
+impl MapMakingProvider {
+    pub(crate) const SPEC: ProviderSpec = ProviderSpec {
+        id: "map-making.app",
+        identity: IdentityModel::Stable,
+        direction: SyncDirection::Bidirectional,
+        shape: MapShape::MapMaking,
+    };
+
+    /// The provider bound to the stored API key.
+    pub(crate) fn from_key() -> AppResult<Self> {
+        let api_key = KEY
+            .get()?
+            .ok_or_else(|| ErrCode::Auth.with("no map-making.app API key"))?;
+        Ok(Self { api_key })
+    }
+
+    /// POST one chunk's edit and return the submitted-id -> assigned-id remap.
+    fn post_edit(&self, remote_map_id: &str, part: &PushPart) -> AppResult<HashMap<String, i64>> {
+        let url = format!("{BASE_URL}/api/maps/{remote_map_id}/locations");
+        let req_body = EditRequest {
+            edits: vec![Edit {
+                action: EditAction {
+                    kind: EDIT_ACTION_BULK,
+                },
+                create: part.create.clone(),
+                remove: part.remove.clone(),
+            }],
+        };
+        let resp = proxy::sync_client()
+            .post(&url)
+            .header("authorization", format!("API {}", self.api_key))
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&req_body)?)
+            .send()?;
+        let status = resp.status().as_u16();
+        let body = resp.bytes()?;
+        if !(200..300).contains(&status) {
+            return Err(api_error(status, &body));
+        }
+        Ok(serde_json::from_slice(&body)?)
+    }
+}
+
+/// Build an [`AppError`] from a non-2xx response. Prefers a JSON body's `message`, else the body
+/// text, else a status-only fallback. A 401 becomes an [`ErrCode::Auth`].
+fn api_error(status: u16, body: &[u8]) -> AppError {
+    let message = match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(v) => v
+            .get("message")
+            .and_then(|m| m.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| default_error_message(status)),
+        Err(_) => {
+            let text = String::from_utf8_lossy(body);
+            let text = text.trim();
+            if text.is_empty() {
+                default_error_message(status)
+            } else {
+                text.to_string()
+            }
+        }
+    };
+    if status == 401 {
+        ErrCode::Auth.with(message)
+    } else {
+        AppError(message)
+    }
+}
+
+fn default_error_message(status: u16) -> String {
+    format!("map-making.app API request failed with HTTP {status}")
+}
+
+// --- account and map listing ------------------------------------------------
+
+/// The account an API key belongs to.
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MmUser {
+    pub id: i64,
+    pub username: String,
+}
+
+/// A map the key holder can link to.
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MmMapSummary {
+    pub id: String,
+    pub name: String,
+    pub location_count: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MapRow {
+    id: i64,
+    name: String,
+    #[serde(default)]
+    archived_at: Option<serde_json::Value>,
+    #[serde(default)]
+    location_count: i64,
+}
+
+fn get_bytes(api_key: &str, path: &str) -> AppResult<Vec<u8>> {
+    send_json(
+        proxy::sync_client().get(format!("{BASE_URL}{path}")),
+        api_key,
+    )
+}
+
+fn send_json(req: reqwest::blocking::RequestBuilder, api_key: &str) -> AppResult<Vec<u8>> {
+    let resp = req
+        .header("authorization", format!("API {api_key}"))
+        .header("accept", "application/json")
+        .send()?;
+    let status = resp.status().as_u16();
+    let body = resp.bytes()?;
+    if !(200..300).contains(&status) {
+        return Err(api_error(status, &body));
+    }
+    Ok(body.to_vec())
+}
+
+fn fetch_user(api_key: &str) -> AppResult<MmUser> {
+    Ok(serde_json::from_slice(&get_bytes(api_key, "/api/user")?)?)
+}
+
+fn fetch_maps(api_key: &str) -> AppResult<Vec<MmMapSummary>> {
+    parse_maps(&get_bytes(api_key, "/api/maps")?)
+}
+
+fn create_map(api_key: &str, name: &str) -> AppResult<MmMapSummary> {
+    let body = serde_json::json!({ "name": name, "description": "" });
+    let req = proxy::sync_client()
+        .post(format!("{BASE_URL}/api/maps"))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&body)?);
+    parse_created(&send_json(req, api_key)?)
+}
+
+fn parse_created(body: &[u8]) -> AppResult<MmMapSummary> {
+    let row: MapRow = serde_json::from_slice(body)?;
+    Ok(MmMapSummary {
+        id: row.id.to_string(),
+        name: row.name,
+        location_count: row.location_count,
+    })
+}
+
+/// Archived maps cannot be linked, so they never reach the picker.
+fn parse_maps(body: &[u8]) -> AppResult<Vec<MmMapSummary>> {
+    let rows: Vec<MapRow> = serde_json::from_slice(body)?;
+    Ok(rows
+        .into_iter()
+        .filter(|m| !matches!(&m.archived_at, Some(v) if !v.is_null()))
+        .map(|m| MmMapSummary {
+            id: m.id.to_string(),
+            name: m.name,
+            location_count: m.location_count,
+        })
+        .collect())
+}
+
+// --- commands ---------------------------------------------------------------
+
+/// The account behind the stored key, or null when no key is stored.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_me() -> AppResult<Option<MmUser>> {
+    blocking(|| match KEY.get()? {
+        Some(key) => Ok(Some(fetch_user(&key)?)),
+        None => Ok(None),
+    })
+    .await?
+}
+
+/// Check `key` against the remote without storing it.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_validate(key: String) -> AppResult<MmUser> {
+    blocking(move || fetch_user(&key)).await?
+}
+
+/// Linkable maps for the stored key.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_maps() -> AppResult<Vec<MmMapSummary>> {
+    blocking(|| fetch_maps(&MapMakingProvider::from_key()?.api_key)).await?
+}
+
+/// Create an empty map named `name` for the stored key.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_create_map(name: String) -> AppResult<MmMapSummary> {
+    blocking(move || create_map(&MapMakingProvider::from_key()?.api_key, &name)).await?
+}
+
+/// Store the API key, or clear it with null.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_set_key(key: Option<String>) -> AppResult<()> {
+    blocking(move || KEY.set(key.filter(|k| !k.is_empty()))).await?
+}
+
+/// Local-only check: is a key stored? Says nothing about its validity.
+#[tauri::command]
+#[specta::specta]
+pub async fn map_making_has_key() -> AppResult<bool> {
+    blocking(|| Ok(KEY.get()?.is_some())).await?
+}
+
+// --- push chunking (pure) ---------------------------------------------------
+
+pub(crate) struct PushPart {
+    pub create: Vec<LocationInput>,
+    pub remove: Vec<i64>,
+    pub staged: Vec<Staged>,
+}
+
+/// A staged create: which local id maps to which negative placeholder id.
+#[derive(Clone, Copy)]
+pub(crate) struct Staged {
+    pub local_id: u32,
+    pub neg_id: i64,
+}
+
+/// Split a push into edit requests of at most `chunk` logical operations.
+///
+/// An update is remove-old + create-new (a remote id churns on edit), and both halves must stay
+/// in the SAME request: splitting them would leave the location duplicated on the remote in
+/// between. So chunking counts logical operations, not the two arrays independently. Negative
+/// placeholder ids stay unique across the whole push.
+pub(crate) fn push_chunks(batch: &PushBatch<MmLocation>, chunk: usize) -> Vec<PushPart> {
+    struct Op<'a> {
+        local_id: Option<u32>,
+        item: Option<&'a MmLocation>,
+        remove: Option<i64>,
+    }
+
+    let mut ops: Vec<Op> = Vec::new();
+    for (local_id, item) in &batch.create {
+        ops.push(Op {
+            local_id: Some(*local_id),
+            item: Some(item),
+            remove: None,
+        });
+    }
+    for (local_id, item, replaces) in &batch.update {
+        ops.push(Op {
+            local_id: Some(*local_id),
+            item: Some(item),
+            remove: Some(replaces.id),
+        });
+    }
+    for item in &batch.delete {
+        ops.push(Op {
+            local_id: None,
+            item: None,
+            remove: Some(item.id),
+        });
+    }
+
+    let mut neg: i64 = -1;
+    let mut parts = Vec::new();
+    let mut i = 0;
+    while i < ops.len() {
+        let end = (i + chunk).min(ops.len());
+        let mut part = PushPart {
+            create: Vec::new(),
+            remove: Vec::new(),
+            staged: Vec::new(),
+        };
+        for op in &ops[i..end] {
+            if let Some(r) = op.remove {
+                part.remove.push(r);
+            }
+            if let (Some(item), Some(local_id)) = (op.item, op.local_id) {
+                let neg_id = neg;
+                neg -= 1;
+                part.create.push(to_input(item, neg_id));
+                part.staged.push(Staged { local_id, neg_id });
+            }
+        }
+        parts.push(part);
+        i = end;
+    }
+    parts
+}
+
+/// Chunk a push, apply each chunk via `post`, and commit each chunk's resolved ids before the
+/// next request. `post` maps a chunk to its submitted-id -> assigned-id remap.
+pub(crate) fn push_apply(
+    batch: &PushBatch<MmLocation>,
+    chunk: usize,
+    commit: &mut dyn FnMut(&[PushedId]) -> AppResult<()>,
+    post: &mut dyn FnMut(&PushPart) -> AppResult<HashMap<String, i64>>,
+) -> AppResult<Vec<PushedId>> {
+    let mut all = Vec::new();
+    for part in push_chunks(batch, chunk) {
+        let remap = post(&part)?;
+        let mut pushed = Vec::new();
+        for s in &part.staged {
+            if let Some(&remote_id) = remap.get(&s.neg_id.to_string()) {
+                pushed.push(PushedId {
+                    local_id: s.local_id,
+                    remote_id,
+                });
+            }
+        }
+        for p in &pushed {
+            all.push(*p);
+        }
+        // Let the caller persist this chunk before the next one can fail.
+        if !pushed.is_empty() {
+            commit(&pushed)?;
+        }
+    }
+    Ok(all)
+}
+
+// --- protobuf decode (proto2) -----------------------------------------------
+
+/// Raw location fields before the tag table is resolved.
+#[derive(Default)]
+struct RawLoc {
+    id: i64,
+    author: Option<u32>,
+    lat: f64,
+    lng: f64,
+    pano_id: String,
+    heading: f64,
+    pitch: f64,
+    zoom: f64,
+    tag_index: Vec<u32>,
+    flags: u32,
+    created_at: u64,
+    pano_date: u64,
+}
+
+impl RawLoc {
+    fn resolve(self, tags: &[String]) -> MmLocation {
+        MmLocation {
+            id: self.id,
+            location: LatLng {
+                lat: self.lat,
+                lng: self.lng,
+            },
+            // An empty panoId string means "none".
+            pano_id: (!self.pano_id.is_empty()).then_some(self.pano_id),
+            heading: self.heading,
+            pitch: self.pitch,
+            // Proto always yields a double, defaulting to 0.
+            zoom: Some(self.zoom),
+            flags: self.flags,
+            // Resolve indices against the table; out-of-range indices are dropped, order kept.
+            tags: self
+                .tag_index
+                .iter()
+                .filter_map(|&i| tags.get(i as usize).cloned())
+                .collect(),
+            author: self.author,
+            created_at: (self.created_at != 0).then_some(self.created_at),
+            pano_date: (self.pano_date != 0).then_some(self.pano_date),
+        }
+    }
+}
+
+fn decode_response(buf: &[u8]) -> anyhow::Result<Vec<MmLocation>> {
+    let mut r = Reader::new(buf);
+    let mut tags: Vec<String> = Vec::new();
+    let mut raw: Vec<RawLoc> = Vec::new();
+    while !r.at_end() {
+        let (field, wire) = r.read_tag()?;
+        match (field, wire) {
+            (1, 2) => tags.push(r.read_string_lossy()?),
+            (2, 2) => {
+                let sub = r.read_len_slice()?;
+                raw.push(decode_location(sub)?);
+            }
+            _ => r.skip(wire)?,
+        }
+    }
+    Ok(raw.into_iter().map(|rl| rl.resolve(&tags)).collect())
+}
+
+fn decode_location(buf: &[u8]) -> anyhow::Result<RawLoc> {
+    let mut r = Reader::new(buf);
+    let mut loc = RawLoc::default();
+    while !r.at_end() {
+        let (field, wire) = r.read_tag()?;
+        match (field, wire) {
+            (1, 0) => loc.id = r.read_i64()?,
+            (2, 0) => loc.author = Some(r.read_varint()? as u32),
+            (3, 2) => {
+                let (lat, lng) = decode_latlng(r.read_len_slice()?)?;
+                loc.lat = lat;
+                loc.lng = lng;
+            }
+            (4, 2) => loc.pano_id = r.read_string_lossy()?,
+            (5, 1) => loc.heading = r.read_f64()?,
+            (6, 1) => loc.pitch = r.read_f64()?,
+            (7, 1) => loc.zoom = r.read_f64()?,
+            (8, 2) => {
+                let mut pr = Reader::new(r.read_len_slice()?);
+                while !pr.at_end() {
+                    loc.tag_index.push(pr.read_varint()? as u32);
+                }
+            }
+            // A repeated field may also arrive unpacked; proto2 decoders must accept both.
+            (8, 0) => loc.tag_index.push(r.read_varint()? as u32),
+            (9, 0) => loc.flags = r.read_varint()? as u32,
+            (10, 0) => loc.created_at = r.read_varint()?,
+            (11, 0) => loc.pano_date = r.read_varint()?,
+            _ => r.skip(wire)?,
+        }
+    }
+    Ok(loc)
+}
+
+fn decode_latlng(buf: &[u8]) -> anyhow::Result<(f64, f64)> {
+    let mut r = Reader::new(buf);
+    let (mut lat, mut lng) = (0.0, 0.0);
+    while !r.at_end() {
+        let (field, wire) = r.read_tag()?;
+        match (field, wire) {
+            (1, 1) => lat = r.read_f64()?,
+            (2, 1) => lng = r.read_f64()?,
+            _ => r.skip(wire)?,
+        }
+    }
+    Ok((lat, lng))
+}
+
+#[cfg(test)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+#[path = "map_making.test.rs"]
+mod tests;

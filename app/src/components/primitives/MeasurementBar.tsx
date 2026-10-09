@@ -1,11 +1,16 @@
 import { useIsMeasuring, useMeasureLength, endMeasure } from "@/lib/sv/measure";
-import { formatDistance, computeScore, useScoreMaxError } from "@/lib/geo/scoring";
+import { computeScore, useScoreMaxError } from "@/lib/geo/scoring";
+import { formatDistance } from "@/lib/util/format";
+import { useSetting } from "@/store/settings";
 import { t } from "@/lib/i18n";
+import { Button } from "./Button";
 
 export function MeasurementBar() {
 	const isMeasuring = useIsMeasuring();
 	const length = useMeasureLength();
 	const maxError = useScoreMaxError();
+	// Read so a units change re-renders the live readout.
+	useSetting("units");
 
 	if (!isMeasuring) return null;
 
@@ -20,9 +25,7 @@ export function MeasurementBar() {
 					<br />
 					{t("Score:")} {computeScore(length, maxError)}
 				</p>
-				<button className="button measurement-control__end" onClick={endMeasure}>
-					{t("End")}
-				</button>
+				<Button onClick={endMeasure}>{t("End")}</Button>
 			</div>
 		</div>
 	);

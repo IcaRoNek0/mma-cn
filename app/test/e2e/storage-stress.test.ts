@@ -19,6 +19,7 @@ import {
 	seedLocs,
 	select,
 	selectCount,
+	tagSelector,
 } from "./helpers";
 import type { Location } from "@/bindings.gen";
 
@@ -324,7 +325,7 @@ describe("Tag count accuracy", () => {
 
 		taggedIds = await seedLocs(50, (i) => ({ lat: i, lng: i, tags: [tagId] }));
 
-		const counts = await withApi((api) => api.getMapState().tagCounts);
+		const counts = await withApi((api) => api.getTagCounts());
 		expect(counts[tagId]).toBe(50);
 	});
 
@@ -332,14 +333,14 @@ describe("Tag count accuracy", () => {
 		const toRemove = taggedIds.slice(0, 10);
 		await withApi((api, ids) => api.removeLocations(new Set(ids)), toRemove);
 
-		const counts = await withApi((api) => api.getMapState().tagCounts);
+		const counts = await withApi((api) => api.getTagCounts());
 		expect(counts[tagId]).toBe(40);
 	});
 
 	it("undo remove -> tagCount=50", async () => {
 		await withApi((api) => api.undo());
 
-		const counts = await withApi((api) => api.getMapState().tagCounts);
+		const counts = await withApi((api) => api.getTagCounts());
 		expect(counts[tagId]).toBe(50);
 	});
 
@@ -348,11 +349,11 @@ describe("Tag count accuracy", () => {
 		await seedLocs(20, (i) => ({ lat: 100 + i, lng: 100 + i }));
 
 		await withApi(async (api, tId) => {
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			await api.addTagToLocations(tId, [...api.getMapState().selectedLocationIds]);
 		}, tagId);
 
-		const counts = await withApi((api) => api.getMapState().tagCounts);
+		const counts = await withApi((api) => api.getTagCounts());
 		expect(counts[tagId]).toBe(70);
 	});
 
@@ -360,7 +361,7 @@ describe("Tag count accuracy", () => {
 		await closeMap();
 		await openMap(map.id);
 
-		const counts = await withApi((api) => api.getMapState().tagCounts);
+		const counts = await withApi((api) => api.getTagCounts());
 		expect(counts[tagId]).toBe(70);
 	});
 });
@@ -442,7 +443,7 @@ describe("Null vs absent field round-trip", () => {
 
 		const l2 = await getLoc(id2);
 		expect(l2.panoId).toBe("ABC");
-		expect(l2.extra.foo).toBe("bar");
+		expect(l2.extra?.foo).toBe("bar");
 
 		const l3 = await getLoc(id3);
 		expect(l3.panoId).toBeNull();
@@ -494,9 +495,9 @@ describe("Unicode in all fields", () => {
 
 		const loc = await getLoc(result.locId);
 		expect(loc.panoId).toBe("CAoSK0FG_東京_éè");
-		expect(loc.extra["地名"]).toBe("東京タワー");
-		expect(loc.extra["straße"]).toBe("café");
-		expect(loc.extra.nested["Адрес"]).toBe("Москва");
+		expect(loc.extra?.["地名"]).toBe("東京タワー");
+		expect(loc.extra?.["straße"]).toBe("café");
+		expect(loc.extra?.nested).toMatchObject({ Адрес: "Москва" });
 
 		// Verify tags survived
 		expect(loc.tags).toContain(result.tagIds[0]);
@@ -504,7 +505,7 @@ describe("Unicode in all fields", () => {
 		expect(loc.tags).toContain(result.tagIds[2]);
 
 		// Verify tag names in meta
-		const tags = await withApi((api) => api.getMapState().tags);
+		const tags = await withApi((api) => api.getTags());
 		expect(tags[result.tagIds[0]].name).toBe("東京タワー");
 		expect(tags[result.tagIds[1]].name).toBe("café crème");
 		expect(tags[result.tagIds[2]].name).toBe("Москва");
@@ -567,7 +568,7 @@ describe("Export with scope", () => {
 		}));
 
 		// Select by tag (first 5 have the tag)
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 
 		const selectedIds: number[] = await withApi((api) => [
 			...api.getMapState().selectedLocationIds,
@@ -575,15 +576,15 @@ describe("Export with scope", () => {
 		expect(selectedIds.length).toBe(5);
 
 		// Export with scope = selectedIds
-		const result = await withApi(async (api, scope) => {
+		const result = await withApi(async (api, ids) => {
 			const map = api.getMapState().map!;
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
-				scope,
-				mapName: map.meta.name,
-				tagsJson: JSON.stringify(api.getMapState().tags),
+				shape: "local",
+				selector: { type: "Locations", locations: ids, name: null },
+				mapName: map.name,
+				tagsJson: JSON.stringify(api.getTags()),
 				extraFieldsJson: null,
 			});
 			const res = await fetch(api.mmaBufUrl(path));
@@ -1040,7 +1041,7 @@ describe("Selection during mutation", () => {
 		await addLocs(locs);
 
 		// Select by tag -- should get 30
-		const count1 = await selectCount({ type: "Tag", tagId: tag.id });
+		const count1 = await selectCount(tagSelector(tag.id));
 		expect(count1).toBe(30);
 
 		// Add 10 more tagged locations while selection is active
@@ -1051,8 +1052,8 @@ describe("Selection during mutation", () => {
 
 		// Re-select -- should now get 40
 		const count2 = await withApi(async (api, tid) => {
-			api.resetSelections();
-			await api.addSelections([{ type: "Tag", tagId: tid }]);
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(api.addSelection(api.tagSelector(tid)));
 			return api.getMapState().selectedLocationIds.size;
 		}, tag.id);
 		expect(count2).toBe(40);
@@ -1060,14 +1061,12 @@ describe("Selection during mutation", () => {
 
 	it("removing selected locations updates selection", async () => {
 		const result = await withApi(async (api) => {
-			api.resetSelections();
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			const beforeCount = api.getMapState().selectedLocationIds.size;
 			const ids = [...api.getMapState().selectedLocationIds].slice(0, 5);
-			api.removeLocations(new Set(ids));
-			// Give Rust a moment to refresh selections
-			await new Promise((r) => setTimeout(r, 100));
-			await api.addSelections([{ type: "Everything" }]);
+			await api.removeLocations(new Set(ids));
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			return { before: beforeCount, after: api.getMapState().selectedLocationIds.size };
 		});
 		expect(result.after).toBe(result.before - 5);

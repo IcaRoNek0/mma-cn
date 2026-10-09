@@ -1,7 +1,8 @@
+import { formatDistance } from "@/lib/util/format";
 import type { LatLng } from "@/types";
 import { isWorldBounds, scoreTupleToBounds } from "@/types";
 import { distMeters } from "@/lib/geo/geo";
-import { resolveScoreMaxError, formatDistance, WORLD_MAX_ERROR } from "@/lib/geo/scoring";
+import { resolveScoreMaxError, WORLD_MAX_ERROR } from "@/lib/geo/scoring";
 import type { ScoreBounds } from "@/bindings.gen";
 
 /**

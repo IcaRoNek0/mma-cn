@@ -2,6 +2,12 @@ name: Crash / data loss report
 description: The app crashed, hung, or lost map data
 labels: [bug]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **If the app still starts, report from inside MMA instead.** Open the map list and click
+        "Report bugs here", or go to Settings → Feedback. It attaches the log automatically,
+        which for a crash is the thing that actually matters.
   - type: textarea
     id: description
     attributes:
@@ -22,7 +28,7 @@ body:
     id: version
     attributes:
       label: App version
-      placeholder: e.g. 0.4.2
+      placeholder: e.g. 0.11.2
     validations:
       required: true
   - type: textarea

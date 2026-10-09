@@ -2,21 +2,48 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { Switch } from "@/components/primitives/Switch";
 import { useSetting, setSetting, type AppSettings } from "@/store/settings";
+import { matches } from "@/lib/search";
 
-type SearchCtx = { query: string; searching: boolean; sectionMatched: boolean };
+type SearchCtx = {
+	query: string;
+	searching: boolean;
+	sectionMatched: boolean;
+	/** The section's translated title: part of every row's search path. */
+	sectionTitle: string;
+};
 
-/** Drives per-row filtering inside the Settings dialog. `query` is lowercased;
+/** Drives per-row filtering inside the Settings dialog (matching via lib/search);
  *  `sectionMatched` is true when the section title itself matches (then every
  *  row and auxiliary block in the section shows). */
 export const SettingsSearchContext = createContext<SearchCtx>({
 	query: "",
 	searching: false,
 	sectionMatched: true,
+	sectionTitle: "",
 });
 
 export function useSettingsSearch() {
 	const ctx = useContext(SettingsSearchContext);
 	return { ...ctx, auxVisible: !ctx.searching || ctx.sectionMatched };
+}
+
+type GroupCtx = { title: string; matched: boolean };
+const SettingsGroupContext = createContext<GroupCtx>({ title: "", matched: false });
+
+/** A sub-group of a section: its heading plus the rows under it. The title joins each
+ *  row's search path, and a query that hits the title shows the whole group. The block
+ *  hides itself (CSS) when a search leaves nothing visible under the heading. */
+export function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+	const { query, searching, sectionMatched } = useContext(SettingsSearchContext);
+	const matched = searching && !sectionMatched && matches(query, title);
+	return (
+		<SettingsGroupContext.Provider value={{ title, matched }}>
+			<div className="settings-group-block">
+				<h3 className="settings-group eyebrow">{title}</h3>
+				{children}
+			</div>
+		</SettingsGroupContext.Provider>
+	);
 }
 
 /** `label` stays a plain string so settings search can match on it; `badge` is the escape hatch
@@ -25,6 +52,8 @@ type Base = {
 	label: string;
 	badge?: ReactNode;
 	description?: string;
+	/** Extra search terms, e.g. the option labels of a select control. */
+	keywords?: string[];
 	disabled?: boolean;
 	sub?: boolean;
 };
@@ -43,14 +72,17 @@ function AutoWiredRow({ setting, ...rest }: AutoBoolRow) {
 	);
 }
 
+/** @unstable */
 export function SettingRow(props: BoolRow | ControlRow | AutoBoolRow) {
-	const { query, searching, sectionMatched } = useContext(SettingsSearchContext);
+	const { query, searching, sectionMatched, sectionTitle } = useContext(SettingsSearchContext);
+	const group = useContext(SettingsGroupContext);
 	if ("setting" in props) return <AutoWiredRow {...(props as AutoBoolRow)} />;
 
-	const { label, badge, description, disabled, sub } = props;
+	const { label, badge, description, keywords, disabled, sub } = props;
 
-	if (searching && !sectionMatched) {
-		if (!`${label} ${description ?? ""}`.toLowerCase().includes(query)) return null;
+	if (searching && !sectionMatched && !group.matched) {
+		const path = [sectionTitle, group.title, label, description, ...(keywords ?? [])];
+		if (!matches(query, ...path)) return null;
 	}
 
 	const boolean = !("control" in props);

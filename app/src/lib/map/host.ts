@@ -37,6 +37,8 @@ export interface MapHostEvents {
 	mouseout: void;
 	zoom: void;
 	camera: void;
+	/** The camera came to rest after a pan/zoom (Google `idle`, maplibre `idle`). */
+	idle: void;
 	tilesloaded: void;
 }
 

@@ -1,24 +1,28 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
+import type { Tag } from "@/types";
 import {
-	fovToZoom,
 	compareNatural,
-	binNumeric,
 	sortTagsByMode,
 	tagColorFor,
 	appendTagName,
+	phaseRate,
+	type PhaseRate,
 } from "@/lib/util/util";
+import { ERROR_CODES } from "@/bindings.consts";
+import { initLocale } from "@/lib/i18n";
 import { colorForName } from "@/lib/util/color";
-import { relativeTime } from "@/lib/util/format";
+import { relativeTime, errText } from "@/lib/util/format";
 import { cycle } from "@/types/util";
 import { MOVEMENT_CYCLE } from "@/store/settings";
-import type { Tag } from "@/bindings.gen";
-
 describe("sortTagsByMode", () => {
 	const tag = (id: number, name: string, order?: number): Tag => ({
 		id,
 		name,
 		color: "#000",
-		order,
+		visible: true,
+		order: order ?? null,
+		doclinks: [],
 	});
 	const tags = [tag(1, "bravo", 2), tag(2, "alpha", 1), tag(3, "charlie")];
 	const counts = { 1: 5, 2: 1, 3: 9 };
@@ -45,7 +49,9 @@ describe("sortTagsByMode", () => {
 });
 
 describe("tagColorFor", () => {
-	const tags: Tag[] = [{ id: 1, name: "Red", color: "#ff0000" }];
+	const tags: Tag[] = [
+		{ id: 1, name: "Red", color: "#ff0000", visible: true, order: null, doclinks: [] },
+	];
 
 	it("uses an existing tag's stored color, matched case-insensitively", () => {
 		expect(tagColorFor("red", tags)).toBe("#ff0000");
@@ -57,7 +63,9 @@ describe("tagColorFor", () => {
 });
 
 describe("appendTagName", () => {
-	const tags: Tag[] = [{ id: 1, name: "Urban", color: "#000" }];
+	const tags: Tag[] = [
+		{ id: 1, name: "Urban", color: "#000", visible: true, order: null, doclinks: [] },
+	];
 
 	it("appends a brand-new name as typed", () => {
 		expect(appendTagName([], "Coastal", tags)).toEqual(["Coastal"]);
@@ -73,29 +81,6 @@ describe("appendTagName", () => {
 	});
 });
 
-describe("fovToZoom", () => {
-	it("returns ~1 for 90-degree FOV", () => {
-		const z = fovToZoom(90);
-		expect(z).toBeCloseTo(1, 0);
-	});
-
-	it("higher FOV = lower zoom", () => {
-		expect(fovToZoom(120)).toBeLessThan(fovToZoom(90));
-	});
-
-	it("lower FOV = higher zoom", () => {
-		expect(fovToZoom(45)).toBeGreaterThan(fovToZoom(90));
-	});
-
-	it("is monotonically decreasing", () => {
-		const fovs = [30, 45, 60, 90, 120];
-		const zooms = fovs.map(fovToZoom);
-		for (let i = 1; i < zooms.length; i++) {
-			expect(zooms[i]).toBeLessThan(zooms[i - 1]);
-		}
-	});
-});
-
 describe("compareNatural", () => {
 	it("orders numeric strings by value, not lexically", () => {
 		expect(["300", "80", "1000", "9"].sort(compareNatural)).toEqual(["9", "80", "300", "1000"]);
@@ -107,58 +92,6 @@ describe("compareNatural", () => {
 
 	it("orders plain strings lexically", () => {
 		expect(["gen4", "gen2", "gen1"].sort(compareNatural)).toEqual(["gen1", "gen2", "gen4"]);
-	});
-});
-
-describe("binNumeric (count mode)", () => {
-	it("splits a range into equal-width buckets", () => {
-		const b = binNumeric([0, 25, 50, 75, 100], { by: "count", n: 5 })!;
-		expect(b.count).toBe(5);
-		expect(b.bounds[0]).toEqual([0, 20]);
-		expect(b.bounds[4][1]).toBe(100);
-	});
-
-	it("assigns values to the right bucket and clamps the ends", () => {
-		const b = binNumeric([0, 100], { by: "count", n: 10 })!;
-		expect(b.bucketIndex(0)).toBe(0);
-		expect(b.bucketIndex(100)).toBe(9);
-		expect(b.bucketIndex(55)).toBe(5);
-		expect(b.bucketIndex(-999)).toBe(0);
-		expect(b.bucketIndex(999)).toBe(9);
-	});
-
-	it("ignores non-finite values", () => {
-		const b = binNumeric([NaN, 0, Infinity, 10], { by: "count", n: 2 })!;
-		expect(b.min).toBe(0);
-		expect(b.max).toBe(10);
-	});
-
-	it("returns null when there is no spread", () => {
-		expect(binNumeric([5, 5, 5], { by: "count", n: 4 })).toBeNull();
-		expect(binNumeric([], { by: "count", n: 4 })).toBeNull();
-		expect(binNumeric([1, 2, 3], { by: "count", n: 0 })).toBeNull();
-	});
-});
-
-describe("binNumeric (width mode)", () => {
-	it("anchors bins at multiples of the width and assigns values", () => {
-		const b = binNumeric([84, 1237, 1300], { by: "width", w: 500 })!;
-		expect(b.bounds[0]).toEqual([0, 500]);
-		expect(b.labels).toContain("1000–1500");
-		expect(b.bucketIndex(84)).toBe(0);
-		expect(b.bucketIndex(1237)).toBe(b.labels.indexOf("1000–1500"));
-	});
-
-	it("handles negatives and a single value (one bin)", () => {
-		expect(binNumeric([-10], { by: "width", w: 500 })!.bounds[0]).toEqual([-500, 0]);
-		const one = binNumeric([42, 42], { by: "width", w: 100 })!;
-		expect(one.count).toBe(1);
-		expect(one.bounds[0]).toEqual([0, 100]);
-	});
-
-	it("returns null for no finite values or non-positive width", () => {
-		expect(binNumeric([NaN, Infinity], { by: "width", w: 10 })).toBeNull();
-		expect(binNumeric([1, 2], { by: "width", w: 0 })).toBeNull();
 	});
 });
 
@@ -233,5 +166,111 @@ describe("cycle", () => {
 		const seen = [MOVEMENT_CYCLE[0]];
 		for (let i = 0; i < MOVEMENT_CYCLE.length; i++) seen.push(cycle(MOVEMENT_CYCLE, seen[i]));
 		expect(seen).toEqual([...MOVEMENT_CYCLE, MOVEMENT_CYCLE[0]]);
+	});
+});
+
+describe("phaseRate", () => {
+	function feed(ticks: [done: number, total: number, at: number][]) {
+		let state: PhaseRate | null = null;
+		let rate: number | null = null;
+		for (const [done, total, at] of ticks) {
+			({ state, rate } = phaseRate(state, done, total, at));
+		}
+		return rate;
+	}
+
+	it("averages over the wave, not instantaneously", () => {
+		// 100 rows in 1s, then a burst of 300 in the next second: average, not the burst.
+		expect(
+			feed([
+				[0, 1000, 0],
+				[100, 1000, 1000],
+				[400, 1000, 2000],
+			]),
+		).toBe(200);
+	});
+
+	it("is null until the wave shows work", () => {
+		expect(feed([[0, 1000, 0]])).toBeNull();
+		expect(
+			feed([
+				[0, 1000, 0],
+				[0, 1000, 5000],
+			]),
+		).toBeNull();
+	});
+
+	it("re-anchors when done resets for the next wave instead of carrying the old speed", () => {
+		const rate = feed([
+			[0, 100, 0],
+			[100, 100, 100], // wave 1: 1000/s
+			[0, 5000, 200], // wave 2 begins
+			[50, 5000, 1200], // 50 rows in 1s of wave 2
+		]);
+		expect(rate).toBe(50);
+	});
+
+	it("re-anchors when the total grows, which only a new wave does", () => {
+		const rate = feed([
+			[10, 10, 0],
+			[10, 10, 1000], // wave 1 finished at 10/10
+			[20, 5000, 2000], // wave 2's counts arrive without ever dipping below 10
+			[120, 5000, 3000],
+		]);
+		expect(rate).toBe(100);
+	});
+
+	it("a shrinking total stays inside the wave", () => {
+		// Skips shrink the denominator mid-wave; the anchor must survive that.
+		expect(
+			feed([
+				[0, 1000, 0],
+				[100, 900, 1000],
+				[200, 800, 2000],
+			]),
+		).toBe(100);
+	});
+});
+
+// ERROR_CODES is the Rust vocabulary (types.rs `err_codes!`); a code with no message here is a
+// compile error, and a code Rust dropped leaves an orphan the same way.
+describe("errText", () => {
+	it("translates every code Rust can stamp", async () => {
+		await initLocale("en-XA");
+		for (const code of ERROR_CODES) {
+			if (code === "auth") continue;
+			const rendered = errText(new Error(`${code}: 1024 2048`));
+			expect({ code, translated: rendered.startsWith("[") }).toEqual({ code, translated: true });
+		}
+	});
+
+	it("shows the provider's own words behind the auth code", async () => {
+		await initLocale("en");
+		expect(errText(new Error("auth: read: HTTP 401"))).toBe("read: HTTP 401");
+	});
+
+	it("interpolates the detail as data, not prose", async () => {
+		await initLocale("en");
+		expect(errText(new Error("attachment-too-large: 5242880"))).toBe(
+			"That image is too large (5.00 MB maximum).",
+		);
+		expect(errText(new Error("geoguessr-draft-too-large: 17825792 16777216"))).toBe(
+			"Too large for a GeoGuessr draft (stores as 17.00 MB; the limit is 16.00 MB).",
+		);
+		expect(errText(new Error("upload-rejected: 429 Too Many Requests"))).toBe(
+			"The upload was rejected (429 Too Many Requests).",
+		);
+	});
+
+	it("renders a code with no detail", async () => {
+		await initLocale("en");
+		expect(errText(new Error("attachment-not-staged"))).toBe(
+			"That file was not staged for upload.",
+		);
+	});
+
+	it("passes an uncoded message through untouched", () => {
+		expect(errText(new Error("boom: everything is on fire"))).toBe("boom: everything is on fire");
+		expect(errText("plain string")).toBe("plain string");
 	});
 });

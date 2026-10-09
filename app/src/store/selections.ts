@@ -1,45 +1,43 @@
-/** Pure selection transforms. These only manipulate the JS selection tree; Rust resolves the actual bitmasks. */
+/** Pure selection transforms: build, compose, invert, rewrite, and remove selections. */
 
-import { match, P } from "ts-pattern";
-import type { FilterOp, PolygonGeometry, Tag } from "@/bindings.gen";
+import type {
+	FilterOp,
+	ListedSelection,
+	PolygonGeometry,
+	Selection,
+	Selector,
+} from "@/bindings.gen";
+import type { Tag } from "@/types";
 import { getVisibleTags, getTag } from "@/store/useMapStore";
-import { hslToRgb } from "@/lib/util/color";
-import { getFieldDef } from "@/lib/data/fieldDefRegistry";
-import { localDateTime, utcDateTime } from "@/lib/util/format";
-import { clamp, isVariant, unionTuple, type Variant } from "@/types/util";
-import { pointInPolygon } from "@/lib/geo/geo";
+import { hexToRgb, hslToRgb, type RGB } from "@/lib/util/color";
+import { getFieldDef, fieldValueLabel } from "@/lib/data/fieldDefRegistry";
+import { formatDistance, localDateTime, utcDateTime } from "@/lib/util/format";
+import { isVariant, toggle, unionTuple, type Variant } from "@/types/util";
+import { validationCategory } from "@/lib/sv/validationCategories";
 import { getSettings } from "@/store/settings";
 import { dayMonthFmt } from "@/lib/util/format";
 import { t, msg } from "@/lib/i18n";
-import { shortestUniqueSuffixes } from "@/components/editor/tags/tagTreeRange";
+import { shortestUniqueSuffixes } from "@/lib/data/tagPaths";
 
-import type { Selection, SelectionProps } from "@/bindings.gen";
-
-/** Variants that wrap children — derived as exactly those carrying a `selections` array. */
-export type CompositeType = Extract<SelectionProps, { selections: Selection[] }>["type"];
-/** Composite variants that wrap exactly one child (operators, not bags). They never collapse — a
- *  one-child group is degenerate, but one child is a unary node's only valid arity. */
+/** Selector variants that wrap child selections (Intersection, Union, Invert). */
+export type CompositeType = Extract<Selector, { selections: Selection[] }>["type"];
+/** Composite variants that wrap exactly one child (e.g. Invert). */
 export type UnaryType = "Invert";
 /** Composite variants that are flat n-ary groups. */
 export type GroupType = Exclude<CompositeType, UnaryType>;
 
-const COMPOSITE_TYPES = unionTuple<CompositeType>()(["Intersection", "Union", "Invert"]);
 const GROUP_TYPES = unionTuple<GroupType>()(["Intersection", "Union"]);
 export const UNARY_TYPES = unionTuple<UnaryType>()(["Invert"]);
 
-export enum ValidationState {
-	Ok = 0,
-	UpdateAvailable = 1,
-	UpdateApplied = 2,
-	NotFound = 3,
-	PanoIdBroke = 4,
-	Unofficial = 5,
-	GoodcamAvailable = 6,
-}
+export type FilterOpKind = FilterOp["op"];
+
+/** Whether a predicate reads the location's clock in its own timezone. Only a range can. */
+export const filterIsLocalTime = (test: FilterOp): boolean =>
+	"tzLocal" in test && test.tzLocal === true;
 
 /** Display symbol/word for each filter operator. Symbols are language-neutral; only the worded
  *  operators are marked for translation. */
-export const OP_LABELS: Record<FilterOp, string> = {
+export const OP_LABELS: Record<FilterOpKind, string> = {
 	eq: "=",
 	neq: "!=",
 	gt: ">",
@@ -55,52 +53,168 @@ export const OP_LABELS: Record<FilterOp, string> = {
 	notcontains: msg("does not contain"),
 };
 
-export function colorForKey(key: string): [number, number, number] {
+/** Locations carrying `tagId`. A tag is membership in the `tags` list field and nothing
+ *  else, so there is no tag selector to build. */
+export const tagSelector = (tagId: number): Selector => ({
+	type: "Filter",
+	field: "tags",
+	test: { op: "contains", value: tagId },
+});
+
+/** Locations with no tags: `tags` resolves to nothing on an untagged row. */
+export const untaggedSelector = (): Selector => ({
+	type: "Filter",
+	field: "tags",
+	test: { op: "nothas" },
+});
+
+/** Locations whose heading was never set. */
+export const unpannedSelector = (): Selector => ({
+	type: "Filter",
+	field: "heading",
+	test: { op: "eq", value: 0 },
+});
+
+/** Locations pinned to one exact pano (the flag plus a pano id, mirroring Rust's
+ *  `Selector::pano_ids`), or the locations not pinned. */
+export function panoIdSelector(on: boolean): Selector {
+	const pinned: Selector = {
+		type: "Intersection",
+		selections: [
+			buildSelection({ type: "Filter", field: "loadAsPanoId", test: { op: "eq", value: true } }),
+			buildSelection({ type: "Filter", field: "panoId", test: { op: "has" } }),
+		],
+	};
+	return on ? pinned : { type: "Invert", selections: [buildSelection(pinned)] };
+}
+
+/** Locations holding a value for `field`. */
+export const has = (field: string): Selector => ({ type: "Filter", field, test: { op: "has" } });
+
+/** Locations holding no value for `field`. */
+export const lacks = (field: string): Selector => ({
+	type: "Filter",
+	field,
+	test: { op: "nothas" },
+});
+
+function compose(type: GroupType, selectors: Selector[]): Selector {
+	const parts = selectors.flatMap((s): Selection[] => {
+		if (s.type === type) return s.selections;
+		if (type === "Intersection" && s.type === "Everything") return [];
+		return [buildSelection(s)];
+	});
+	if (parts.length === 1) return parts[0].selector;
+	if (parts.length === 0 && type === "Intersection") return { type: "Everything" };
+	return { type, selections: dedupe(parts) };
+}
+
+/** Locations matching every one of `selectors`; with none, every location. */
+export const all = (...selectors: Selector[]): Selector => compose("Intersection", selectors);
+
+/** Locations matching any of `selectors`; with none, no location. */
+export const any = (...selectors: Selector[]): Selector => compose("Union", selectors);
+
+const inverted = (s: Selection): Selection =>
+	s.selector.type === "Invert"
+		? s.selector.selections[0]
+		: buildSelection({ type: "Invert", selections: [s] });
+
+/** Locations not matching `selector`. */
+export const not = (selector: Selector): Selector => inverted(buildSelection(selector)).selector;
+
+/** The tag a selector names, or null when it names something else. The single place that
+ *  recognises tag membership, so nothing else has to know its shape. */
+export function tagIdOf(selector: Selector): number | null {
+	return selector.type === "Filter" &&
+		selector.field === "tags" &&
+		selector.test.op === "contains" &&
+		typeof selector.test.value === "number"
+		? selector.test.value
+		: null;
+}
+
+/** The color a selection displays as. */
+export function displayColor(s: Selection): RGB {
+	const inner = s.selector.type === "Invert" ? s.selector.selections[0] : s;
+	const tagId = tagIdOf(inner.selector);
+	const tag = tagId == null ? undefined : getTag(tagId);
+	return tag ? hexToRgb(tag.color) : s.color;
+}
+
+/** Whether a selector is the pinned composite `panoIdSelector` builds (`true`), its
+ *  inversion (`false`), or something else (`null`). Display-only. */
+export function panoIdOf(selector: Selector): boolean | null {
+	const { pano, types } = named();
+	if (!types.has(selector.type)) return null;
+	const key = buildSelection(selector).key;
+	if (key === pano.on) return true;
+	return key === pano.off ? false : null;
+}
+
+/** The name a selection carries of its own, when it is one the builders name. */
+function namedLabel(selector: Selector): string | undefined {
+	const { labels, types } = named();
+	if (!types.has(selector.type)) return undefined;
+	return labels.get(buildSelection(selector).key)?.();
+}
+
+let registry: {
+	labels: Map<string, () => string>;
+	types: Set<Selector["type"]>;
+	pano: { on: string; off: string };
+} | null = null;
+
+/** The selections that carry a name of their own, recognised by the key their builder
+ *  derives: recognition is the builder inverted, so the shape is described once. Labels
+ *  stay thunks because the locale resolves at render. */
+function named() {
+	if (!registry) {
+		const entry = (selector: Selector, label: () => string) => ({
+			key: buildSelection(selector).key,
+			type: selector.type,
+			label,
+		});
+		const panoOn = entry(panoIdSelector(true), () => t("Pano ID locations"));
+		const panoOff = entry(panoIdSelector(false), () => t("Coordinate locations"));
+		const all = [
+			entry(untaggedSelector(), () => t("Untagged")),
+			entry(unpannedSelector(), () => t("Unpanned")),
+			panoOn,
+			panoOff,
+		];
+		registry = {
+			labels: new Map(all.map((n) => [n.key, n.label])),
+			types: new Set(all.map((n) => n.type)),
+			pano: { on: panoOn.key, off: panoOff.key },
+		};
+	}
+	return registry;
+}
+
+/** Deterministic color derived from a selection key string. */
+export function colorForKey(key: string): RGB {
 	let t = 0;
 	for (let i = 0; i < key.length; i += 1) t = ((key.charCodeAt(i) + (t << 5)) | 0) + t;
 	t = (((t * 214013) | 0) + 2531011) | 0;
 	return hslToRgb(Math.abs(t) % 360, 0.5, 0.5);
 }
 
-function locationsKey(ids: number[]): string {
-	return ids.join(",");
-}
-
-/** Ghost keys that "solo" `key`: everything except it. Returns an empty set when `key`
- *  is already the sole visible selection, so a repeat call un-isolates (clears all ghosts). */
-export function isolateGhostKeys(
-	keys: string[],
-	ghosted: ReadonlySet<string>,
-	key: string,
-): Set<string> {
-	const alreadyIsolated = !ghosted.has(key) && keys.every((k) => k === key || ghosted.has(k));
-	return alreadyIsolated ? new Set() : new Set(keys.filter((k) => k !== key));
-}
-
-/** Pick `n` distinct ids uniformly at random from `ids` using `Math.random`.
- *  `n` is floored and clamped to `[0, ids.length]` (so over-large counts return all ids).
- *  Uses a partial Fisher–Yates shuffle, so the result contains no duplicates and `ids` is not mutated. */
-export function sampleIds(ids: number[], n: number): number[] {
-	const k = clamp(Math.floor(n), 0, ids.length);
-	const pool = ids.slice();
-	for (let i = 0; i < k; i += 1) {
-		const j = i + Math.floor(Math.random() * (pool.length - i));
-		[pool[i], pool[j]] = [pool[j], pool[i]];
+/** Key an id list by hashing it: the same ids in the same order give the same key.
+ *  Order-sensitive, like the list it identifies. Key length is constant. */
+export function locationsKey(ids: number[]): string {
+	let h1 = 0xdeadbeef | 0;
+	let h2 = 0x41c6ce57 | 0;
+	for (const id of ids) {
+		h1 = Math.imul(h1 ^ id, 2654435761);
+		h2 = Math.imul(h2 ^ id, 1597334677);
 	}
-	return pool.slice(0, k);
+	h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return `locations:${ids.length}:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
 }
 
-export function resolveLocations(props: SelectionProps): number[] {
-	return match(props)
-		.with({ type: P.union("Locations", "Manual", "ValidationState", "Reviewed") }, (p) => [
-			...p.locations,
-		])
-		.otherwise(() => []);
-}
-
-/** Key a polygon by hashing its raw coordinates: identical geometry = identical key,
- *  so any path that rebuilds the Selection (composites, tree transforms) keeps the
- *  leaf's identity instead of minting a fresh one and breaking key-is-identity. */
+// Key a polygon by hashing its raw coordinates: identical geometry = identical key.
 function polygonKey(geom: PolygonGeometry): string {
 	let h1 = 0xdeadbeef | 0;
 	let h2 = 0x41c6ce57 | 0;
@@ -119,427 +233,95 @@ function polygonKey(geom: PolygonGeometry): string {
 	return `polygon:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
 }
 
-function keyForProps(props: SelectionProps, locations: number[]): string {
-	return match(props)
-		.with({ type: "Locations" }, () => locationsKey(locations))
-		.with({ type: "Everything" }, () => "everything")
-		.with({ type: "Polygon" }, (p) => polygonKey(p.polygon))
-		.with({ type: "Tag" }, (p) => `tag:${p.tagId}`)
-		.with({ type: "Untagged" }, () => "untagged")
-		.with({ type: "Unpanned" }, () => "unpanned")
-		.with({ type: "PanoIds" }, () => "panoids")
-		.with({ type: "NotPanoIds" }, () => "notpanoids")
-		.with({ type: "Uncommitted" }, () => "uncommitted")
-		.with({ type: "Duplicates" }, (p) => `duplicates:${p.distance}`)
-		.with({ type: "Manual" }, () => "manual")
-		.with({ type: "ValidationState" }, (p) => `validation:${p.state}`)
-		.with({ type: "Reviewed" }, (p) => `review:${p.sessionId}:${p.mode}`)
-		.with({ type: "Intersection" }, (p) => p.selections.map((s) => `(${s.key})`).join("^"))
-		.with({ type: "Union" }, (p) => p.selections.map((s) => `(${s.key})`).join("|"))
-		.with({ type: "Invert" }, (p) => `!${p.selections[0].key}`)
-		.with(
-			{ type: "Filter" },
-			(p) =>
-				`filter:${p.field}:${p.op}:${String(p.value)}${p.value2 != null ? `:${String(p.value2)}` : ""}${p.tzLocal ? ":local" : ""}`,
-		)
-		.with({ type: "TopK" }, (p) => `topk:${p.field}:${p.k}:${p.ascending}`)
-		.exhaustive();
+/** What one selection type answers about itself; optional answers default at the lookup. */
+interface SelectionDescriptor<K extends Selector["type"]> {
+	key(selector: Variant<Selector, K>, locations: number[]): string;
+	label(selector: Variant<Selector, K>, tagNames?: Record<number, string>): string;
+	/** Null falls through to the key hash. */
+	color?(selector: Variant<Selector, K>): RGB | null;
+	locations?(selector: Variant<Selector, K>): number[];
 }
 
-/** Overlay color for a selection. Reviewed is green (145), unreviewed is violet (280): both stay
- *  well clear of the red active-location marker so the cursor never blends in. Polygons follow the
- *  polygonColorMode setting — everything else is hashed from its key. */
-function selectionColor(props: SelectionProps, key: string): [number, number, number] {
-	if (props.type === "Reviewed") {
-		return props.mode === "unreviewed" ? hslToRgb(280, 0.6, 0.5) : hslToRgb(145, 0.6, 0.5);
-	}
-	if (props.type === "Polygon") {
-		const { polygonColorMode, polygonColor } = getSettings();
-		if (polygonColorMode === "fixed") return [polygonColor.r, polygonColor.g, polygonColor.b];
-	}
-	return colorForKey(key);
-}
+const ownLocations = (s: { locations: number[] }) => [...s.locations];
 
-/** Create a Selection with a deterministic key and overlay color from its props. */
-export function buildSelection(props: SelectionProps): Selection {
-	const locations = resolveLocations(props);
-	const key = keyForProps(props, locations);
-	return { key, color: selectionColor(props, key), props };
-}
-
-// dedupe by key, preserving order of last occurrence
-function dedupe(selections: Selection[]): Selection[] {
-	const map = new Map<string, Selection>();
-	for (const s of selections) map.set(s.key, s);
-	return map.size === selections.length ? selections : Array.from(map.values());
-}
-
-export function addSelection(current: Selection[], props: SelectionProps): Selection[] {
-	return dedupe([...current, buildSelection(props)]);
-}
-
-/** Keys of every Polygon selection whose geometry contains the point. */
-export function polygonSelectionsContaining(
-	selections: Selection[],
-	lat: number,
-	lng: number,
-): string[] {
-	const keys: string[] = [];
-	for (const sel of selections) {
-		if (sel.props.type !== "Polygon") continue;
-		const { coordinates, extraPolygons } = sel.props.polygon;
-		const polys = extraPolygons ? [coordinates, ...extraPolygons] : [coordinates];
-		if (polys.some((rings) => pointInPolygon(lng, lat, rings))) keys.push(sel.key);
-	}
-	return keys;
-}
-
-/** Remove a selection by key. Composites (Intersection/Union/Invert) unwrap their children back into the list. */
-export function removeSelection(current: Selection[], key: string): Selection[] {
-	return current.flatMap((s) => {
-		if (s.key !== key) return [s];
-		if (isVariant(s.props, COMPOSITE_TYPES)) return s.props.selections;
-		return [];
-	});
-}
-
-/** Split selections into [matching the keys, everything else]. */
-function partitionByKeys(current: Selection[], keys: string[]): [Selection[], Selection[]] {
-	const targets: Selection[] = [];
-	const others: Selection[] = [];
-	for (const s of current) (keys.includes(s.key) ? targets : others).push(s);
-	return [targets, others];
-}
-
-/** Merge targeted selections into a single composite, flattening nested groups of the same type. */
-function composeSelectionGroup(
-	current: Selection[],
-	keys: string[] | null,
-	type: "Intersection" | "Union",
-): Selection[] {
-	if (current.length < 2) return current;
-	const [targets, others] = partitionByKeys(current, keys ?? current.map((s) => s.key));
-	const flat = targets.flatMap((s) => (s.props.type === type ? s.props.selections : [s]));
-	return [...others, buildSelection({ type, selections: dedupe(flat) })];
-}
-
-export const intersectSelections = (current: Selection[], keys: string[] | null) =>
-	composeSelectionGroup(current, keys, "Intersection");
-
-export const unionSelections = (current: Selection[], keys: string[] | null) =>
-	composeSelectionGroup(current, keys, "Union");
-
-/** Invert targeted selections. Single target toggles in-place at any depth; multiple are wrapped in Union then Invert. */
-export function invertSelections(current: Selection[], keys: string[] | null): Selection[] {
-	if (current.length === 0) return current;
-	const targetKeys = keys ?? current.map((s) => s.key);
-	// single-target invert toggles in-place, nested children included
-	if (targetKeys.length === 1) {
-		const toggle = (m: Selection): Selection =>
-			m.props.type === "Invert"
-				? m.props.selections[0]
-				: buildSelection({ type: "Invert", selections: [m] });
-		for (let i = 0; i < current.length; i++) {
-			const inverted = transformInTree(current[i], targetKeys[0], toggle);
-			if (inverted) return spliceMerging(current, i, inverted);
-		}
-		return current;
-	}
-	const [targets, others] = partitionByKeys(current, targetKeys);
-	const flat = targets.flatMap((s) => (s.props.type === "Union" ? s.props.selections : [s]));
-	const inner = flat.length === 1 ? flat[0] : buildSelection({ type: "Union", selections: flat });
-	return [...others, buildSelection({ type: "Invert", selections: [inner] })];
-}
-
-export function toggleManualSelection(current: Selection[], locationId: number): Selection[] {
-	const idx = current.findIndex((s) => s.key === "manual");
-	if (idx === -1) return [...current, buildSelection({ type: "Manual", locations: [locationId] })];
-	const sel = current[idx];
-	const ids = (sel.props as Variant<SelectionProps, "Manual">).locations.slice();
-	const at = ids.indexOf(locationId);
-	if (at === -1) ids.push(locationId);
-	else ids.splice(at, 1);
-	if (ids.length === 0) return current.toSpliced(idx, 1);
-	const next = buildSelection({ type: "Manual", locations: ids });
-	return current.with(idx, next);
-}
-
-export function reorderSelections(
-	current: Selection[],
-	fromKey: string,
-	toKey: string,
-	position: "before" | "after",
-): Selection[] {
-	const fromIdx = current.findIndex((s) => s.key === fromKey);
-	if (fromIdx === -1) return current;
-	const item = current[fromIdx];
-	const without = current.toSpliced(fromIdx, 1);
-	let toIdx = without.findIndex((s) => s.key === toKey);
-	if (toIdx === -1) return current;
-	if (position === "after") toIdx++;
-	return without.toSpliced(toIdx, 0, item);
-}
-
-/** Drag-drop composition: merge drag into drop as a new composite, absorbing existing children of the same type. */
-export function composeSelections(
-	current: Selection[],
-	dragKey: string,
-	dropKey: string,
-	mode: GroupType,
-): Selection[] {
-	const dragIdx = current.findIndex((s) => s.key === dragKey);
-	const dropIdx = current.findIndex((s) => s.key === dropKey);
-	if (dragIdx === -1 || dropIdx === -1 || dragIdx === dropIdx) return current;
-	const drag = current[dragIdx];
-	const drop = current[dropIdx];
-
-	let children: Selection[];
-	if (isVariant(drop.props, mode)) {
-		children = [...drop.props.selections, drag];
-	} else {
-		children = [drop, drag];
-	}
-	const composite = buildSelection({ type: mode, selections: dedupe(children) });
-
-	return current.filter((_, i) => i !== dragIdx).map((s) => (s.key === dropKey ? composite : s));
-}
-
-/** Unwrap a unary operator (e.g. Invert) to the n-ary group it wraps, returning that group's props
- *  plus a `rewrap` that restores the operator; a plain group returns itself with an identity rewrap.
- *  Null when there's no group to operate on. Single source for "a unary node keeps its wrapper" —
- *  every site that rebuilds a composite's children routes through it. */
-function unwrapUnary(
-	sel: Selection,
-): { props: Variant<SelectionProps, GroupType>; rewrap: (inner: Selection) => Selection } | null {
-	const unary = isVariant(sel.props, UNARY_TYPES) ? sel.props.type : null;
-	const props = isVariant(sel.props, UNARY_TYPES) ? sel.props.selections[0].props : sel.props;
-	if (!isVariant(props, GROUP_TYPES)) return null;
-	return {
-		props,
-		rewrap: (inner) => (unary ? buildSelection({ type: unary, selections: [inner] }) : inner),
-	};
-}
-
-/** Rebuild a composite around `next`: a group that drops to one child collapses to it, an empty
- *  one is gone (null). `rewrap` keeps a unary wrapper (Invert) around whatever survives. */
-function rebuildComposite(
-	type: GroupType,
-	rewrap: (inner: Selection) => Selection,
-	next: Selection[],
-): Selection | null {
-	if (next.length === 0) return null;
-	return rewrap(next.length === 1 ? next[0] : buildSelection({ type, selections: next }));
-}
-
-/** `updated: null` means the composite is empty now and the caller must drop it. `dissolve` hoists a
- *  removed group's children into the parent instead of taking them with it — a delete ungroups,
- *  an extract must not (the child keeps its own children when it leaves). */
-function removeChildFromComposite(
-	sel: Selection,
-	parentKey: string,
-	childKey: string,
-	dissolve: boolean,
-): { updated: Selection | null; removed: Selection } | null {
-	const grp = unwrapUnary(sel);
-	if (!grp) return null;
-	const { props: compositeProps, rewrap } = grp;
-	const children = compositeProps.selections;
-	const rebuild = (next: Selection[]) => rebuildComposite(compositeProps.type, rewrap, next);
-
-	if (sel.key === parentKey) {
-		const childIdx = children.findIndex((s) => s.key === childKey);
-		if (childIdx === -1) return null;
-		const child = children[childIdx];
-		const inlined = dissolve && isVariant(child.props, GROUP_TYPES) ? child.props.selections : [];
-		return { updated: rebuild(children.toSpliced(childIdx, 1, ...inlined)), removed: child };
-	}
-
-	for (let i = 0; i < children.length; i++) {
-		const result = removeChildFromComposite(children[i], parentKey, childKey, dissolve);
-		if (result) {
-			const next = result.updated ? children.with(i, result.updated) : children.toSpliced(i, 1);
-			return { updated: rebuild(next), removed: result.removed };
-		}
-	}
-	return null;
-}
-
-/** `extract` puts the child back at the top level; `delete` drops it, ungrouping a nested group's
- *  children into the parent. */
-function detachChild(
-	current: Selection[],
-	parentKey: string,
-	childKey: string,
-	mode: "extract" | "delete",
-): Selection[] {
-	for (let i = 0; i < current.length; i++) {
-		const result = removeChildFromComposite(current[i], parentKey, childKey, mode === "delete");
-		if (result) {
-			const out = result.updated ? current.with(i, result.updated) : current.toSpliced(i, 1);
-			if (mode === "extract") out.splice(result.updated ? i + 1 : i, 0, result.removed);
-			return out;
-		}
-	}
-	return current;
-}
-
-/** Pull a child out of a composite back into the top-level list, children and all. Parent collapses
- *  if only one child remains, and disappears if none do. */
-export function decomposeChild(
-	current: Selection[],
-	parentKey: string,
-	childKey: string,
-): Selection[] {
-	return detachChild(current, parentKey, childKey, "extract");
-}
-
-export function removeFromComposite(
-	current: Selection[],
-	parentKey: string,
-	childKey: string,
-): Selection[] {
-	return detachChild(current, parentKey, childKey, "delete");
-}
-
-export function composeSiblings(
-	current: Selection[],
-	parentKey: string,
-	dragKey: string,
-	dropKey: string,
-	mode: GroupType,
-): Selection[] {
-	const parentIdx = current.findIndex((s) => s.key === parentKey);
-	if (parentIdx === -1) return current;
-	const grp = unwrapUnary(current[parentIdx]);
-	if (!grp) return current;
-	const { props: compositeProps, rewrap } = grp;
-
-	const children = compositeProps.selections;
-	const dragChild = children.find((s) => s.key === dragKey);
-	const dropChild = children.find((s) => s.key === dropKey);
-	if (!dragChild || !dropChild) return current;
-
-	const nested = buildSelection({ type: mode, selections: [dropChild, dragChild] });
-	const newChildren = children
-		.filter((s) => s.key !== dragKey)
-		.map((s) => (s.key === dropKey ? nested : s));
-	const newParent = rewrap(buildSelection({ type: compositeProps.type, selections: newChildren }));
-	return current.with(parentIdx, newParent);
-}
-
-export function composeWithChild(
-	current: Selection[],
-	dragKey: string,
-	parentKey: string,
-	childKey: string,
-	mode: GroupType,
-): Selection[] {
-	const parentIdx = current.findIndex((s) => s.key === parentKey);
-	const dragIdx = current.findIndex((s) => s.key === dragKey);
-	if (parentIdx === -1 || dragIdx === -1) return current;
-	const drag = current[dragIdx];
-	const grp = unwrapUnary(current[parentIdx]);
-	if (!grp) return current;
-	const { props: compositeProps, rewrap } = grp;
-
-	const children = compositeProps.selections;
-	const childIdx = children.findIndex((s) => s.key === childKey);
-	if (childIdx === -1) return current;
-	const child = children[childIdx];
-
-	const nested = buildSelection({ type: mode, selections: [child, drag] });
-	const newChildren = children.with(childIdx, nested);
-	const newParent = rewrap(buildSelection({ type: compositeProps.type, selections: newChildren }));
-
-	return current.filter((_, i) => i !== dragIdx).map((s) => (s.key === parentKey ? newParent : s));
-}
-
-/** Put `replaced` at `index` in `list`, enforcing unique keys at this level: if it collides
- *  with another entry, drop the spliced (edited) one and keep the pre-existing. Index-based so
- *  it's correct at every level — a re-key can collide with a sibling not just where the edit
- *  happened but at any composite up the path (e.g. editing one group's child to match another
- *  group makes the two groups identical). */
-function spliceMerging(list: Selection[], index: number, replaced: Selection): Selection[] {
-	if (list.some((s, j) => j !== index && s.key === replaced.key)) {
-		return list.filter((_, j) => j !== index);
-	}
-	return list.with(index, replaced);
-}
-
-/** Find the node identified by `key` at any depth and replace it with `fn(matched)`, rebuilding the
- *  keys of every composite on the path so identity stays consistent. Enforces the unique-key
- *  invariant via {@link spliceMerging}. A group that merges down to one child collapses to that
- *  child; Invert is unary, so it always keeps its wrapper around the rebuilt child. */
-function transformInTree(
-	sel: Selection,
-	key: string,
-	fn: (matched: Selection) => Selection,
-): Selection | null {
-	if (sel.key === key) return fn(sel);
-	if (!isVariant(sel.props, COMPOSITE_TYPES)) return null;
-	const children = sel.props.selections;
-	for (let i = 0; i < children.length; i++) {
-		const next = transformInTree(children[i], key, fn);
-		if (next) {
-			const newChildren = spliceMerging(children, i, next);
-			if (newChildren.length === 1 && !isVariant(sel.props, UNARY_TYPES)) return newChildren[0];
-			return buildSelection({ type: sel.props.type, selections: newChildren });
-		}
-	}
-	return null;
-}
-
-/** Replace the selection identified by `oldKey` (at any depth) with one built from `props`,
- *  rebuilding the keys of every composite on the path so identity stays consistent. Used to
- *  edit a filter in place without dropping it from its AND/OR group. Enforces the unique-key
- *  invariant recursively (via {@link spliceMerging}): if a re-key collides with an existing
- *  selection at any level, merge into it — drop this edit, keep the existing one. A selection's
- *  key is its identity, so a duplicate key would break every key-addressed op (recolor,
- *  reorder, drag-highlight, remove). */
-export function replaceSelection(
-	current: Selection[],
-	oldKey: string,
-	props: SelectionProps,
-): Selection[] {
-	for (let i = 0; i < current.length; i++) {
-		const replaced = transformInTree(current[i], oldKey, () => buildSelection(props));
-		if (replaced) return spliceMerging(current, i, replaced);
-	}
-	return current;
-}
-
-/** Human-readable label for a selection, resolving tag names and filter ops. Each branch is one
- *  whole message with named params -- never assembled from translated fragments, so a language
- *  can reorder it. */
-export function selectionDisplayName(sel: Selection): string {
-	return match(sel.props)
-		.with({ type: "Locations" }, (p) => p.name ?? t("Selection"))
-		.with({ type: "Everything" }, () => t("Everything"))
-		.with({ type: "Polygon" }, (p) =>
-			p.polygon.properties?.name
-				? t("Polygon: {name}", { name: String(p.polygon.properties.name) })
+/** Per-type descriptor for each selector variant: key derivation, display label, and optional color/location overrides. */
+export const SELECTIONS: { [K in Selector["type"]]: SelectionDescriptor<K> } = {
+	Locations: {
+		key: (_s, locations) => locationsKey(locations),
+		label: (s) => s.name ?? t("Selection"),
+		locations: ownLocations,
+	},
+	Everything: {
+		key: () => "everything",
+		label: () => t("Everything"),
+	},
+	Polygon: {
+		key: (s) => polygonKey(s.polygon),
+		label: (s) =>
+			s.polygon.properties?.name
+				? t("Polygon: {name}", { name: String(s.polygon.properties.name) })
 				: t("Polygon"),
-		)
-		.with({ type: "Tag" }, (p) => t("Tag: {name}", { name: tagDisplayName(p.tagId) }))
-		.with({ type: "Untagged" }, () => t("Untagged"))
-		.with({ type: "Unpanned" }, () => t("Unpanned"))
-		.with({ type: "PanoIds" }, () => t("Pano ID locations"))
-		.with({ type: "NotPanoIds" }, () => t("Coordinate locations"))
-		.with({ type: "Uncommitted" }, () => t("Uncommitted"))
-		.with({ type: "Duplicates" }, (p) => t("Duplicates ({distance}m)", { distance: p.distance }))
-		.with({ type: "Manual" }, () => t("Manual selection"))
-		.with({ type: "ValidationState" }, (p) => t(validationStateLabel(p.state)))
-		.with({ type: "Reviewed" }, (p) => (p.mode === "unreviewed" ? t("Unreviewed") : t("Reviewed")))
-		.with({ type: "Intersection" }, () => t("Intersection"))
-		.with({ type: "Union" }, () => t("Union"))
-		.with({ type: "Invert" }, (p) =>
-			t("Invert: {selection}", { selection: selectionDisplayName(p.selections[0]) }),
-		)
-		.with({ type: "Filter" }, (p) => {
+		color: () => {
+			const { polygonColorMode, polygonColor } = getSettings();
+			return polygonColorMode === "fixed" ? polygonColor : null;
+		},
+	},
+	Uncommitted: {
+		key: () => "uncommitted",
+		label: () => t("Uncommitted"),
+	},
+	Duplicates: {
+		key: (s) => `duplicates:${s.distance}`,
+		label: (s) => t("Duplicates ({distance})", { distance: formatDistance(s.distance) }),
+	},
+	Manual: {
+		key: () => "manual",
+		label: () => t("Manual selection"),
+		locations: ownLocations,
+	},
+	Validation: {
+		key: (s) => `validation:${s.category}`,
+		label: (s) => {
+			const category = validationCategory(s.category);
+			return category ? t(category.label) : s.category;
+		},
+		locations: ownLocations,
+	},
+	Reviewed: {
+		key: (s) => `review:${s.sessionId}:${s.mode}`,
+		label: (s) => (s.mode === "unreviewed" ? t("Unreviewed") : t("Reviewed")),
+		// Green reviewed, violet unreviewed: both stay clear of the red active marker.
+		color: (s) => (s.mode === "unreviewed" ? hslToRgb(280, 0.6, 0.5) : hslToRgb(145, 0.6, 0.5)),
+		locations: ownLocations,
+	},
+	Intersection: {
+		key: (s) => s.selections.map((c) => `(${c.key})`).join("^"),
+		label: () => t("Intersection"),
+	},
+	Union: {
+		key: (s) => s.selections.map((c) => `(${c.key})`).join("|"),
+		label: () => t("Union"),
+	},
+	Invert: {
+		key: (s) => `!${s.selections[0].key}`,
+		label: (s, tagNames) =>
+			t("Invert: {selection}", { selection: selectionDisplayName(s.selections[0], tagNames) }),
+	},
+	Filter: {
+		key: (s) => {
+			const t = s.test;
+			const operands = "lo" in t ? [t.lo, t.hi] : "value" in t ? [t.value] : [null];
+			const frame = filterIsLocalTime(t) ? ":local" : "";
+			return `filter:${s.field}:${t.op}:${operands.map(String).join(":")}${frame}`;
+		},
+		label: (p, tagNames) => {
 			const fieldDef = getFieldDef(p.field);
 			const fieldLabel = fieldDef?.label ? t(fieldDef.label) : p.field;
-			if (p.op === "has") return t("has {field}", { field: fieldLabel });
-			if (p.op === "nothas") return t("missing {field}", { field: fieldLabel });
+			const test = p.test;
+			const tagId = tagIdOf(p);
+			if (tagId != null) return t("Tag: {name}", { name: tagDisplayName(tagId, tagNames) });
+			if (test.op === "has") return t("has {field}", { field: fieldLabel });
+			if (test.op === "nothas") return t("missing {field}", { field: fieldLabel });
 			const fmtMD = (v: unknown) => {
 				const s = String(v);
 				const m = /^(\d{2})-(\d{2})$/.exec(s);
@@ -549,42 +331,428 @@ export function selectionDisplayName(sel: Selection): string {
 				}
 				return s;
 			};
-			// tzLocal values are wall-clock instants encoded as UTC epochs: render via UTC getters.
+			// Local-time values are wall-clock instants encoded as UTC epochs: render via UTC getters.
+			const local = filterIsLocalTime(test);
 			const fmtVal = (v: unknown) => {
-				const s = String(v);
-				if (fieldDef?.type === "enum" && fieldDef.labels?.[s]) return t(fieldDef.labels[s]);
 				if (fieldDef?.type === "date") {
 					const n = Number(v);
-					if (!isNaN(n)) return p.tzLocal ? utcDateTime(n) : localDateTime(n);
+					if (!isNaN(n)) return local ? utcDateTime(n) : localDateTime(n);
 				}
-				return s;
+				return fieldValueLabel(fieldDef, v);
 			};
-			const tzSuffix = p.tzLocal ? " " + t("(location time)") : "";
-			const clause = (op: FilterOp, value: string) =>
-				t("{field} {op} {value}", { field: fieldLabel, op: t(OP_LABELS[op]), value }) + tzSuffix;
-			if (p.op === "between_anyyear") return clause(p.op, `${fmtMD(p.value)}..${fmtMD(p.value2)}`);
-			if (p.op === "between_anytime") return clause(p.op, `${p.value}..${p.value2}`);
-			if (p.op === "between")
-				return clause(p.op as FilterOp, `${fmtVal(p.value)}..${fmtVal(p.value2)}`);
-			return clause(p.op as FilterOp, fmtVal(p.value));
-		})
-		.with({ type: "TopK" }, (p) => {
-			const fieldDef = getFieldDef(p.field);
-			const label = fieldDef?.label ? t(fieldDef.label) : p.field;
-			return p.ascending
-				? t("Bottom {k} by {field}", { k: p.k, field: label })
-				: t("Top {k} by {field}", { k: p.k, field: label });
-		})
-		.exhaustive();
+			const tzSuffix = local ? " " + t("(location time)") : "";
+			const clause = (value: string) =>
+				t("{field} {op} {value}", { field: fieldLabel, op: t(OP_LABELS[test.op]), value }) +
+				tzSuffix;
+			if (test.op === "between_anyyear") return clause(`${fmtMD(test.lo)}..${fmtMD(test.hi)}`);
+			if (test.op === "between_anytime") return clause(`${test.lo}..${test.hi}`);
+			if (test.op === "between") return clause(`${fmtVal(test.lo)}..${fmtVal(test.hi)}`);
+			return clause(fmtVal(test.value));
+		},
+	},
+	Ranked: {
+		key: (s) => `ranked:${s.expr}:${s.k}:${s.ascending}:${s.selection?.key ?? ""}`,
+		label: (s) => {
+			const fieldDef = getFieldDef(s.expr);
+			const by = fieldDef?.label ? t(fieldDef.label) : s.expr;
+			if (s.k == null) return t("Ranked by {field}", { field: by });
+			return s.ascending
+				? t("Bottom {k} by {field}", { k: s.k, field: by })
+				: t("Top {k} by {field}", { k: s.k, field: by });
+		},
+	},
+};
+
+function descriptorFor(selector: Selector) {
+	const d = SELECTIONS[selector.type] as SelectionDescriptor<Selector["type"]>;
+	return {
+		key: (locations: number[]) => d.key(selector, locations),
+		label: (tagNames?: Record<number, string>) => d.label(selector, tagNames),
+		color: () => d.color?.(selector) ?? null,
+		locations: () => d.locations?.(selector) ?? [],
+	};
+}
+
+/** Every child selection a selector wraps, whatever shape it wraps them in. */
+export function childSelections(selector: Selector): Selection[] {
+	if ("selections" in selector) return selector.selections;
+	if ("selection" in selector) return selector.selection ? [selector.selection] : [];
+	return [];
+}
+
+/** `selector` with its children replaced, keeping the shape it wraps them in. */
+export function withChildren(selector: Selector, children: Selection[]): Selector {
+	if ("selections" in selector) return { ...selector, selections: children };
+	if ("selection" in selector) return { ...selector, selection: children[0] ?? null };
+	return selector;
+}
+
+/** Create a Selection with a deterministic key and color from its selector. */
+export function buildSelection(selector: Selector): Selection {
+	const d = descriptorFor(selector);
+	const key = d.key(d.locations());
+	return { key, color: d.color() ?? colorForKey(key), selector };
+}
+
+// dedupe by key, preserving order of last occurrence
+function dedupe(selections: Selection[]): Selection[] {
+	const map = new Map<string, Selection>();
+	for (const s of selections) map.set(s.key, s);
+	return map.size === selections.length ? selections : Array.from(map.values());
+}
+
+// Replace the targeted selections (all of them, when `keys` is null) with the one `merge` makes
+// of them, where the first target stood.
+const mergeTargets =
+	(merge: (...selectors: Selector[]) => Selector) =>
+	(keys: string[] | null = null) =>
+	(current: Selection[]): Selection[] => {
+		const targets = keys ? current.filter((s) => keys.includes(s.key)) : current;
+		if (targets.length === 0) return current;
+		const merged = buildSelection(merge(...targets.map((s) => s.selector)));
+		if (targets.length === 1 && merged.key === targets[0].key) return current;
+		const at = current.indexOf(targets[0]);
+		return dedupe(current.filter((s) => !targets.includes(s)).toSpliced(at, 0, merged));
+	};
+
+/** Merge the targeted selections (or all, when `keys` is null) into a single Intersection. */
+export const intersectSelections = mergeTargets(all);
+
+/** Merge the targeted selections (or all, when `keys` is null) into a single Union. */
+export const unionSelections = mergeTargets(any);
+
+/** Invert the targeted selections (or all, when `keys` is null). One is inverted, or restored when
+ *  already inverted; several are inverted as their union. */
+export const invertSelections = mergeTargets((...selectors) => not(any(...selectors)));
+
+/** Run `op` on the active selections only. Ghosted rows keep their places and the result fills
+ *  the others in order; a selection already listed as a ghosted row updates that row and stays
+ *  ghosted. */
+export const onActive =
+	(op: (active: Selection[]) => Selection[]) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const active = rows.filter((r) => !r.ghosted).map((r) => r.selection);
+		const next = op(active);
+		if (next.length === active.length && next.every((s, i) => s === active[i])) return rows;
+		const ghostedAt = new Map<string, number>();
+		rows.forEach((r, i) => r.ghosted && ghostedAt.set(r.selection.key, i));
+		const landed = new Map<number, Selection>();
+		const fresh: Selection[] = [];
+		for (const s of next) {
+			const i = ghostedAt.get(s.key);
+			if (i === undefined) fresh.push(s);
+			else landed.set(i, s);
+		}
+		const queue = fresh.values();
+		const out: ListedSelection[] = [];
+		rows.forEach((r, i) => {
+			if (r.ghosted) {
+				const selection = landed.get(i);
+				out.push(selection ? { selection, ghosted: true } : r);
+				return;
+			}
+			const n = queue.next();
+			if (!n.done) out.push({ selection: n.value, ghosted: false });
+		});
+		for (const selection of queue) out.push({ selection, ghosted: false });
+		return out;
+	};
+
+/** List the selections built from `selectors`. One already listed is updated in place, ghost and all. */
+export const addSelection =
+	(...selectors: Selector[]) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		selectors.reduce((acc, selector) => {
+			const selection = buildSelection(selector);
+			const i = acc.findIndex((r) => r.selection.key === selection.key);
+			return i === -1
+				? [...acc, { selection, ghosted: false }]
+				: acc.with(i, { ...acc[i], selection });
+		}, rows);
+
+/** Remove the listed selections whose keys are `keys`. A removed group leaves its children behind in its place. */
+export const removeSelection =
+	(...keys: string[]) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		keys.reduce((acc, key) => {
+			const i = acc.findIndex((r) => r.selection.key === key);
+			return i === -1 ? acc : removeSelectionAt([i])(acc);
+		}, rows);
+
+/** List each selection built from `selectors`, or remove it when it is already listed. */
+export const toggleSelection =
+	(...selectors: Selector[]) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		selectors.reduce((acc, selector) => {
+			const { key } = buildSelection(selector);
+			return toggle(
+				(r: ListedSelection[]) => r.some((row) => row.selection.key === key),
+				addSelection(selector),
+				removeSelection(key),
+			)(acc);
+		}, rows);
+
+/** Add or remove a location from the Manual selection, creating it if needed. */
+export const toggleManualSelection =
+	(locationId: number) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const manual = rows.find((r) => r.selection.key === "manual")?.selection.selector;
+		const ids = toggle(
+			(ids: number[]) => ids.includes(locationId),
+			(ids) => [...ids, locationId],
+			(ids) => ids.filter((id) => id !== locationId),
+		)(manual?.type === "Manual" ? manual.locations : []);
+		return ids.length > 0
+			? addSelection({ type: "Manual", locations: ids })(rows)
+			: removeSelection("manual")(rows);
+	};
+
+// The one writer of the ghost flag.
+const ghostWhere =
+	(ghosted: (row: ListedSelection, index: number) => boolean) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const next = rows.map((r, i) =>
+			r.ghosted === ghosted(r, i) ? r : { ...r, ghosted: !r.ghosted },
+		);
+		return next.every((r, i) => r === rows[i]) ? rows : next;
+	};
+
+/** Ghost the listed selection at `index`, or un-ghost it. */
+export const toggleGhost = (index: number) => ghostWhere((r, i) => r.ghosted !== (i === index));
+
+// Ghost the rows `ghosted` picks, or un-ghost them all when they already stand that way.
+const ghostOrClear = (ghosted: (index: number) => boolean) =>
+	toggle(
+		(rows: ListedSelection[]) => rows.every((r, i) => r.ghosted === ghosted(i)),
+		ghostWhere((_, i) => ghosted(i)),
+		ghostWhere(() => false),
+	);
+
+/** Ghost every listed selection but the one at `index`, or un-ghost them all when it already
+ *  is the only one left. */
+export const isolateGhost = (index: number) => ghostOrClear((i) => i !== index);
+
+/** Ghost every listed selection, or un-ghost them all when every one already is. */
+export const toggleGhostAll = ghostOrClear(() => true);
+
+// Rewrite Filter `field` references in a selection tree: `from` -> `to`, or drop the
+// Filter when `to` is null. Composites collapse if emptied or unwrap to their sole survivor.
+function rewriteSelection(sel: Selection, from: string, to: string | null): Selection | null {
+	const p = sel.selector;
+	if (p.type === "Filter") {
+		if (p.field !== from) return sel;
+		return to === null ? null : buildSelection({ ...p, field: to });
+	}
+	if ("selections" in p) {
+		const children = p.selections
+			.map((c) => rewriteSelection(c, from, to))
+			.filter((c): c is Selection => c !== null);
+		if (children.length === 0) return null;
+		if (children.length === 1 && p.type !== "Invert") return children[0];
+		return buildSelection({ ...p, selections: children } as Selector);
+	}
+	return sel;
+}
+
+/** Rename or remove a field across all Filter selections. When `to` is null, filters on that field are dropped. */
+export const rewriteSelectionFields =
+	(from: string, to: string | null) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		rows.flatMap((r) => {
+			const selection = rewriteSelection(r.selection, from, to);
+			return selection ? [{ ...r, selection }] : [];
+		});
+
+/** Where a selection sits: its index in the list, then its index among the children of each
+ *  selection it is nested in. */
+export type SelectionPath = readonly number[];
+
+/** The selection at `path`, or undefined when nothing sits there. */
+export function selectionAt(rows: ListedSelection[], path: SelectionPath): Selection | undefined {
+	let node: Selection | undefined = rows[path[0]]?.selection;
+	for (const i of path.slice(1)) node = node && childSelections(node.selector)[i];
+	return node;
+}
+
+const isWithin = (inner: SelectionPath, outer: SelectionPath) =>
+	outer.length <= inner.length && outer.every((i, depth) => inner[depth] === i);
+
+interface PathEdit {
+	path: SelectionPath;
+	edit: (node: Selection) => Selection[];
+}
+
+// How one level of the tree holds its selections: listed rows at the top, bare selections below.
+interface Level<T> {
+	selectionOf(item: T): Selection;
+	hold(selection: Selection, replaced: T): T;
+}
+
+const nested: Level<Selection> = { selectionOf: (s) => s, hold: (s) => s };
+
+// A row keeps its ghost while its selection survives the edit; a new selection takes the ghost
+// of the row it replaced.
+function listLevel(rows: ListedSelection[]): Level<ListedSelection> {
+	const ghostOf = new Map(rows.map((r) => [r.selection.key, r.ghosted]));
+	return {
+		selectionOf: (r) => r.selection,
+		hold: (selection, replaced) => ({
+			selection,
+			ghosted: ghostOf.get(selection.key) ?? replaced.ghosted,
+		}),
+	};
+}
+
+const spliceRows = (rows: ListedSelection[], edits: PathEdit[]) =>
+	spliceAt(rows, edits, listLevel(rows));
+
+// Swap each edited node for what its edit returns, rebuilding the ancestors around it: a group
+// left with one member collapses to it, an emptied composite disappears, and a node that now
+// duplicates a sibling merges into that sibling, the existing one winning. Nodes a pending edit
+// is about to change don't count as existing. Edits must not nest inside one another.
+function spliceAt<T>(list: T[], edits: PathEdit[], level: Level<T>): T[] {
+	const byIndex = [...Map.groupBy(edits, (e) => e.path[0])].sort(([a], [b]) => b - a);
+	let out = list;
+	byIndex.forEach(([i, here], n) => {
+		const item = list[i];
+		if (item === undefined) return;
+		const node = level.selectionOf(item);
+		const leaf = here.find((e) => e.path.length === 1);
+		const replacement = leaf ? leaf.edit(node) : rebuildAround(node, here);
+		if (replacement.length === 1 && replacement[0] === node) return;
+		const pending = new Set(byIndex.slice(n + 1).map(([j]) => j));
+		const kept = new Set(
+			out.filter((_, j) => j !== i && !pending.has(j)).map((x) => level.selectionOf(x).key),
+		);
+		const placed = dedupe(replacement.filter((s) => !kept.has(s.key)));
+		out = out.toSpliced(i, 1, ...placed.map((s) => level.hold(s, item)));
+	});
+	return out;
+}
+
+function rebuildAround(node: Selection, edits: PathEdit[]): Selection[] {
+	const children = childSelections(node.selector);
+	const next = spliceAt(
+		children,
+		edits.map((e) => ({ ...e, path: e.path.slice(1) })),
+		nested,
+	);
+	if (next === children) return [node];
+	if (isVariant(node.selector, GROUP_TYPES) && next.length <= 1) return next;
+	if (isVariant(node.selector, UNARY_TYPES) && next.length === 0) return [];
+	const rebuilt = buildSelection(withChildren(node.selector, next));
+	return [rebuilt.key === node.key ? { ...rebuilt, color: node.color } : rebuilt];
+}
+
+/** Invert the selection at `path` in place, or restore it when it is already inverted. */
+export const toggleInvert =
+	(path: SelectionPath) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [{ path, edit: (node) => [inverted(node)] }]);
+
+/** Merge the selection at `drag` into the one at `drop` as a `mode` composite, absorbing it into
+ *  `drop` when that already is one. Nothing happens when either contains the other. */
+export const composeSelections =
+	(drag: SelectionPath, drop: SelectionPath, mode: GroupType) =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const dragged = selectionAt(rows, drag);
+		if (!dragged || !selectionAt(rows, drop)) return rows;
+		if (isWithin(drag, drop) || isWithin(drop, drag)) return rows;
+		const merge = (target: Selection): Selection[] => [
+			buildSelection({
+				type: mode,
+				selections: dedupe(
+					isVariant(target.selector, mode)
+						? [...target.selector.selections, dragged]
+						: [target, dragged],
+				),
+			}),
+		];
+		return spliceRows(rows, [
+			{ path: drag, edit: () => [] },
+			{ path: drop, edit: merge },
+		]);
+	};
+
+/** Move the selection at `from` to just before or after the one at `to`, which must sit in the
+ *  list or directly in a group. Nothing happens when `to` is inside the moved selection. */
+export const moveSelection =
+	(from: SelectionPath, to: SelectionPath, position: "before" | "after") =>
+	(rows: ListedSelection[]): ListedSelection[] => {
+		const moved = selectionAt(rows, from);
+		if (!moved || !selectionAt(rows, to) || isWithin(to, from)) return rows;
+		const parent = to.length > 1 ? selectionAt(rows, to.slice(0, -1)) : undefined;
+		if (parent && !isVariant(parent.selector, GROUP_TYPES)) return rows;
+		const place = (rest: Selection[]) =>
+			position === "before" ? [moved, ...rest] : [...rest, moved];
+		if (isWithin(from, to)) {
+			const within = [0, ...from.slice(to.length)];
+			const lift = (target: Selection) =>
+				place(spliceAt([target], [{ path: within, edit: () => [] }], nested));
+			return spliceRows(rows, [{ path: to, edit: lift }]);
+		}
+		return spliceRows(rows, [
+			{ path: from, edit: () => [] },
+			{ path: to, edit: (target) => place([target]) },
+		]);
+	};
+
+/** Remove the selection at `path`. A removed group, inverted or not, leaves its children
+ *  behind in its place. */
+export const removeSelectionAt =
+	(path: SelectionPath) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [
+			{
+				path,
+				edit: (node) => {
+					const inner = isVariant(node.selector, UNARY_TYPES) ? node.selector.selections[0] : node;
+					return isVariant(inner.selector, GROUP_TYPES) ? inner.selector.selections : [];
+				},
+			},
+		]);
+
+/** Replace the selection at `path` with one built from `selector`. If that duplicates a sibling,
+ *  the existing sibling wins and the replacement is dropped. */
+export const replaceSelection =
+	(path: SelectionPath, selector: Selector) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [{ path, edit: () => [buildSelection(selector)] }]);
+
+/** Recolor the selection at `path`. */
+export const setSelectionColor =
+	(path: SelectionPath, color: RGB) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [{ path, edit: (s) => [{ ...s, color }] }]);
+
+/** Rename a Polygon selection's display name. */
+export const setPolygonName =
+	(path: SelectionPath, name: string) =>
+	(rows: ListedSelection[]): ListedSelection[] =>
+		spliceRows(rows, [
+			{
+				path,
+				edit: (s) => {
+					if (s.selector.type !== "Polygon") return [s];
+					const polygon = {
+						...s.selector.polygon,
+						properties: { ...s.selector.polygon.properties, name },
+					};
+					return [{ ...s, selector: { ...s.selector, polygon } }];
+				},
+			},
+		]);
+
+/** Human-readable label for a selection. Pass `tagNames` to resolve tags by saved name
+ *  rather than the open map's tags. */
+export function selectionDisplayName(sel: Selection, tagNames?: Record<number, string>): string {
+	return namedLabel(sel.selector) ?? descriptorFor(sel.selector).label(tagNames);
 }
 
 let suffixCache: { tags: Tag[]; suffixes: Map<string, string> } | null = null;
 
-/** Display label for a tag NAME. In tree view with `truncateTagPaths` on, collapses the
- *  `/`-path to its shortest unique suffix; otherwise returns the name verbatim. Uniqueness
- *  is computed over visible tags only — soft-deleted ghosts must not widen suffixes.
- *  Memoized on the visible-tags array (stable identity between tag mutations) so list
- *  rendering stays O(n). */
+/** Display label for a tag name. In tree view with `truncateTagPaths` on, collapses
+ *  the `/`-path to its shortest unique suffix; otherwise returns the name verbatim. */
 export function displayTagName(name: string): string {
 	const s = getSettings();
 	if (s.tagViewMode !== "tree" || !s.truncateTagPaths) return name;
@@ -595,48 +763,9 @@ export function displayTagName(name: string): string {
 	return suffixCache.suffixes.get(name) ?? name;
 }
 
-function tagDisplayName(tagId: number): string {
+function tagDisplayName(tagId: number, tagNames?: Record<number, string>): string {
 	const name = getTag(tagId)?.name;
-	return name == null ? String(tagId) : displayTagName(name);
-}
-
-/** English source strings -- callers translate. */
-function validationStateLabel(state: ValidationState): string {
-	switch (state) {
-		case ValidationState.Ok:
-			return msg("Valid location");
-		case ValidationState.UpdateAvailable:
-			return msg("Newer coverage available");
-		case ValidationState.UpdateApplied:
-			return msg("Coverage updated since last view");
-		case ValidationState.NotFound:
-			return msg("Not found");
-		case ValidationState.PanoIdBroke:
-			return msg("Pano ID broke");
-		case ValidationState.Unofficial:
-			return msg("Unofficial");
-		case ValidationState.GoodcamAvailable:
-			return msg("Badcam, but good coverage available");
-	}
-}
-
-export function setSelectionColors(
-	current: Selection[],
-	key: string,
-	color: [number, number, number],
-): Selection[] {
-	const idx = current.findIndex((s) => s.key === key);
-	if (idx === -1) return current;
-	return current.with(idx, { ...current[idx], color });
-}
-
-export function setPolygonName(current: Selection[], key: string, name: string): Selection[] {
-	return current.map((s) => {
-		if (s.key !== key || s.props.type !== "Polygon") return s;
-		const props: SelectionProps = {
-			...s.props,
-			polygon: { ...s.props.polygon, properties: { ...s.props.polygon.properties, name } },
-		};
-		return { ...s, props };
-	});
+	if (name != null) return displayTagName(name);
+	// Not a tag on this map: a saved rule still knows what it was called where it was saved.
+	return tagNames?.[tagId] ?? String(tagId);
 }

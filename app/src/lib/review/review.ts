@@ -1,23 +1,24 @@
-//! Review sessions (frontend). Owns the active review session and all navigation,
-//! persisting to the Rust `review_sessions` store. The cursor is an id (never a
-//! positional index), so deleting any non-cursor location can't desync it.
-//!
-//! Extracted out of useMapStore/LocationPreview: this module is the single seam.
-//! LocationPreview renders <ReviewBar> and calls reviewNext/Prev/Delete/onSaved.
+//! Review sessions. Owns the active session, cursor navigation, and persistence.
 
 import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import { emit, useEventValue, subscribe as onEvent } from "@/lib/events";
 import {
+	applySelectionUpdate,
+	getActiveSelections,
 	getMapState,
-	setActiveLocation,
-	addSelections,
-	removeSelections,
+	query,
 	removeLocations,
+	setActiveLocation,
 } from "@/store/useMapStore";
-import { selectionDisplayName } from "@/store/selections";
+import {
+	addSelection,
+	buildSelection,
+	removeSelection,
+	selectionDisplayName,
+} from "@/store/selections";
 
-import type { ReviewSession, Selection } from "@/bindings.gen";
+import type { ReviewSession, Selection, Selector } from "@/bindings.gen";
 import { t } from "@/lib/i18n";
 
 // --- Pure helpers (unit-tested; no side effects) ---
@@ -27,9 +28,22 @@ export interface PruneResult {
 	cursorMoved: boolean;
 }
 
-/** Remove `removed` ids from a session's worklist + reviewed set. The cursor only
- *  moves if the cursor id itself was removed (advancing to the next survivor by old
- *  position). Returns the same session reference untouched if nothing overlapped. */
+// One id->index map per worklist, built on first lookup. Every worklist change builds a
+// new array, so a map can never index an order it no longer describes.
+const worklistIndexes = new WeakMap<number[], Map<number, number>>();
+
+/** Position of `id` in the session's worklist, or -1. O(1) per step. */
+export function positionOf(s: ReviewSession, id: number): number {
+	let index = worklistIndexes.get(s.order);
+	if (!index) {
+		index = new Map(s.order.map((locId, i) => [locId, i]));
+		worklistIndexes.set(s.order, index);
+	}
+	return index.get(id) ?? -1;
+}
+
+/** Remove `removed` ids from a session's worklist and reviewed set. Advances the
+ *  cursor when the cursor id itself was removed. */
 export function pruneSession(s: ReviewSession, removed: Set<number>): PruneResult {
 	if (!s.order.some((id) => removed.has(id))) return { session: s, cursorMoved: false };
 	const order = s.order.filter((id) => !removed.has(id));
@@ -37,36 +51,47 @@ export function pruneSession(s: ReviewSession, removed: Set<number>): PruneResul
 	if (order.length === 0) return { session: null, cursorMoved: true };
 	let cursorId = s.cursorId;
 	if (removed.has(cursorId)) {
-		const oldIdx = s.order.indexOf(cursorId);
+		const oldIdx = positionOf(s, cursorId);
 		cursorId = order[Math.min(oldIdx, order.length - 1)];
 	}
 	return { session: { ...s, order, reviewed, cursorId }, cursorMoved: cursorId !== s.cursorId };
 }
 
-/** Mark the current cursor reviewed and step forward. `done` when the cursor was the
- *  last item (status flips to "done"). */
+/** Mark the current cursor reviewed and step forward. `done` is true when the
+ *  session has no remaining items. */
 export function advance(s: ReviewSession): { session: ReviewSession; done: boolean } {
-	const idx = s.order.indexOf(s.cursorId);
-	const reviewed = s.reviewed.includes(s.cursorId) ? s.reviewed : [...s.reviewed, s.cursorId];
-	if (idx < 0 || idx >= s.order.length - 1) {
-		return { session: { ...s, reviewed, status: "done" }, done: true };
-	}
-	return { session: { ...s, reviewed, cursorId: s.order[idx + 1] }, done: false };
+	const reviewed = isCurrentReviewed(s) ? s.reviewed : [...s.reviewed, s.cursorId];
+	if (isAtEnd(s)) return { session: { ...s, reviewed, status: "done" }, done: true };
+	return { session: { ...s, reviewed, cursorId: s.order[reviewIndex(s) + 1] }, done: false };
 }
 
 /** Step backward without marking anything reviewed. Null when already at the start. */
 export function retreat(s: ReviewSession): ReviewSession | null {
-	const idx = s.order.indexOf(s.cursorId);
-	if (idx <= 0) return null;
-	return { ...s, cursorId: s.order[idx - 1] };
+	if (isAtStart(s)) return null;
+	return { ...s, cursorId: s.order[reviewIndex(s) - 1] };
 }
 
 /** Position of the session cursor within its review order. */
 export function reviewIndex(s: ReviewSession): number {
-	return s.order.indexOf(s.cursorId);
+	return positionOf(s, s.cursorId);
 }
 
-/** Union of reviewed ids across sessions, de-duplicated. Pure (unit-tested). */
+export type ReviewMode = "reviewed" | "unreviewed";
+
+const REVIEW_MODES: ReviewMode[] = ["reviewed", "unreviewed"];
+
+/** The session's locations in `mode`: those reviewed, or those still to review. */
+export function reviewSet(s: ReviewSession, mode: ReviewMode): number[] {
+	if (mode === "reviewed") return s.reviewed;
+	const reviewed = new Set(s.reviewed);
+	return s.order.filter((id) => !reviewed.has(id));
+}
+
+function reviewSelector(sessionId: string, mode: ReviewMode, locations: number[] = []): Selector {
+	return { type: "Reviewed", locations, sessionId, mode };
+}
+
+/** Union of reviewed ids across sessions, de-duplicated. */
 export function reviewedHistoryIds(sessions: ReviewSession[]): number[] {
 	const ids = new Set<number>();
 	for (const s of sessions) for (const id of s.reviewed) ids.add(id);
@@ -78,6 +103,12 @@ export function isAtStart(s: ReviewSession): boolean {
 	return reviewIndex(s) <= 0;
 }
 
+/** True when the cursor is on the session's last location. */
+export function isAtEnd(s: ReviewSession): boolean {
+	const i = reviewIndex(s);
+	return i < 0 || i >= s.order.length - 1;
+}
+
 /** Current cursor location is in the reviewed set. */
 export function isCurrentReviewed(s: ReviewSession): boolean {
 	return s.reviewed.includes(s.cursorId);
@@ -86,6 +117,19 @@ export function isCurrentReviewed(s: ReviewSession): boolean {
 // --- Module state + reactivity ---
 
 let session: ReviewSession | null = null;
+
+function setSession(next: ReviewSession | null): void {
+	session = next;
+	emit("review:changed");
+}
+
+/** Deactivate the session, clear its overlay selections, and leave review. */
+function closeSession(): Promise<void> {
+	const s = session;
+	setSession(null);
+	if (s) clearProjection(s.id);
+	return setActiveLocation(null);
+}
 
 /** Reactive active review session, or null. */
 export function useReviewSession(): ReviewSession | null {
@@ -131,23 +175,35 @@ function flushSave() {
 	if (session) persist(session);
 }
 
-/** Navigate the pano to the cursor. `checkDuplicates: false` — during a review pass we
- *  show every queued location rather than diverting to the duplicates panel. */
+/** Navigate to the cursor location. */
 async function gotoCursor(s: ReviewSession): Promise<void> {
 	await setActiveLocation(s.cursorId, false);
 }
 
 // --- Public API ---
 
-/** Start (or resume) a review over `ids`. When `source` is a real selection, the session
- *  is keyed by it so re-reviewing that selection resumes the in-progress session. */
+/** The map's review order over `worklist`. */
+function reviewOrdering(worklist: Selector, expr: string | null | undefined): Selector {
+	const order = expr?.trim();
+	if (!order) return worklist;
+	return {
+		type: "Ranked",
+		selection: buildSelection(worklist),
+		expr: order,
+		k: null,
+		ascending: false,
+	};
+}
+
+/** Start or resume a review over `ids`. When `source` is a selection, re-reviewing
+ *  that selection resumes any in-progress session for it. */
 export async function beginReview(ids: number[], source?: Selection): Promise<void> {
 	const mapId = getMapState().mapId;
 	const map = getMapState().map;
 	if (!mapId || !map || ids.length === 0) return;
 
 	const sourceKey = source?.key ?? "manual";
-	if (source && source.props.type !== "Manual") {
+	if (source && source.selector.type !== "Manual") {
 		try {
 			const existing = await cmd.storeReviewGet(mapId, sourceKey);
 			if (existing) {
@@ -159,22 +215,29 @@ export async function beginReview(ids: number[], source?: Selection): Promise<vo
 		}
 	}
 
-	// Freeze the worklist to ids that still exist, preserving the given order.
-	const live = await cmd.storeGetLocationsByIds(ids);
-	const liveSet = new Set(live.map((l) => l.id));
-	const order = ids.filter((id) => liveSet.has(id));
+	// Freeze the worklist to ids that still exist, in the map's review order.
+	const worklist: Selector = { type: "Locations", locations: ids, name: null };
+	const order = await query(reviewOrdering(worklist, map.settings.reviewOrder)).ids();
 	if (order.length === 0) return;
 
 	const name = source ? selectionDisplayName(source) : t("Selected locations");
-	const sourceProps = source?.props ?? { type: "Manual", locations: order };
+	const sourceProps = source?.selector ?? { type: "Manual", locations: order };
 	try {
-		session = await cmd.storeReviewCreate({ mapId, name, sourceKey, sourceProps, order });
-		emit("review:changed");
+		const created = await cmd.storeReviewCreate({ mapId, name, sourceKey, sourceProps, order });
+		setSession(created);
 		refreshProjection();
-		await gotoCursor(session);
+		await gotoCursor(created);
 	} catch (e) {
 		log.error("[review] create failed:", e);
 	}
+}
+
+/** Review the selected locations. With one active selection, the review belongs to it and
+ *  resumes with it. */
+export function reviewSelected(): Promise<void> {
+	const active = getActiveSelections();
+	const ids = [...getMapState().selectedLocationIds];
+	return beginReview(ids, active.length === 1 ? active[0] : undefined);
 }
 
 /** Resume a session picked from the resume modal. */
@@ -186,15 +249,10 @@ export async function resumeReview(s: ReviewSession): Promise<void> {
 export async function reviewNext(): Promise<void> {
 	if (!session) return;
 	const { session: next, done } = advance(session);
-	session = next;
-	emit("review:changed");
+	setSession(next);
 	if (done) {
-		const id = next.id;
 		flushSave();
-		session = null;
-		emit("review:changed");
-		clearProjection(id);
-		await setActiveLocation(null);
+		await closeSession();
 		return;
 	}
 	scheduleSave();
@@ -207,61 +265,39 @@ export async function reviewPrev(): Promise<void> {
 	if (!session) return;
 	const prev = retreat(session);
 	if (!prev) return;
-	session = prev;
-	emit("review:changed");
+	setSession(prev);
 	scheduleSave();
 	await gotoCursor(prev);
 }
 
-/** Delete the current location and advance FORWARD (like reviewNext) — to the item that
- *  followed it, or exit the pass if it was the last one. We navigate off the doomed location
- *  first so the shared `removeLocations` doesn't bounce us to the overview; its emitted
- *  `location:remove` is then a no-op for our reconcile listener (already pruned). */
+/** Delete the current location and advance to the next one. Exits the pass if it
+ *  was the last item. Emits `location:remove`. */
 export async function reviewDelete(): Promise<void> {
 	if (!session) return;
 	const s = session;
-	const curId = s.cursorId;
-	const idx = s.order.indexOf(curId);
-	const order = s.order.filter((id) => id !== curId);
-	const reviewed = s.reviewed.filter((id) => id !== curId);
-
-	if (idx >= 0 && idx < order.length) {
-		// an item took curId's slot — advance to it
-		session = { ...s, order, reviewed, cursorId: order[idx] };
-		emit("review:changed");
-		await gotoCursor(session);
+	const deleted = s.cursorId;
+	const next = pruneSession(s, new Set([deleted])).session;
+	if (next && !isAtEnd(s)) {
+		setSession(next);
+		await gotoCursor(next);
 		flushSave();
 		scheduleProjection();
-		await removeLocations(new Set([curId]));
-		return;
-	}
-
-	// curId was the last item (or the only one) — end the pass
-	if (order.length > 0) {
-		persist({ ...s, order, reviewed, status: "done" }); // survivors remain, resumable as done
 	} else {
-		cmd.storeReviewDelete(s.id).catch(() => {});
+		if (next) persist({ ...next, status: "done" }); // survivors remain, resumable as done
+		else cmd.storeReviewDelete(s.id).catch(() => {});
+		await closeSession();
 	}
-	session = null;
-	emit("review:changed");
-	clearProjection(s.id);
-	await setActiveLocation(null);
-	await removeLocations(new Set([curId]));
+	await removeLocations(new Set([deleted]));
 }
 
 /** Exit the review UI but keep the session resumable (persisted as active). */
 export function cancelReview(): void {
 	if (!session) return;
-	const id = session.id;
 	flushSave();
-	session = null;
-	emit("review:changed");
-	clearProjection(id);
-	void setActiveLocation(null);
+	void closeSession();
 }
 
-/** Rename a session (custom label over the auto-derived selection name). Persists immediately;
- *  also patches the live session if it's the one being renamed. */
+/** Rename a review session. */
 export async function renameReview(id: string, name: string): Promise<void> {
 	const trimmed = name.trim();
 	if (!trimmed) return;
@@ -279,8 +315,7 @@ export async function renameReview(id: string, name: string): Promise<void> {
 		return;
 	}
 	if (session?.id === id) {
-		session = { ...session, name: trimmed };
-		emit("review:changed");
+		setSession({ ...session, name: trimmed });
 	}
 }
 
@@ -305,23 +340,16 @@ export function listSessions(status?: "active" | "done"): Promise<ReviewSession[
 // Real sessions are UUID-keyed, so this never collides with a live projection's keys.
 const HISTORY_SESSION_ID = "history";
 
-/** Select every location marked reviewed across all review sessions on this map (active + done).
- *  A snapshot; re-running refreshes it in place (deterministic key). */
+/** Select every location marked reviewed across all sessions on this map. */
 export async function selectReviewedHistory(): Promise<void> {
 	const ids = reviewedHistoryIds(await listSessions());
 	if (ids.length === 0) return;
-	await addSelections([
-		{ type: "Reviewed", locations: ids, sessionId: HISTORY_SESSION_ID, mode: "reviewed" },
-	]);
+	await applySelectionUpdate(addSelection(reviewSelector(HISTORY_SESSION_ID, "reviewed", ids)));
 }
 
-/** Add a reviewed/unreviewed overlay selection for an arbitrary session (resume modal). Mirrors
- *  refreshProjection's props so the key and color match an in-progress projection. */
-export function selectReviewSet(s: ReviewSession, mode: "reviewed" | "unreviewed") {
-	const reviewedSet = new Set(s.reviewed);
-	const locations =
-		mode === "reviewed" ? [...s.reviewed] : s.order.filter((id) => !reviewedSet.has(id));
-	return addSelections([{ type: "Reviewed", locations, sessionId: s.id, mode }]);
+/** The locations of review session `s` that are reviewed, or still to review. */
+export function reviewSetSelector(s: ReviewSession, mode: ReviewMode): Selector {
+	return reviewSelector(s.id, mode, reviewSet(s, mode));
 }
 
 // --- Selection projection (auto, debounced) ---
@@ -330,8 +358,6 @@ export function selectReviewSet(s: ReviewSession, mode: "reviewed" | "unreviewed
 // "unreviewed". They're re-added by their deterministic keys (dedupe replaces the prior
 // pair), so refreshing just updates the membership. Debounced so mashing next doesn't
 // re-resolve the whole selection list on every step.
-
-const reviewKeys = (id: string): string[] => [`review:${id}:reviewed`, `review:${id}:unreviewed`];
 
 let projectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -343,13 +369,11 @@ function clearProjectTimer() {
 }
 
 function refreshProjection(): void {
-	if (!session) return;
-	const reviewedSet = new Set(session.reviewed);
-	const unreviewed = session.order.filter((id) => !reviewedSet.has(id));
-	void addSelections([
-		{ type: "Reviewed", locations: [...session.reviewed], sessionId: session.id, mode: "reviewed" },
-		{ type: "Reviewed", locations: unreviewed, sessionId: session.id, mode: "unreviewed" },
-	]);
+	const s = session;
+	if (!s) return;
+	void applySelectionUpdate(
+		addSelection(...REVIEW_MODES.map((mode) => reviewSetSelector(s, mode))),
+	);
 }
 
 function scheduleProjection(): void {
@@ -362,31 +386,27 @@ function scheduleProjection(): void {
 
 function clearProjection(id: string): void {
 	clearProjectTimer();
-	void removeSelections(reviewKeys(id));
+	const keys = REVIEW_MODES.map((mode) => buildSelection(reviewSelector(id, mode)).key);
+	void applySelectionUpdate(removeSelection(...keys));
 }
 
-/** Adopt a persisted session as active, pruning ids whose locations no longer exist
- *  (deletions from a prior run). Deletes the session if nothing survives. */
+/** Adopt a persisted session as active, pruning locations that no longer exist. */
 async function adopt(s: ReviewSession): Promise<void> {
-	let { order, reviewed, cursorId } = s;
+	let v: ReviewSession | null = s;
 	try {
-		const live = await cmd.storeGetLocationsByIds(s.order);
-		const liveIds = new Set(live.map((l) => l.id));
-		order = s.order.filter((id) => liveIds.has(id));
-		if (order.length === 0) {
-			await cmd.storeReviewDelete(s.id).catch(() => {});
-			return;
-		}
-		reviewed = s.reviewed.filter((id) => liveIds.has(id));
-		cursorId = liveIds.has(s.cursorId) ? s.cursorId : order[0];
+		const liveIds = new Set(
+			await query({ type: "Locations", locations: s.order, name: null }).ids(),
+		);
+		v = pruneSession(s, new Set(s.order.filter((id) => !liveIds.has(id)))).session;
 	} catch (e) {
 		log.error("[review] validate failed:", e);
 	}
-	const changed = order.length !== s.order.length || reviewed.length !== s.reviewed.length;
-	const v: ReviewSession = { ...s, order, reviewed, cursorId };
-	session = v;
-	emit("review:changed");
-	if (changed) persist(v);
+	if (!v) {
+		await cmd.storeReviewDelete(s.id).catch(() => {});
+		return;
+	}
+	setSession(v);
+	if (v !== s) persist(v);
 	refreshProjection();
 	await gotoCursor(v);
 }
@@ -398,14 +418,12 @@ function reconcile(removed: number[]): void {
 	const prev = session;
 	const { session: next, cursorMoved } = pruneSession(prev, new Set(removed));
 	if (next === prev) return; // nothing overlapped
-	session = next;
-	emit("review:changed");
 	if (!next) {
 		cmd.storeReviewDelete(prev.id).catch(() => {});
-		clearProjection(prev.id);
-		void setActiveLocation(null);
+		void closeSession();
 		return;
 	}
+	setSession(next);
 	scheduleSave();
 	scheduleProjection();
 	if (cursorMoved && getMapState().activeLocation?.id !== next.cursorId) {
@@ -413,14 +431,12 @@ function reconcile(removed: number[]): void {
 	}
 }
 
-/** Keep the cursor in step with the active location. Clicking an in-queue marker jumps the
- *  cursor there (counter/next/prev/delete stay aligned); clicking off-queue is a harmless
- *  peek — the session is left untouched and you can resume from where you were. */
+/** Keep the cursor in step with the active location. Clicking an in-queue marker
+ *  jumps the cursor there; clicking off-queue leaves the session untouched. */
 function onActiveChange(id: number | null): void {
 	if (!session || id == null || id === session.cursorId) return;
-	if (!session.order.includes(id)) return; // off-queue peek: leave the cursor parked
-	session = { ...session, cursorId: id };
-	emit("review:changed");
+	if (positionOf(session, id) < 0) return; // off-queue peek: leave the cursor parked
+	setSession({ ...session, cursorId: id });
 	scheduleSave();
 }
 
@@ -429,11 +445,9 @@ onEvent("location:remove", (ids) => reconcile(ids));
 onEvent("map:close", () => {
 	clearProjectTimer();
 	flushSave();
-	session = null;
-	emit("review:changed");
+	setSession(null);
 });
 onEvent("map:open", () => {
 	clearProjectTimer();
-	session = null;
-	emit("review:changed");
+	setSession(null);
 });

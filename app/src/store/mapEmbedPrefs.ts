@@ -1,16 +1,23 @@
-import type {
-	SvColor,
-	MapTypeKey,
-	SvCoverageType,
-	SvThickness,
-	MarkerStyle,
-	PanoProviderKey,
-} from "@/types";
+import type { SvColor, MapTypeKey, SvCoverageType, SvThickness, MarkerStyle } from "@/types";
 import type { OpacityToggleMode } from "./settings";
+import { persisted } from "@/lib/hooks/useLocalStorage";
+import { msg } from "@/lib/i18n";
+
+/** Basemap order: also the order the previous/next basemap commands step through. */
+export const MAP_TYPES: readonly MapTypeKey[] = ["map"];
+
+export const MAP_TYPE_LABELS: Record<MapTypeKey, string> = {
+	map: msg("Huawei Map"),
+	satellite: msg("Satellite"),
+	osm: msg("OSM"),
+	vector: msg("Vector"),
+};
 
 export interface MapEmbedPrefs {
-	panoProvider: PanoProviderKey;
+	panoProvider: "baidu" | "tencent";
+	findNearbyPanoOnClick: boolean;
 	svOpacity: number;
+	svVisible: boolean;
 	svColor: SvColor;
 	showLabels: boolean;
 	showTerrain: boolean;
@@ -29,17 +36,24 @@ export interface MapEmbedPrefs {
 	mapType: MapTypeKey;
 	markerStyle: MarkerStyle;
 	markerOpacity: number;
+	markerVisible: boolean;
+	selectedOpacity: number;
+	selectedVisible: boolean;
 	markerSize: number;
 	showPerfectScoreCircle: boolean;
 	showSearchRadiusCursor: boolean;
 	showPreviews: boolean;
-	selectOnly: boolean;
-	findNearbyPanoOnClick: boolean;
+	clickMode: ClickMode;
 }
+
+/** What clicking empty map does: create a location, nothing, or snap to the nearest one. */
+export type ClickMode = "default" | "selectOnly" | "nearest";
 
 export const DEFAULT_PREFS: MapEmbedPrefs = {
 	panoProvider: "baidu",
+	findNearbyPanoOnClick: true,
 	svOpacity: 0.5,
+	svVisible: true,
 	svColor: "#1098ad",
 	showLabels: true,
 	showTerrain: false,
@@ -58,29 +72,40 @@ export const DEFAULT_PREFS: MapEmbedPrefs = {
 	mapType: "map",
 	markerStyle: "pin",
 	markerOpacity: 1,
+	markerVisible: true,
+	selectedOpacity: 1,
+	selectedVisible: true,
 	markerSize: 1,
 	showPerfectScoreCircle: true,
 	showSearchRadiusCursor: false,
 	showPreviews: false,
-	selectOnly: false,
-	findNearbyPanoOnClick: true,
+	clickMode: "default",
 };
 
-export const MARKER_OPACITY_STEPS = [1, 0.35, 0] as const;
+export const MAP_EMBED_PREFS = persisted("mapEmbedPrefs", DEFAULT_PREFS);
 
-/** Cycle the map's unselected marker layer through the three toolbar states. */
+/** A map layer with its own opacity and visibility: Street View coverage, unselected markers,
+ *  or selected markers. */
+export type OpacityLayer = "sv" | "marker" | "selected";
+
+/** What a layer renders at: its opacity, gated by its visibility. */
+export function layerOpacity(prefs: MapEmbedPrefs, layer: OpacityLayer): number {
+	return prefs[`${layer}Visible`] ? prefs[`${layer}Opacity`] : 0;
+}
+
+/** Next state for a layer visibility toggle. Hiding keeps the opacity value, so showing
+ *  restores it -- or full opacity, per the setting. */
+export function toggledLayer(
+	opacity: number,
+	visible: boolean,
+	mode: OpacityToggleMode,
+): { opacity: number; visible: boolean } {
+	if (visible) return { opacity, visible: false };
+	return { opacity: mode === "full" || opacity <= 0 ? 1 : opacity, visible: true };
+}
+
+export const MARKER_OPACITY_STEPS = [1, 0.35, 0] as const;
 export function cycleMarkerOpacity(current: number): number {
 	const index = MARKER_OPACITY_STEPS.findIndex((value) => value === current);
 	return MARKER_OPACITY_STEPS[index < 0 ? 0 : (index + 1) % MARKER_OPACITY_STEPS.length];
-}
-
-/** Next value for a layer opacity toggle: a visible layer goes off, a hidden one comes
- *  back at `lastNonZero` (or full, per the setting). */
-export function toggledOpacity(
-	current: number,
-	lastNonZero: number,
-	mode: OpacityToggleMode,
-): number {
-	if (current > 0) return 0;
-	return mode === "full" || lastNonZero <= 0 ? 1 : lastNonZero;
 }

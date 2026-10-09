@@ -1,5 +1,6 @@
 mod detect;
 mod fetch;
+mod serve;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -29,6 +30,13 @@ enum Command {
         #[arg(long)]
         input: String,
     },
+    /// Resident detect server: the model pool stays loaded across requests.
+    /// Prints `{"port":N}` on stdout, serves /detect and /ping on 127.0.0.1, and
+    /// exits by itself after `idle_secs` without a request.
+    Serve {
+        #[arg(long, default_value_t = 600)]
+        idle_secs: u64,
+    },
 }
 
 fn read_input(path: &str) -> String {
@@ -36,29 +44,7 @@ fn read_input(path: &str) -> String {
         .unwrap_or_else(|e| panic!("failed to read input file {path}: {e}"))
 }
 
-fn init_ort() {
-    let mut ep_names: Vec<&str> = Vec::new();
-    let mut eps: Vec<ort::execution_providers::ExecutionProviderDispatch> = Vec::new();
-
-    #[cfg(feature = "directml")]
-    { eps.push(ort::ep::DirectML::default().build()); ep_names.push("DirectML"); }
-
-    #[cfg(feature = "coreml")]
-    { eps.push(ort::ep::CoreML::default().build()); ep_names.push("CoreML"); }
-
-    #[cfg(feature = "cuda")]
-    { eps.push(ort::ep::CUDA::default().build()); ep_names.push("CUDA"); }
-
-    if !eps.is_empty() {
-        let ok = ort::init().with_execution_providers(eps).commit();
-        if ok {
-            eprintln!("[copyright] GPU: registered {}", ep_names.join(", "));
-        }
-    }
-}
-
 fn main() {
-    init_ort();
     let Cli { command, model_dir, data_dir: _ } = Cli::parse();
     let mut stdout = io::stdout();
 
@@ -71,6 +57,9 @@ fn main() {
                 writeln!(stdout, "{line}").ok();
                 stdout.flush().ok();
             });
+        }
+        Command::Serve { idle_secs } => {
+            serve::run(&model_dir, idle_secs);
         }
     }
 }

@@ -4,12 +4,20 @@ import type { GcjPoint } from "./types";
 type Coordinate = [number, number];
 
 export function gcj02ToWgs84(point: GcjPoint): GcjPoint {
-	const [lng, lat] = gcoord.transform([point.lng, point.lat], gcoord.GCJ02, gcoord.WGS84) as Coordinate;
+	const [lng, lat] = gcoord.transform(
+		[point.lng, point.lat],
+		gcoord.GCJ02,
+		gcoord.WGS84,
+	) as Coordinate;
 	return { lng, lat };
 }
 
 export function wgs84ToGcj02(point: GcjPoint): GcjPoint {
-	const [lng, lat] = gcoord.transform([point.lng, point.lat], gcoord.WGS84, gcoord.GCJ02) as Coordinate;
+	const [lng, lat] = gcoord.transform(
+		[point.lng, point.lat],
+		gcoord.WGS84,
+		gcoord.GCJ02,
+	) as Coordinate;
 	return { lng, lat };
 }
 

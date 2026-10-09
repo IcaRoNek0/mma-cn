@@ -1,0 +1,171 @@
+use super::*;
+use crate::selections::{FilterOp, Selector};
+use rusqlite::Connection;
+
+/// In-memory DB with the v21 `saved_selections` schema.
+fn setup() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE saved_selections (
+            id         TEXT PRIMARY KEY NOT NULL,
+            name       TEXT NOT NULL,
+            selector   TEXT NOT NULL,
+            tag_names  TEXT NOT NULL DEFAULT '{}',
+            color      TEXT NOT NULL,
+            created_at TEXT NOT NULL
+         );",
+    )
+    .unwrap();
+    conn
+}
+
+/// Every imported rule's body, read back through the parent module's primitives.
+fn all(conn: &Connection) -> Vec<SavedSelection> {
+    let ids: Vec<String> = super::super::list_info(conn)
+        .unwrap()
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    super::super::get(conn, &ids).unwrap()
+}
+
+const LEGACY: &str = r#"[
+    {
+        "id": "old-1",
+        "name": "two rules",
+        "createdAt": 1700000000000,
+        "items": [
+            { "props": { "type": "TagName", "tagName": "Japan" }, "color": [1, 2, 3] },
+            { "props": { "type": "Untagged" }, "color": [4, 5, 6] }
+        ]
+    },
+    {
+        "id": "old-2",
+        "name": "one rule",
+        "createdAt": 1700000001000,
+        "items": [{ "props": { "type": "Duplicates", "distance": 25 }, "color": [7, 7, 7] }]
+    }
+]"#;
+
+#[test]
+fn import_unions_multi_item_rules_and_keeps_single_ones_flat() {
+    let mut conn = setup();
+    assert_eq!(import(&mut conn, LEGACY).unwrap(), 2);
+
+    let all = all(&conn);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].info.name, "two rules");
+    assert_eq!(all[0].info.color, [1, 2, 3]);
+    match &all[0].selector {
+        Selector::Union { selections } => {
+            assert_eq!(selections.len(), 2);
+            assert_eq!(selections[1].color, [4, 5, 6]);
+        }
+        _ => panic!("expected a Union"),
+    }
+    assert!(matches!(
+        all[1].selector,
+        Selector::Duplicates { distance: 25.0 }
+    ));
+}
+
+#[test]
+fn import_captures_every_tag_name_under_a_distinct_id() {
+    let mut conn = setup();
+    let json = r#"[{
+        "name": "n",
+        "items": [{ "props": { "type": "Union", "selections": [
+            { "type": "TagName", "tagName": "Japan" },
+            { "type": "TagName", "tagName": "Brazil" },
+            { "type": "TagName", "tagName": "Japan" }
+        ] } }]
+    }]"#;
+    import(&mut conn, json).unwrap();
+
+    let saved = all(&conn).remove(0);
+    let mut names: Vec<&str> = saved.tag_names.values().map(String::as_str).collect();
+    names.sort();
+    assert_eq!(names, vec!["Brazil", "Japan"]);
+
+    let Selector::Union { selections } = &saved.selector else {
+        panic!("expected a Union")
+    };
+    let ids: Vec<u32> = selections
+        .iter()
+        .map(|s| match &s.selector {
+            Selector::Filter { field, test } if field == "tags" => match test {
+                FilterOp::Contains { value } => value.as_u64().unwrap() as u32,
+                _ => panic!("expected a tag membership leaf"),
+            },
+            _ => panic!("expected tag leaves"),
+        })
+        .collect();
+    // The same name reuses its id; a different name never collides with it.
+    assert_eq!(ids[0], ids[2]);
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(saved.tag_names[&ids[1]], "Brazil");
+}
+
+#[test]
+fn import_preserves_the_legacy_creation_time() {
+    let mut conn = setup();
+    import(&mut conn, LEGACY).unwrap();
+    assert!(all(&conn)[0].info.created_at.starts_with("2023-11-14T"));
+}
+
+#[test]
+fn import_is_a_no_op_once_the_table_holds_rules() {
+    let mut conn = setup();
+    assert_eq!(import(&mut conn, LEGACY).unwrap(), 2);
+    assert_eq!(import(&mut conn, LEGACY).unwrap(), 0);
+    assert_eq!(all(&conn).len(), 2);
+}
+
+#[test]
+fn import_skips_rules_with_no_items() {
+    let mut conn = setup();
+    let n = import(&mut conn, r#"[{ "name": "empty", "items": [] }]"#).unwrap();
+    assert_eq!(n, 0);
+    assert!(all(&conn).is_empty());
+}
+
+#[test]
+fn import_reads_flat_filters_and_drops_an_item_it_cannot_read() {
+    let mut conn = setup();
+    let legacy = r#"[
+        {"id":"f","name":"high","createdAt":1700000000000,"items":[
+            {"props":{"type":"Filter","field":"altitude","op":"gt","value":100},"color":[1,1,1]}]},
+        {"id":"p","name":"area","createdAt":1700000000000,"items":[
+            {"props":{"type":"Polygon","polygon":{"coordinates":[[[0,0],[0,1],[1,1],[0,0]]]},"includeInformational":false},"color":[2,2,2]}]},
+        {"id":"m","name":"mixed","createdAt":1700000000000,"items":[
+            {"props":{"type":"NoSuchThing"},"color":[3,3,3]},
+            {"props":{"type":"Untagged"},"color":[4,4,4]}]},
+        {"id":"u","name":"unreadable","createdAt":1700000000000,"items":[
+            {"props":{"type":"NoSuchThing"},"color":[3,3,3]}]}
+    ]"#;
+    assert_eq!(import(&mut conn, legacy).unwrap(), 3);
+    let rules = all(&conn);
+    let by_name = |n: &str| {
+        rules
+            .iter()
+            .find(|r| r.info.name == n)
+            .map(|r| r.selector.clone())
+    };
+    let Some(Selector::Filter { field, test }) = by_name("high") else {
+        panic!("not a filter");
+    };
+    assert_eq!(field, "altitude");
+    assert_eq!(
+        test,
+        FilterOp::Gt {
+            value: serde_json::json!(100),
+            tz_local: false
+        }
+    );
+    assert!(matches!(by_name("area"), Some(Selector::Polygon { .. })));
+    assert_eq!(
+        by_name("mixed").map(|s| serde_json::to_value(s).unwrap()),
+        Some(serde_json::to_value(Selector::untagged()).unwrap())
+    );
+    assert!(by_name("unreadable").is_none());
+}

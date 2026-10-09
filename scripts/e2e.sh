@@ -10,8 +10,17 @@
 #                                                   #   monkey-patch Street View (deterministic, no network)
 #   scripts/e2e.sh --web [...]                      # run the same specs against the web-serve
 #                                                   #   build in Chrome instead of the native shell
+#   scripts/e2e.sh --bench                          # whole-app performance suite, one container,
+#                                                   #   never sharded. Results land in
+#                                                   #   app/test/perf/results (live-mounted).
+#                                                   #   Tune with MMA_BENCH_SCALES / _SAMPLES /
+#                                                   #   _WARMUPS / _ROUTES / _SEED / _LABEL / _GPU.
+#   scripts/e2e.sh --bench procedures               # procedure throughput, recorded SV latency;
+#                                                   #   tune MMA_SCALE_ROWS and MMA_BENCH_SAMPLES.
 #
-# Rebuild the image first (after app source changes) with: scripts/e2e-build.sh
+# Images are tagged per commit and profile (scripts/internal/e2e-image.sh) and built on
+# demand: a clean checkout builds once and is reused; a dirty one is rebuilt by
+# scripts/e2e-build.sh. --bench selects the release profile.
 set -uo pipefail
 # Git Bash (Windows) rewrites args that look like absolute paths (e.g. /repo/...) into
 # Windows paths before they reach docker. Disable that; harmless on Linux hosts.
@@ -21,29 +30,131 @@ cd "$(dirname "$0")/.."
 # Leading flags, any order: --mock enables the test-side Street View monkey-patch,
 # --web swaps the native-shell runner for the web-serve one (Chrome over HTTP IPC).
 MOCK_ENV=()
+BENCH=0
+BENCH_SPEC="./test/e2e/performance.test.ts"
 RUNNER="sh /repo/scripts/internal/e2e-native.sh"
 while :; do
 	case "${1:-}" in
 	--mock)
 		MOCK_ENV=(-e MMA_TEST_MOCK_SV=1)
+		# Port of the in-container Street View stub that serves the Rust procedure engine.
+		if [ -n "${MMA_E2E_SV_PORT:-}" ]; then MOCK_ENV+=(-e "MMA_E2E_SV_PORT=$MMA_E2E_SV_PORT"); fi
 		shift
 		;;
 	--web)
 		RUNNER="sh /repo/scripts/internal/e2e-web.sh"
 		shift
 		;;
+	--bench)
+		BENCH=1
+		shift
+		if [ "${1:-}" = "procedures" ]; then
+			BENCH_SPEC="./test/e2e/procedure-scale.test.ts"
+			MOCK_ENV=(-e MMA_TEST_MOCK_SV=1)
+			export MMA_E2E_SV_REPLAY=1
+			export MMA_E2E_SV_MAX_INFLIGHT="${MMA_E2E_SV_MAX_INFLIGHT:-240}"
+			export MMA_E2E_SV_HIDDEN_CAPTURE=1
+			export MMA_SCALE_ROWS="${MMA_SCALE_ROWS:-1000}"
+			unset MMA_E2E_SV_FAULTS
+			shift
+		fi
+		;;
 	*) break ;;
 	esac
 done
 
+# Knobs the harness reads inside the container: the mock's replay model and the engine
+# A/B suites' own settings. Absent ones are not forwarded, so defaults stay in one place.
+FWD_ENV=()
+for var in MMA_E2E_SV_REPLAY MMA_E2E_SV_HIDDEN_CAPTURE MMA_E2E_SV_MAX_INFLIGHT MMA_E2E_SV_FAULTS \
+	MMA_PARITY_UPDATE_GOLDEN MMA_SCALE_ROWS MMA_SCALE_FIELDS MMA_SCALE_LABEL; do
+	if [ -n "${!var:-}" ]; then FWD_ENV+=(-e "$var=${!var}"); fi
+done
+
+# A benchmark measures the release binary: a debug build handicaps only the Rust side.
+if [ "$BENCH" = "1" ]; then export MMA_E2E_PROFILE="${MMA_E2E_PROFILE:-release}"; fi
+. scripts/internal/e2e-image.sh
+
 COMPOSE="docker compose -f docker-compose.e2e.yml -f docker-compose.e2e.dev.yml"
+
+if ! docker image inspect "$MMA_E2E_IMAGE" >/dev/null 2>&1; then
+	echo "no e2e image $MMA_E2E_IMAGE for this checkout; building it" >&2
+	bash scripts/e2e-build.sh || exit 1
+fi
+
+# A clean tag is correct by construction. A dirty one can go stale under edits, so
+# warn when a baked source is newer than the image. Test specs, wdio config, and
+# scripts/ are live-mounted; anything else baked needs scripts/e2e-build.sh.
+CREATED=$(docker image inspect --format '{{.Created}}' "$MMA_E2E_IMAGE" 2>/dev/null)
+if [ "$MMA_E2E_DIRTY" = "1" ] && [ -n "$CREATED" ]; then
+	stamp=$(mktemp)
+	if touch -d "$CREATED" "$stamp" 2>/dev/null; then
+		stale=$(find app/src app/src-tauri/src app/src-tauri/Cargo.toml \
+			app/src-tauri/tauri.conf.json app/package.json app/public plugins \
+			-type f -newer "$stamp" -print -quit 2>/dev/null)
+		if [ -n "$stale" ]; then
+			echo "WARNING: the e2e image is STALE - $stale changed after it was built." >&2
+			echo "         Rebuild with: bash scripts/e2e-build.sh (test-only edits are live-mounted)." >&2
+		fi
+	fi
+	rm -f "$stamp"
+fi
+
+# Every run writes one file to app/test/logs/: everything the container printed, under a
+# name that says what ran, when, and against which checkout. wdio's own log writer stands
+# down when the path is handed in (MMA_E2E_LOG_PATH), so the file is the single record.
+LOG_DIR=app/test/logs
+mkdir -p "$LOG_DIR"
+STAMP=$(date -u +%Y-%m-%dT%H-%M-%S)
+MODE=native
+[ "$RUNNER" = "sh /repo/scripts/internal/e2e-web.sh" ] && MODE=web
+[ "$BENCH" = "1" ] && MODE=bench
+log_name() { echo "e2e-$MODE-$STAMP-$MMA_E2E_REVISION${1:+-$1}.txt"; }
+# NO_COLOR keeps the spec reporter's colour codes out of the file.
+run_logged() {
+	local name=$1
+	shift
+	$COMPOSE run -e NO_COLOR=1 -e "MMA_E2E_LOG_PATH=/repo/$LOG_DIR/$name" "$@" 2>&1 | tee "$LOG_DIR/$name"
+	local rc=${PIPESTATUS[0]}
+	echo "log: $LOG_DIR/$name"
+	return "$rc"
+}
+
+if [ "$BENCH" = "1" ]; then
+	if [ "${1:-}" = "--shard" ]; then
+		echo "--bench is never sharded: benchmark numbers must be comparable run to run." >&2
+		exit 1
+	fi
+	# Stamped into the result JSON so two runs can be told apart by commit, and by the
+	# profile the image was actually built at (read off the image, never assumed).
+	PROFILE_LABEL=$(docker image inspect --format '{{index .Config.Labels "mma.profile"}}' "$MMA_E2E_IMAGE" 2>/dev/null)
+	BENCH_ENV=(-e "MMA_BENCH_REVISION=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+		-e "MMA_BENCH_BUILD_PROFILE=${PROFILE_LABEL:-unknown}")
+	for var in MMA_BENCH_SCALES MMA_BENCH_SAMPLES MMA_BENCH_WARMUPS MMA_BENCH_ROUTES \
+		MMA_BENCH_SEED MMA_BENCH_LABEL MMA_BENCH_GPU; do
+		if [ -n "${!var:-}" ]; then BENCH_ENV+=(-e "$var=${!var}"); fi
+	done
+	# --exclude overrides the config's exclude list, which otherwise also blocks --spec.
+	run_logged "$(log_name)" "${MOCK_ENV[@]}" "${FWD_ENV[@]}" "${BENCH_ENV[@]}" --rm e2e $RUNNER \
+		--spec "$BENCH_SPEC" --exclude ./test/e2e/scratch.test.ts
+	exit $?
+fi
 
 if [ "${1:-}" = "--shard" ]; then
 	N="${2:-3}"
+	# Compose creates the project's named volumes on first use, and N containers doing it at once collide.
+	if ! out=$($COMPOSE run --rm --entrypoint true e2e 2>&1); then
+		echo "$out" >&2
+		exit 1
+	fi
 	echo "Running e2e suite across $N parallel containers..."
 	pids=()
+	names=()
 	for i in $(seq 1 "$N"); do
-		$COMPOSE run "${MOCK_ENV[@]}" --rm e2e $RUNNER --shard "$i/$N" >"shard-$i.log" 2>&1 &
+		name=$(log_name "shard${i}of${N}")
+		names+=("$name")
+		$COMPOSE run -e NO_COLOR=1 -e "MMA_E2E_LOG_PATH=/repo/$LOG_DIR/$name" "${MOCK_ENV[@]}" "${FWD_ENV[@]}" \
+			--rm e2e $RUNNER --shard "$i/$N" >"$LOG_DIR/$name" 2>&1 &
 		pids+=("$!")
 	done
 	rc=0
@@ -52,15 +163,19 @@ if [ "${1:-}" = "--shard" ]; then
 		if wait "${pids[$idx]}"; then
 			echo "shard $i/$N: PASS"
 		else
-			echo "shard $i/$N: FAIL (see shard-$i.log)"
+			echo "shard $i/$N: FAIL"
 			rc=1
 		fi
-		grep -E "Spec Files:" "shard-$i.log" | tail -1
+		grep -E "Spec Files:" "$LOG_DIR/${names[$idx]}" | tail -1
+		echo "log: $LOG_DIR/${names[$idx]}"
 	done
 	exit $rc
 fi
 
-# Subset: prefix each spec file with --spec. No args => full suite.
+# Subset: prefix each spec file with --spec. No args => full suite. A named spec runs even
+# when the default suite excludes it: --exclude replaces the config's list, which would
+# otherwise block --spec too. Scratch stays excluded unless it is itself the named spec.
 args=()
 for s in "$@"; do args+=(--spec "$s"); done
-exec $COMPOSE run "${MOCK_ENV[@]}" --rm e2e $RUNNER "${args[@]}"
+[[ ${#args[@]} -gt 0 && " $* " != *scratch.test.ts* ]] && args+=(--exclude ./test/e2e/scratch.test.ts)
+run_logged "$(log_name)" "${MOCK_ENV[@]}" "${FWD_ENV[@]}" --rm e2e $RUNNER "${args[@]}"

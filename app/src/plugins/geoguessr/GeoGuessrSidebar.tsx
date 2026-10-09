@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { mdiMapMarker } from "@mdi/js";
 import { ConnectionUser, SyncSidebar } from "@/lib/sync/ui/SyncSidebar";
 import { log } from "@/lib/util/log";
-import { errText } from "@/lib/util/util";
-import { controller, geoguessrProvider, PLUGIN_ID } from "./provider";
+import { errText } from "@/lib/util/format";
+import { controller, createMap, listMaps, PLUGIN_ID } from "./provider";
 import { t } from "@/lib/i18n";
+import { Button } from "@/components/primitives/Button";
+import { Notice } from "@/components/primitives/Hint";
 
 const CACHED_USER = "user";
 const kv = () => window.MMA.storage(PLUGIN_ID);
@@ -76,22 +77,14 @@ export function GeoGuessrSidebar({ onClose }: { onClose: () => void }) {
 					? `https://www.geoguessr.com/images/resize:auto:96:96/gravity:ce/plain/${user.pin}`
 					: null
 			}
-			action={
-				<button className="button" onClick={() => void signOut()}>
-					{t("Sign out")}
-				</button>
-			}
+			action={<Button onClick={() => void signOut()}>{t("Sign out")}</Button>}
 		/>
 	) : (
 		<>
-			<button className="button button--primary" disabled={busy} onClick={() => void signIn()}>
+			<Button variant="primary" disabled={busy} onClick={() => void signIn()}>
 				{busy ? t("Waiting for sign-in...") : t("Sign in to GeoGuessr")}
-			</button>
-			{error && (
-				<p className="mma-input__help" style={{ color: "var(--red-9, #e5484d)" }}>
-					{error}
-				</p>
-			)}
+			</Button>
+			{error && <Notice tone="error">{error}</Notice>}
 		</>
 	);
 
@@ -101,8 +94,7 @@ export function GeoGuessrSidebar({ onClose }: { onClose: () => void }) {
 			controller={controller}
 			auth={auth}
 			identity={user === undefined ? undefined : user ? { id: user.id } : null}
-			listMaps={() => geoguessrProvider.listMaps()}
-			brand={{ path: mdiMapMarker, color: "#CC302E" }}
+			source={{ kind: "list", listMaps: () => listMaps(), createMap }}
 		/>
 	);
 }

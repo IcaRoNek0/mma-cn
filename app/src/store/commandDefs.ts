@@ -4,6 +4,7 @@ import {
 	mdiFileImportOutline,
 	mdiFileExportOutline,
 	mdiContentSave,
+	mdiContentSaveOutline,
 	mdiSelectRemove,
 	mdiSetCenter,
 	mdiSetAll,
@@ -16,7 +17,6 @@ import {
 	mdiHistory,
 	mdiEye,
 	mdiEyeOutline,
-	mdiTagRemove,
 	mdiTagMultipleOutline,
 	mdiTrashCanOutline,
 	mdiDatabaseRemoveOutline,
@@ -26,6 +26,7 @@ import {
 	mdiCompassOutline,
 	mdiDiceMultiple,
 	mdiDotsGrid,
+	mdiDotsHexagon,
 	mdiMapPlus,
 	mdiMapMarkerPlus,
 	mdiVectorPolygon,
@@ -38,6 +39,8 @@ import {
 	mdiBookmarkCheckOutline,
 	mdiSelectAll,
 	mdiTagOffOutline,
+	mdiLayersOutline,
+	mdiLayersTripleOutline,
 	mdiCompassOffOutline,
 	mdiImageOutline,
 	mdiImageOffOutline,
@@ -49,33 +52,50 @@ import {
 } from "@mdi/js";
 import { registerCommand, type CommandDef } from "./commands";
 import {
-	undo,
-	redo,
-	addSelections,
-	selectInverse,
-	selectIntersection,
-	selectUnion,
-	resetSelections,
-	getMapState,
-	deleteTags,
+	addSelection,
+	intersectSelections,
+	invertSelections,
+	onActive,
+	toggleGhostAll,
+	unionSelections,
+} from "./selections";
+import {
+	applySelectionUpdate,
 	getActiveSelections,
+	getMapState,
+	getTagCounts,
+	getTags,
+	redo,
 	removeLocations,
-	toggleGhostAllSelections,
+	undo,
 } from "./useMapStore";
 import { hasCommitDiff } from "./commitDiff";
-import { loadGeoJSON } from "@/lib/util/loadGeoJSON";
+import { MAP_EMBED_PREFS, MAP_TYPES } from "./mapEmbedPrefs";
+import { getLocal, setLocal } from "@/lib/hooks/useLocalStorage";
+import { isReservedMap } from "./mapList";
+import { loadGeoJSON, polygonFeatureCollection } from "@/lib/util/geojson";
 import { downloadBlob } from "@/lib/util/util";
 import { toggleSeenOverlay } from "@/lib/seen/seenOverlay";
 import { selectReviewedHistory } from "@/lib/review/review";
 import { openDialog } from "./dialogBus";
+import { panoIdSelector, unpannedSelector, untaggedSelector } from "@/store/selections";
 import { msg } from "@/lib/i18n";
 
 const requiresMap = () => getMapState().map !== null;
+const requiresVersioning = () => requiresMap() && !isReservedMap(getMapState().mapId);
 const hasActiveLocation = () => getMapState().activeLocation != null;
 const hasSelection = () => getMapState().selectedLocationIds.size > 0;
-const hasAnySelections = () => getMapState().selections.length > 0;
+const hasAnySelections = () => getMapState().selectionList.length > 0;
 const openBulkOp = (op: string) => () => openDialog("bulk-op", op);
 const openInlinePanel = (id: string) => () => openDialog("inline-panel", id);
+
+/** Step `n` places through the basemap order, wrapping at both ends. */
+const stepBasemap = (n: number) => () => {
+	const prefs = getLocal(MAP_EMBED_PREFS);
+	const i = MAP_TYPES.indexOf(prefs.mapType);
+	const len = MAP_TYPES.length;
+	setLocal(MAP_EMBED_PREFS, { ...prefs, mapType: MAP_TYPES[(i + n + len) % len] });
+};
 
 /** Every editor command (palette entries; all are hotkey-bindable in Settings). */
 const COMMANDS = {
@@ -86,7 +106,31 @@ const COMMANDS = {
 		defaultBinding: "Mod+s",
 		aliases: ["save", "snapshot"],
 		execute: () => openDialog("commit"),
-		enabled: () => requiresMap() && hasCommitDiff(),
+		enabled: () => requiresVersioning() && hasCommitDiff(),
+	},
+	saveAs: {
+		label: msg("Save as..."),
+		icon: mdiContentSaveOutline,
+		group: msg("Map"),
+		aliases: ["duplicate", "copy map"],
+		execute: () => openDialog("save-as"),
+		enabled: requiresMap,
+	},
+	basemapPrev: {
+		label: msg("Previous basemap"),
+		icon: mdiLayersTripleOutline,
+		group: msg("Map"),
+		defaultBinding: "j",
+		execute: stepBasemap(-1),
+		enabled: requiresMap,
+	},
+	basemapNext: {
+		label: msg("Next basemap"),
+		icon: mdiLayersOutline,
+		group: msg("Map"),
+		defaultBinding: "k",
+		execute: stepBasemap(1),
+		enabled: requiresMap,
 	},
 	import: {
 		label: msg("Import file"),
@@ -140,7 +184,7 @@ const COMMANDS = {
 		icon: mdiHistory,
 		group: msg("Map"),
 		execute: () => openDialog("history"),
-		enabled: requiresMap,
+		enabled: requiresVersioning,
 	},
 	"open-seen": {
 		label: msg("Open seen locations"),
@@ -161,38 +205,38 @@ const COMMANDS = {
 		icon: mdiSelectAll,
 		group: msg("Selections"),
 		defaultBinding: "Mod+a",
-		execute: () => addSelections([{ type: "Everything" }]),
+		execute: () => applySelectionUpdate(addSelection({ type: "Everything" })),
 	},
 	"select-untagged": {
 		label: msg("Select untagged locations"),
 		icon: mdiTagOffOutline,
 		group: msg("Selections"),
 		aliases: ["find untagged", "missing tags"],
-		execute: () => addSelections([{ type: "Untagged" }]),
+		execute: () => applySelectionUpdate(addSelection(untaggedSelector())),
 	},
 	"select-unpanned": {
 		label: msg("Select unpanned locations"),
 		icon: mdiCompassOffOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([{ type: "Unpanned" }]),
+		execute: () => applySelectionUpdate(addSelection(unpannedSelector())),
 	},
 	"select-panoid": {
 		label: msg("Select Pano ID locations"),
 		icon: mdiImageOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([{ type: "PanoIds" }]),
+		execute: () => applySelectionUpdate(addSelection(panoIdSelector(true))),
 	},
 	"select-no-panoid": {
 		label: msg("Select non-Pano ID locations"),
 		icon: mdiImageOffOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([{ type: "NotPanoIds" }]),
+		execute: () => applySelectionUpdate(addSelection(panoIdSelector(false))),
 	},
 	"select-uncommitted": {
 		label: msg("Select uncommitted locations"),
 		icon: mdiContentSaveAlertOutline,
 		group: msg("Selections"),
-		execute: () => addSelections([{ type: "Uncommitted" }]),
+		execute: () => applySelectionUpdate(addSelection({ type: "Uncommitted" })),
 	},
 	"select-reviewed": {
 		label: msg("Select reviewed locations"),
@@ -205,19 +249,19 @@ const COMMANDS = {
 		label: msg("Invert selection"),
 		icon: mdiSelectInverse,
 		group: msg("Selections"),
-		execute: () => selectInverse(),
+		execute: () => applySelectionUpdate(onActive(invertSelections())),
 	},
 	"intersect-selections": {
 		label: msg("Intersect (AND) selections"),
 		icon: mdiSetCenter,
 		group: msg("Selections"),
-		execute: () => selectIntersection(),
+		execute: () => applySelectionUpdate(onActive(intersectSelections())),
 	},
 	"union-selections": {
 		label: msg("Union (OR) selections"),
 		icon: mdiSetAll,
 		group: msg("Selections"),
-		execute: () => selectUnion(),
+		execute: () => applySelectionUpdate(onActive(unionSelections())),
 	},
 	"load-geojson": {
 		label: msg("Load shapes from GeoJSON as selection"),
@@ -230,18 +274,12 @@ const COMMANDS = {
 		label: msg("Download polygon selections as GeoJSON"),
 		icon: mdiVectorPolygon,
 		group: msg("Selections"),
-		enabled: () => getActiveSelections().some((s) => s.props.type === "Polygon"),
+		enabled: () => getActiveSelections().some((s) => s.selector.type === "Polygon"),
 		execute: () => {
-			const features: unknown[] = [];
-			for (const sel of getActiveSelections()) {
-				if (sel.props.type !== "Polygon") continue;
-				features.push({
-					type: "Feature",
-					properties: sel.props.polygon.properties ?? {},
-					geometry: { type: "Polygon", coordinates: sel.props.polygon.coordinates },
-				});
-			}
-			const blob = new Blob([JSON.stringify({ type: "FeatureCollection", features })], {
+			const polygons = getActiveSelections().flatMap((s) =>
+				s.selector.type === "Polygon" ? [s.selector.polygon] : [],
+			);
+			const blob = new Blob([JSON.stringify(polygonFeatureCollection(polygons))], {
 				type: "application/geo+json",
 			});
 			downloadBlob(blob, "selections.geojson");
@@ -252,7 +290,7 @@ const COMMANDS = {
 		icon: mdiSelectRemove,
 		group: msg("Selections"),
 		defaultBinding: "Mod+d",
-		execute: resetSelections,
+		execute: () => applySelectionUpdate(() => []),
 		enabled: hasAnySelections,
 	},
 	"find-duplicates": {
@@ -304,11 +342,19 @@ const COMMANDS = {
 		enabled: hasSelection,
 	},
 	"select-spaced": {
-		label: msg("Pick evenly spaced locations from selection"),
+		label: msg("Thin selection by minimum distance"),
 		icon: mdiDotsGrid,
 		group: msg("Selections"),
 		aliases: ["spaced", "thin", "reduce density", "distribute"],
 		execute: openInlinePanel("select-spaced"),
+		enabled: hasSelection,
+	},
+	"select-evenly-spaced": {
+		label: msg("Pick evenly spaced locations from selection"),
+		icon: mdiDotsHexagon,
+		group: msg("Selections"),
+		aliases: ["evenly spaced", "even", "grid", "honeycomb", "spacing"],
+		execute: openInlinePanel("select-evenly-spaced"),
 		enabled: hasSelection,
 	},
 	"ghost-selections": {
@@ -316,7 +362,7 @@ const COMMANDS = {
 		icon: mdiGhostOutline,
 		group: msg("Selections"),
 		aliases: ["hide selections", "dim selections"],
-		execute: () => toggleGhostAllSelections(),
+		execute: () => applySelectionUpdate(toggleGhostAll),
 		enabled: hasAnySelections,
 	},
 	"save-selections": {
@@ -337,9 +383,9 @@ const COMMANDS = {
 		icon: mdiTrashCanOutline,
 		group: msg("Selections"),
 		enabled: hasSelection,
-		execute: () => {
+		execute: async () => {
 			const ids = getMapState().selectedLocationIds;
-			if (ids.size > 0) removeLocations(ids);
+			if (ids.size > 0) await removeLocations(ids);
 		},
 	},
 	"bulk-validate": {
@@ -374,7 +420,7 @@ const COMMANDS = {
 		label: msg("Pin locations to pano ID"),
 		icon: mdiMapMarkerCheck,
 		group: msg("Bulk Operations"),
-		aliases: ["snap to pano", "lock pano"],
+		aliases: ["snap to pano", "lock pano", "unpin"],
 		execute: openBulkOp("pinPano"),
 	},
 	"bulk-heading-road": {
@@ -391,19 +437,6 @@ const COMMANDS = {
 		aliases: ["bulk download", "export panoramas", "download street view"],
 		execute: openBulkOp("downloadPanoramas"),
 	},
-	"delete-selected-tags": {
-		label: msg("Delete selected tags"),
-		icon: mdiTagRemove,
-		group: msg("Tags"),
-		execute: async () => {
-			await deleteTags(
-				getActiveSelections()
-					.filter((s) => s.props.type === "Tag")
-					.map((s) => (s.props as { type: "Tag"; tagId: number }).tagId),
-			);
-		},
-		enabled: () => getActiveSelections().some((s) => s.props.type === "Tag"),
-	},
 	"tag-download-csv": {
 		label: msg("Download tag counts as CSV"),
 		icon: mdiFileDelimitedOutline,
@@ -411,13 +444,13 @@ const COMMANDS = {
 		execute: () => {
 			const map = getMapState().map;
 			if (!map) return;
-			const counts = getMapState().tagCounts;
+			const counts = getTagCounts();
 			const rows = Object.entries(counts)
-				.map(([id, count]) => ({ name: getMapState().tags[Number(id)]?.name ?? id, count }))
+				.map(([id, count]) => ({ name: getTags()[Number(id)]?.name ?? id, count }))
 				.sort((a, b) => b.count - a.count);
 			const csv =
 				"name,count\n" + rows.map((r) => `"${r.name.replace(/"/g, '""')}",${r.count}`).join("\n");
-			downloadBlob(new Blob([csv], { type: "text/csv" }), `${map.meta.name} tags.csv`);
+			downloadBlob(new Blob([csv], { type: "text/csv" }), `${map.name} tags.csv`);
 		},
 	},
 	"tag-find-replace": {

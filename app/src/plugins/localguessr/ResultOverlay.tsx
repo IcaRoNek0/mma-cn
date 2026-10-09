@@ -79,7 +79,7 @@ export function ResultOverlay({
 							</Button>
 						)}
 						<p className="gg-round-result__space">
-							{t("Hit")} <span className="gg-kbd">Space</span> {t("to continue")}
+							{t("Hit")} <span className="gg-kbd">{t("Space")}</span> {t("to continue")}
 						</p>
 					</div>
 				</div>

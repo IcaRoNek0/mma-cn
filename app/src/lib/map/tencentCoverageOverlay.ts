@@ -91,11 +91,17 @@ export class TencentCoverageOverlay {
 	private disposed = false;
 	private lastDataZoom: number | null = null;
 
+	private readonly map: maplibregl.Map;
+	private readonly displayZoomOffset: number;
+	private readonly getVisibleBounds: () => Bounds | null;
 	constructor(
-		private readonly map: maplibregl.Map,
-		private readonly displayZoomOffset: number,
-		private readonly getVisibleBounds: () => Bounds | null,
+		map: maplibregl.Map,
+		displayZoomOffset: number,
+		getVisibleBounds: () => Bounds | null,
 	) {
+		this.map = map;
+		this.displayZoomOffset = displayZoomOffset;
+		this.getVisibleBounds = getVisibleBounds;
 		this.overlay = new MapboxOverlay({
 			interleaved: false,
 			layers: [],

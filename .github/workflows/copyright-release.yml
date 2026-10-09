@@ -6,14 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Build sidecar binary for each platform (GPU backend where available)
+  # Build sidecar binary for each platform.
   build-sidecar:
     uses: ./.github/workflows/build-sidecar.yml
     with:
       crate-path: plugins/copyright/sidecar
       binary-name: mma-copyright
-      features-windows-x64: directml
-      features-macos-arm64: coreml
 
   # Bundle everything into release archives
   package:
@@ -29,9 +27,9 @@ jobs:
           - label: linux-x64
             suffix: ''
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: mma-copyright-${{ matrix.label }}
           path: bundle/
@@ -40,7 +38,8 @@ jobs:
         run: |
           mkdir -p bundle/models
           cp plugins/copyright/sidecar/models/wm_cls.onnx \
-             plugins/copyright/sidecar/models/wm_template.bin bundle/models/
+             plugins/copyright/sidecar/models/wm_template.bin \
+             plugins/copyright/sidecar/models/wm_profile.json bundle/models/
 
       - name: Create archive
         run: |
@@ -49,7 +48,7 @@ jobs:
           zip -r ../mma-copyright-${{ matrix.label }}.zip .
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mma-copyright-bundle-${{ matrix.label }}
           path: mma-copyright-${{ matrix.label }}.zip
@@ -63,24 +62,22 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: mma-copyright-bundle-*
           merge-multiple: true
 
       - name: Compute SHA-256 digests
-        id: sha
         run: |
           for f in mma-copyright-*.zip; do
             platform="${f#mma-copyright-}"
             platform="${platform%.zip}"
             hash=$(sha256sum "$f" | cut -d' ' -f1)
-            echo "sha256-${platform}=${hash}" >> "$GITHUB_OUTPUT"
             echo "${hash}  ${f}" >> checksums.txt
           done
           cat checksums.txt
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           # never steal the Latest badge from app releases (updater reads releases/latest)
           make_latest: false

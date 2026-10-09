@@ -8,6 +8,10 @@ editor_files/
 mma_files/
 mma.html
 
+# Worker secrets
+.dev.vars
+.wrangler/
+
 # IDE / editor
 .idea/
 
@@ -29,16 +33,12 @@ mma.html
 .env.*
 !.env.example
 
-# e2e tooling output (scripts/e2e.sh --shard, scripts/e2e-build.sh)
-shard-*.log
-build-e2e.log
 
 # Plugin built artifacts (CI builds these during release)
 plugins/*/index.js
 
 # Misc
 .gitmodules
-app/public/icon-1024.png
 app/src-tauri/icons/android/
 app/src-tauri/icons/ios/
 
@@ -51,6 +51,8 @@ vali-oracle/
 *.bin
 # sidecar ONNX models (exported/downloaded, not committed)
 plugins/*/sidecar/models/*
+# candidate models from training rounds, kept locally, never shipped
+plugins/*/sidecar/models_*/
 
 plugins/copyright/eval/
 plugins/copyright/sidecar/_parity_ref.json
@@ -58,12 +60,24 @@ plugins/copyright/sidecar/verify_parity.py
 
 !plugins/copyright/sidecar/models/wm_cls.onnx
 !plugins/copyright/sidecar/models/wm_template.bin
+!plugins/copyright/sidecar/models/wm_profile.json
+
+# reverse-geocoding table, packed by scripts/gen-cities-bin.mjs
+!app/src-tauri/data/cities.bin
+# timezone transition table, packed by crates/tz's regenerate_table test
+!app/src-tauri/data/tz.bin
+# coordinate->zone grid + oracle fixture, packed by scripts/gen-tzgrid.mjs
+!app/src-tauri/data/tzgrid.bin
+!app/src-tauri/crates/tz/testdata/tzgrid-fixture.bin
 
 # render-binary layout fixture, emitted by the Rust writer (emit_render_fixture)
 !app/test/unit/fixtures/render-buffer.bin
+!app/test/unit/fixtures/selection-bitmask.bin
 
 # C# oracle golden vectors + location slices for the vali parity gates
 !app/src-tauri/crates/vali/vali-geo/tests/fixtures/geo/*.bin
 !app/src-tauri/crates/vali/vali-generate/tests/fixtures/*.bin
 
-app/test/e2e/opensv-smoke.test.ts
+
+# local border rebuild tooling
+data/borders/generate.py

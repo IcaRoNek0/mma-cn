@@ -12,7 +12,7 @@ import {
 	mdiUndo,
 } from "@mdi/js";
 import { Tooltip } from "@/components/primitives/Tooltip";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
+import { Dialog, DialogContent, DialogActions } from "@/components/primitives/Dialog";
 import { useT } from "@/lib/i18n";
 import { getSettings, setSetting, useSettings } from "@/store/settings";
 import { getPanorama } from "@/lib/sv/panoSingleton";
@@ -425,13 +425,11 @@ export function RoundPlayer({
 							"End the game to save a finished summary, or exit to keep it in Ongoing and resume later.",
 						)}
 					</p>
-					<div className="gg-end-dialog__actions">
-						<Button variant="primary" onClick={confirmEndGame}>
-							{t("End game")}
-						</Button>
-						<Button onClick={confirmExitGame}>{t("Exit")}</Button>
-						<Button onClick={() => setConfirmEndOpen(false)}>{t("Cancel")}</Button>
-					</div>
+					<DialogActions
+						cancel
+						primary={{ label: t("End game"), onClick: confirmEndGame }}
+						start={<Button onClick={confirmExitGame}>{t("Exit")}</Button>}
+					/>
 				</DialogContent>
 			</Dialog>
 

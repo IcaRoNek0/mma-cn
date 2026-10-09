@@ -1,51 +1,16 @@
 // @vitest-environment jsdom
-/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect } from "vitest";
 import {
-	parsePanoDate,
 	svSearchRadius,
 	clickSearchRadius,
-	normalizeHeading,
 	nearestLinkHeading,
 	calcHeading,
-	samePano,
-	isUnofficial,
 	svThumbnailUrl,
+	rankCandidates,
 } from "@/lib/sv/lookup";
-import { panoTileLayout } from "@/lib/sv/panoDownload";
-
-describe("parsePanoDate", () => {
-	it("passes through a valid Date", () => {
-		const d = new Date("2024-06-15");
-		expect(parsePanoDate(d).getTime()).toBe(d.getTime());
-	});
-
-	it("parses {year, month} object", () => {
-		const d = parsePanoDate({ year: 2024, month: 6 });
-		expect(d.getFullYear()).toBe(2024);
-		expect(d.getMonth()).toBe(5); // 0-indexed
-	});
-
-	it("parses YYYY-MM string", () => {
-		const d = parsePanoDate("2024-06");
-		expect(d.getFullYear()).toBe(2024);
-		expect(d.getMonth()).toBe(5);
-	});
-
-	it("returns epoch for null", () => {
-		expect(parsePanoDate(null).getTime()).toBe(0);
-	});
-
-	it("returns epoch for invalid Date", () => {
-		expect(parsePanoDate(new Date("invalid")).getTime()).toBe(0);
-	});
-
-	it("handles missing month in {year} object", () => {
-		const d = parsePanoDate({ year: 2020 });
-		expect(d.getFullYear()).toBe(2020);
-		expect(d.getMonth()).toBe(0);
-	});
-});
+import type { Pano } from "@/bindings.gen";
+import type { CameraType } from "@/bindings.consts";
 
 describe("svSearchRadius", () => {
 	it("is unclamped at high zoom (the 25m floor now lives in the caller)", () => {
@@ -93,26 +58,6 @@ describe("clickSearchRadius (the cursor picker must equal the real click radius)
 	});
 });
 
-describe("normalizeHeading", () => {
-	it("passes through values in [-180, 180]", () => {
-		expect(normalizeHeading(0)).toBe(0);
-		expect(normalizeHeading(90)).toBe(90);
-		expect(normalizeHeading(-90)).toBe(-90);
-		expect(normalizeHeading(180)).toBe(180);
-		expect(normalizeHeading(-180)).toBe(-180);
-	});
-
-	it("wraps values > 180", () => {
-		expect(normalizeHeading(270)).toBe(-90);
-		expect(normalizeHeading(360)).toBe(0);
-	});
-
-	it("wraps values < -180", () => {
-		expect(normalizeHeading(-270)).toBe(90);
-		expect(normalizeHeading(-360)).toBe(0);
-	});
-});
-
 describe("nearestLinkHeading", () => {
 	it("returns null for empty input", () => {
 		expect(nearestLinkHeading([], 90)).toBeNull();
@@ -135,47 +80,13 @@ describe("nearestLinkHeading", () => {
 	});
 });
 
-describe("panoTileLayout", () => {
-	it("uses a fixed 512px tile pitch", () => {
-		expect(panoTileLayout(3, { width: 6656, height: 3328 }).tile).toBe(512);
-	});
-
-	it("Gen 4 (16384x8192) fills the grid with no black padding", () => {
-		const l = panoTileLayout(3, { width: 16384, height: 8192 });
-		expect(l).toMatchObject({ zoom: 3, cols: 8, rows: 4, width: 4096, height: 2048 });
-	});
-
-	it("Gen 3 (6656x3328) crops the black padding instead of a full 8x4 grid", () => {
-		const l = panoTileLayout(3, { width: 6656, height: 3328 });
-		expect(l).toMatchObject({ zoom: 3, cols: 7, rows: 4, width: 3328, height: 1664 });
-	});
-
-	it("Gen 3 at native zoom keeps the half-row crop (13 cols, 6.5 rows)", () => {
-		const l = panoTileLayout(4, { width: 6656, height: 3328 });
-		expect(l).toMatchObject({ zoom: 4, cols: 13, rows: 7, width: 6656, height: 3328 });
-	});
-
-	it("clamps requested zoom to the pano's native max zoom", () => {
-		const l = panoTileLayout(5, { width: 6656, height: 3328 });
-		expect(l.zoom).toBe(4);
-		expect(l.width).toBe(6656);
-	});
-
-	it("falls back to the full power-of-two grid without metadata", () => {
-		const l = panoTileLayout(3);
-		expect(l).toMatchObject({ zoom: 3, cols: 8, rows: 4, width: 4096, height: 2048 });
-	});
-});
-
 describe("calcHeading", () => {
-	function makeData(opts: {
-		centerHeading?: number;
-		links?: { heading: number }[];
-	}): google.maps.StreetViewResolvedPanoramaData {
+	function makeData(opts: { centerHeading?: number; links?: { heading: number }[] }): Pano {
 		return {
-			tiles: { centerHeading: opts.centerHeading ?? 0, originHeading: 0 },
+			pov: { heading: opts.centerHeading ?? 0, tilt: 90, roll: 0 },
+			centerHeading: opts.centerHeading ?? 0,
 			links: opts.links ?? [],
-		} as any;
+		} as unknown as Pano;
 	}
 
 	it("returns 0 when pointAlongRoad is false", () => {
@@ -206,47 +117,6 @@ describe("calcHeading", () => {
 	});
 });
 
-describe("samePano", () => {
-	const makeP = (pano: string) => ({ location: { pano } }) as any;
-
-	it("true for same pano ID", () => {
-		expect(samePano(makeP("ABC"), makeP("ABC"))).toBe(true);
-	});
-
-	it("false for different pano ID", () => {
-		expect(samePano(makeP("ABC"), makeP("XYZ"))).toBe(false);
-	});
-
-	it("false for null", () => {
-		expect(samePano(null, makeP("ABC"))).toBe(false);
-		expect(samePano(makeP("ABC"), null)).toBe(false);
-		expect(samePano(null, null)).toBe(false);
-	});
-});
-
-describe("isUnofficial", () => {
-	it("long pano ID is unofficial", () => {
-		expect(isUnofficial({ location: { pano: "A".repeat(30) } } as any)).toBe(true);
-	});
-
-	it("22-char pano ID is official", () => {
-		expect(isUnofficial({ location: { pano: "A".repeat(22) } } as any)).toBe(false);
-	});
-
-	it("null is not unofficial", () => {
-		expect(isUnofficial(null)).toBe(false);
-	});
-
-	it("copyright with 'user-uploaded' is unofficial", () => {
-		expect(
-			isUnofficial({
-				location: { pano: "A".repeat(22) },
-				copyright: "Photo by John",
-			} as any),
-		).toBe(true);
-	});
-});
-
 describe("svThumbnailUrl", () => {
 	it("includes pano ID and heading", () => {
 		const url = svThumbnailUrl("ABC123", 90);
@@ -264,5 +134,52 @@ describe("svThumbnailUrl", () => {
 		const url = svThumbnailUrl("ABC123", 0, 640, 360);
 		expect(url).toContain("w=640");
 		expect(url).toContain("h=360");
+	});
+});
+
+describe("rankCandidates", () => {
+	function cand(id: string, cameraType: CameraType | null, imageDate = "2020-01"): Pano {
+		return { id, cameraType, imageDate, copyright: "© Google" } as unknown as Pano;
+	}
+
+	it("drops a camera type the rank table excludes", () => {
+		const out = rankCandidates([cand("t", "trekker"), cand("g", "gen4")], {
+			preferHigherQuality: true,
+		});
+		expect(out.map((c) => c.id)).toEqual(["g"]);
+	});
+
+	it("keeps an excluded type when quality is not preferred", () => {
+		const out = rankCandidates([cand("t", "trekker"), cand("g", "gen4")], {});
+		expect(out.map((c) => c.id)).toEqual(["t", "g"]);
+	});
+
+	it("orders by the rank table, not by capture date", () => {
+		const out = rankCandidates(
+			[cand("gen1", "gen1", "2024-01"), cand("tripod", "tripod", "2011-01"), cand("gen4", "gen4")],
+			{ preferHigherQuality: true },
+		);
+		expect(out.map((c) => c.id)).toEqual(["gen4", "tripod", "gen1"]);
+	});
+
+	it("prefers a known camera type over an unknown one", () => {
+		const out = rankCandidates([cand("unknown", null), cand("gen1", "gen1")], {
+			preferHigherQuality: true,
+		});
+		expect(out.map((c) => c.id)).toEqual(["gen1", "unknown"]);
+	});
+
+	it("breaks a rank tie with the newer capture", () => {
+		const out = rankCandidates([cand("old", "gen4", "2015-06"), cand("new", "gen4", "2023-02")], {
+			userUploaded: "avoid",
+			preferHigherQuality: true,
+		});
+		expect(out.map((c) => c.id)).toEqual(["new", "old"]);
+	});
+
+	it("leaves the input array untouched", () => {
+		const input = [cand("b", "gen1"), cand("a", "gen4")];
+		rankCandidates(input, { preferHigherQuality: true });
+		expect(input.map((c) => c.id)).toEqual(["b", "a"]);
 	});
 });

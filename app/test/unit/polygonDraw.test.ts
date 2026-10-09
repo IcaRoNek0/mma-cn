@@ -1,0 +1,309 @@
+// @vitest-environment jsdom
+import { describe, it, expect, afterEach } from "vitest";
+import { createElement, act, createRef } from "react";
+import { createRoot, type Root } from "react-dom/client";
+
+import { PolygonTools } from "@/components/editor/PolygonTools";
+import type { MapHost } from "@/lib/map/host";
+import { tryInterceptClick } from "@/lib/map/mapState";
+import type { LatLng } from "@/types";
+
+// px <-> latlng mapping: lat = y/1000, lng = x/1000. jsdom rects are all-zero, so
+// clientX/clientY are container coordinates directly.
+const div = document.createElement("div");
+// The engine's own handlers live on elements it renders inside the container.
+const engineSurface = document.createElement("div");
+div.appendChild(engineSurface);
+document.body.appendChild(div);
+
+let draggableCalls: boolean[] = [];
+let overlayUpdates = 0;
+let mousemoveListener: ((ll: LatLng) => void) | null = null;
+const host = {
+	container: div,
+	getZoom: () => 18,
+	containerPxToLatLng: (x: number, y: number) => ({ lat: y / 1000, lng: x / 1000 }),
+	setDraggable: (v: boolean) => draggableCalls.push(v),
+	setCursor: () => {},
+	setDoubleClickZoom: () => {},
+	on: (event: string, fn: (ll: LatLng) => void) => {
+		if (event === "mousemove") mousemoveListener = fn;
+		return () => {
+			if (mousemoveListener === fn) mousemoveListener = null;
+		};
+	},
+} as unknown as MapHost;
+
+let root: Root | null = null;
+let toolsEl: HTMLElement;
+let freehandPathRef = createRef<number[][] | null>();
+
+function mount(): number[][][][] {
+	const drawn: number[][][][] = [];
+	toolsEl = document.createElement("div");
+	freehandPathRef = createRef<number[][] | null>();
+	root = createRoot(toolsEl);
+	act(() =>
+		root!.render(
+			createElement(PolygonTools, {
+				host,
+				onDraw: (rings: number[][][]) => drawn.push(rings),
+				freehandPathRef,
+				polygonVerticesRef: createRef<number[][] | null>(),
+				requestOverlayUpdate: () => overlayUpdates++,
+			}),
+		),
+	);
+	return drawn;
+}
+
+function arm(label: string) {
+	const button = toolsEl.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+	act(() => button.click());
+}
+
+const down = (x: number, y: number) =>
+	act(() => {
+		engineSurface.dispatchEvent(
+			new MouseEvent("mousedown", { button: 0, clientX: x, clientY: y, bubbles: true }),
+		);
+	});
+const move = (x: number, y: number) =>
+	act(() => {
+		window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y }));
+	});
+const up = (x: number, y: number) =>
+	act(() => {
+		window.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y }));
+	});
+
+afterEach(() => {
+	if (root) act(() => root!.unmount());
+	root = null;
+	draggableCalls = [];
+	overlayUpdates = 0;
+});
+
+describe("draw tools leave the map interactive", () => {
+	// The engine resolves `draggable: false` to gestureHandling "none", which takes wheel
+	// zoom and the keyboard with it. Only the stroke's own gesture may be claimed.
+	it("never disables the host's gestures while freehand is armed", () => {
+		mount();
+		arm("Freehand polygon selection");
+		down(10, 10);
+		move(200, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(draggableCalls).toEqual([]);
+	});
+
+	it("never disables the host's gestures while the rectangle tool is armed", () => {
+		mount();
+		arm("Draw a rectangle selection");
+		down(10, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(draggableCalls).toEqual([]);
+	});
+
+	it("keeps the engine from seeing the stroke's mousedown, so no pan starts", () => {
+		mount();
+		let seen = 0;
+		const engineHandler = () => seen++;
+		engineSurface.addEventListener("mousedown", engineHandler);
+		arm("Freehand polygon selection");
+		down(10, 10);
+		up(10, 10);
+		engineSurface.removeEventListener("mousedown", engineHandler);
+		expect(seen).toBe(0);
+	});
+
+	it("leaves mousedown alone when no tool is armed", () => {
+		mount();
+		let seen = 0;
+		const engineHandler = () => seen++;
+		engineSurface.addEventListener("mousedown", engineHandler);
+		down(10, 10);
+		engineSurface.removeEventListener("mousedown", engineHandler);
+		expect(seen).toBe(1);
+	});
+});
+
+describe("draw tools still produce their ring", () => {
+	it("freehand commits the stroke and disarms", () => {
+		const drawn = mount();
+		arm("Freehand polygon selection");
+		down(10, 10);
+		move(200, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(drawn).toHaveLength(1);
+		// Closed ring: first vertex repeated last.
+		const ring = drawn[0][0];
+		expect(ring[0]).toEqual(ring[ring.length - 1]);
+		// Disarmed: a second stroke draws nothing.
+		down(10, 10);
+		move(200, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(drawn).toHaveLength(1);
+	});
+
+	it("rectangle commits the dragged box and drops a degenerate one", () => {
+		const drawn = mount();
+		arm("Draw a rectangle selection");
+		down(10, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(drawn).toHaveLength(1);
+
+		arm("Draw a rectangle selection");
+		down(10, 10);
+		move(10, 200);
+		up(10, 200);
+		expect(drawn).toHaveLength(1);
+	});
+});
+
+describe("polygon preview", () => {
+	it("ends at the clicked vertex when the cursor event is stale", () => {
+		mount();
+		arm("Draw a polygon selection");
+		act(() => {
+			tryInterceptClick(0, 0);
+			mousemoveListener!({ lat: 1, lng: 1 });
+			tryInterceptClick(2, 2);
+		});
+		expect(freehandPathRef.current).toEqual([
+			[0, 0],
+			[2, 2],
+			[2, 2],
+		]);
+	});
+});
+
+describe("closing a polygon", () => {
+	const armed = () => toolsEl.querySelector("button.is-active") !== null;
+	// A press the engine clicked for: the browser's mousedown, then the engine's click.
+	const press = (lat: number, lng: number) => {
+		down(lng * 1000, lat * 1000);
+		act(() => {
+			tryInterceptClick(lat, lng);
+		});
+	};
+	const doubleClick = () =>
+		act(() => {
+			engineSurface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+		});
+
+	it("closes on a double-click whose second press follows the vertex its first placed", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		press(0, 0);
+		press(0, 1);
+		press(1, 1);
+		press(1, 0);
+		down(0, 1000);
+		doubleClick();
+		expect(drawn).toHaveLength(1);
+		expect(drawn[0][0]).toHaveLength(5);
+		expect(armed()).toBe(false);
+	});
+
+	it("stays open when the double-click pairs a press the engine took as a pan", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		press(0, 0);
+		press(0, 1);
+		press(1, 1);
+		down(500, 1000);
+		press(1, 0.5);
+		doubleClick();
+		expect(drawn).toHaveLength(0);
+		expect(armed()).toBe(true);
+		expect(freehandPathRef.current?.slice(0, -1)).toEqual([
+			[0, 0],
+			[1, 0],
+			[1, 1],
+			[0.5, 1],
+		]);
+		press(0, 0);
+		expect(drawn).toHaveLength(1);
+	});
+
+	it("keeps drawing through a double-click before there are three vertices", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		press(0, 0);
+		press(0, 1);
+		down(1000, 0);
+		doubleClick();
+		expect(drawn).toHaveLength(0);
+		expect(armed()).toBe(true);
+	});
+});
+
+describe("draw tool cleanup", () => {
+	it.each(["Freehand polygon selection", "Draw a rectangle selection"])(
+		"repaints after disarming %s",
+		(label) => {
+			mount();
+			arm(label);
+			down(10, 10);
+			move(20, 20);
+			expect(freehandPathRef.current).not.toBeNull();
+			const updatesBeforeDisarm = overlayUpdates;
+			arm(label);
+			expect(freehandPathRef.current).toBeNull();
+			expect(overlayUpdates).toBe(updatesBeforeDisarm + 1);
+		},
+	);
+});
+
+describe("a finished draw keeps the click that ends it", () => {
+	// The engine raises its own click at the end of a claimed stroke, after the tool has disarmed
+	// itself. It would otherwise pick a marker or drop a location on coverage.
+	it("consumes the click that follows a freehand stroke", () => {
+		mount();
+		arm("Freehand polygon selection");
+		down(10, 10);
+		move(200, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(tryInterceptClick(0.2, 0.2)).toBe(true);
+	});
+
+	it("consumes the click that follows a rectangle drag", () => {
+		mount();
+		arm("Draw a rectangle selection");
+		down(10, 10);
+		move(200, 200);
+		up(200, 200);
+		expect(tryInterceptClick(0.2, 0.2)).toBe(true);
+	});
+
+	it("consumes the click that follows closing a polygon, and draws nothing more", () => {
+		const drawn = mount();
+		arm("Draw a polygon selection");
+		act(() => {
+			tryInterceptClick(0, 0);
+			tryInterceptClick(0, 1);
+			tryInterceptClick(1, 1);
+			tryInterceptClick(0, 0);
+		});
+		expect(drawn).toHaveLength(1);
+		expect(tryInterceptClick(0, 0)).toBe(true);
+		expect(drawn).toHaveLength(1);
+	});
+
+	it("releases the claim once a real gesture starts", () => {
+		mount();
+		arm("Freehand polygon selection");
+		down(10, 10);
+		move(200, 10);
+		move(200, 200);
+		up(200, 200);
+		down(50, 50);
+		expect(tryInterceptClick(0.05, 0.05)).toBe(false);
+	});
+});

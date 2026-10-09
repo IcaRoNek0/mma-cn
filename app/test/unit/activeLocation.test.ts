@@ -3,12 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const h = vi.hoisted(() => ({
 	setActiveCalls: [] as (number | null)[],
 	nearby: [] as { id: number }[],
+	held: new Map<number, Promise<void>>(),
 }));
 
-vi.mock("@/lib/util/log", () => ({
-	log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, trace: () => {} },
-	fireAndForget: (p: Promise<unknown>) => void p.catch(() => {}),
-}));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 
 vi.mock("@/lib/commands", () => ({
 	cmd: {
@@ -16,7 +14,14 @@ vi.mock("@/lib/commands", () => ({
 			h.setActiveCalls.push(id);
 			return Promise.resolve(null);
 		},
-		storeGetLocation: (id: number) => Promise.resolve({ id, lat: 0, lng: 0, tags: [] }),
+		storeCollect: async (selector: { locations?: number[] }) => {
+			const ids = selector.locations ?? [];
+			await Promise.all(ids.map((id) => h.held.get(id)));
+			return {
+				kind: "inline",
+				locations: ids.map((id) => ({ id, lat: 0, lng: 0, tags: [] })),
+			};
+		},
 		storeFindNearby: () => Promise.resolve(h.nearby),
 	},
 }));
@@ -27,6 +32,7 @@ import { subscribe } from "@/lib/events";
 beforeEach(() => {
 	h.setActiveCalls = [];
 	h.nearby = [];
+	h.held.clear();
 });
 
 describe("active location keeps Rust's active_id in step", () => {
@@ -47,6 +53,19 @@ describe("active location keeps Rust's active_id in step", () => {
 
 		expect(getMapState().activeLocation).toBeNull();
 		expect(h.setActiveCalls).toEqual([null]);
+	});
+
+	it("a slow switch that lands after a newer one leaves the newer location active", async () => {
+		let release!: () => void;
+		h.held.set(7, new Promise((r) => (release = r)));
+		const slow = setActiveLocation(7);
+		await setActiveLocation(8);
+		release();
+		await slow;
+
+		expect(getMapState().activeLocationId).toBe(8);
+		expect(getMapState().activeLocation?.id).toBe(8);
+		setWorkArea("overview");
 	});
 
 	it("does not push a redundant null when nothing was active", () => {

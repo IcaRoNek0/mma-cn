@@ -1,0 +1,298 @@
+//! Global saved selection rules.
+//!
+//! A saved rule is one `Selector` tree plus the names its tag-membership leaves carried
+//! at save time. Tag ids are map-local, so JS resolves them through the names at apply time; the
+//! tree itself is stored verbatim. Rules are global rather than per-map -- no `map_id`.
+
+use crate::selections::Selector;
+use crate::store::storage;
+use crate::types::AppResult;
+use crate::util::now_iso;
+use rusqlite::Connection;
+use std::collections::HashMap;
+
+/// A rule's identity and label, with no tree attached. What the UI lists and holds; the
+/// body is a separate read because a single `Polygon` leaf can carry a country border's
+/// coordinates (~1.7MB of JSON at the heavy border detail).
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSelectionInfo {
+    pub id: String,
+    pub name: String,
+    pub color: [u8; 3],
+    pub created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSelection {
+    #[serde(flatten)]
+    pub info: SavedSelectionInfo,
+    pub selector: Selector,
+    /// Tag id -> the name it carried when saved. What makes a map-local `Tag` leaf portable.
+    pub tag_names: HashMap<u32, String>,
+}
+
+const COLS: &str = "id, name, selector, tag_names, color, created_at";
+
+/// Stand-in color for a rule imported without one.
+const NO_COLOR: [u8; 3] = [128, 128, 128];
+
+// --- Core (testable against any Connection) ---
+
+/// Every rule's identity, oldest first. Reads no tree, so its cost is the rule count.
+pub(crate) fn list_info(conn: &Connection) -> AppResult<Vec<SavedSelectionInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, created_at FROM saved_selections ORDER BY created_at, id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(SavedSelectionInfo {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            color: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or(NO_COLOR),
+            created_at: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Bodies for `ids`, oldest first. A row whose JSON no longer parses (a `Selector` variant
+/// this build dropped) is skipped rather than failing the whole read.
+pub(crate) fn get(conn: &Connection, ids: &[String]) -> AppResult<Vec<SavedSelection>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let holes = vec!["?"; ids.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM saved_selections WHERE id IN ({holes}) ORDER BY created_at, id"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, name, selector, tag_names, color, created_at) = row?;
+        match parse_row(&id, name, &selector, &tag_names, &color, created_at) {
+            Ok(s) => out.push(s),
+            Err(e) => log::warn!("[saved-selections] skipping unreadable rule {id}: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+fn parse_row(
+    id: &str,
+    name: String,
+    selector: &str,
+    tag_names: &str,
+    color: &str,
+    created_at: String,
+) -> Result<SavedSelection, serde_json::Error> {
+    Ok(SavedSelection {
+        info: SavedSelectionInfo {
+            id: id.to_string(),
+            name,
+            color: serde_json::from_str(color)?,
+            created_at,
+        },
+        selector: serde_json::from_value(modernize(serde_json::from_str(selector)?))?,
+        tag_names: serde_json::from_str(tag_names)?,
+    })
+}
+
+/// Rows written before 0.10.2 spell a filter flat (`op`, `value`, `value2`, `tzLocal`
+/// beside `field`); since then the predicate is one `test` object. Rows written before
+/// `Ranked` spell it `TopK`, which ranked a bare field and dropped rows lacking it -- the
+/// drop is now the child selection's job, so the rewrite wraps the field in a `has` filter.
+/// Older rows also name selector types that were only ever field filters wearing a costume
+/// (`Tag`, `Untagged`, `Unpanned`, `PanoIds`, `NotPanoIds`), and spell a flag field's value
+/// as 0 or 1 rather than a boolean. All are rewritten on read, so the row itself is never
+/// touched.
+pub(crate) fn modernize(mut selector: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let Some(obj) = selector.as_object_mut() else {
+        return selector;
+    };
+    if let Some(ty) = obj.get("type").and_then(Value::as_str) {
+        let folded = match ty {
+            "Tag" => obj
+                .get("tagId")
+                .and_then(Value::as_u64)
+                .map(|id| Selector::tag(id as u32)),
+            "Untagged" => Some(Selector::untagged()),
+            "Unpanned" => Some(Selector::unpanned()),
+            "PanoIds" => Some(Selector::pano_ids(true)),
+            "NotPanoIds" => Some(Selector::pano_ids(false)),
+            _ => None,
+        };
+        if let Some(f) = folded {
+            return serde_json::to_value(f).unwrap_or(Value::Null);
+        }
+    }
+    if obj.get("type").and_then(Value::as_str) == Some("Filter") {
+        if let Some(Value::String(op)) = obj.remove("op") {
+            let value = obj.remove("value").unwrap_or(Value::Null);
+            let value2 = obj.remove("value2").unwrap_or(Value::Null);
+            let tz_local = obj.remove("tzLocal").unwrap_or(Value::Bool(false));
+            let mut test = serde_json::Map::new();
+            test.insert("op".into(), Value::String(op.clone()));
+            match op.as_str() {
+                "has" | "nothas" => {}
+                "between" | "between_anyyear" | "between_anytime" => {
+                    test.insert("lo".into(), value);
+                    test.insert("hi".into(), value2);
+                    test.insert("tzLocal".into(), tz_local);
+                }
+                "gt" | "lt" | "gte" | "lte" => {
+                    test.insert("value".into(), value);
+                    test.insert("tzLocal".into(), tz_local);
+                }
+                _ => {
+                    test.insert("value".into(), value);
+                }
+            }
+            obj.insert("test".into(), Value::Object(test));
+        }
+        let on_flag = obj
+            .get("field")
+            .and_then(Value::as_str)
+            .is_some_and(|f| super::flag_field(f).is_some());
+        if on_flag {
+            if let Some(value) = obj
+                .get_mut("test")
+                .and_then(Value::as_object_mut)
+                .and_then(|t| t.get_mut("value"))
+            {
+                match value.as_f64() {
+                    Some(0.0) => *value = Value::Bool(false),
+                    Some(1.0) => *value = Value::Bool(true),
+                    _ => {}
+                }
+            }
+        }
+    }
+    if obj.get("type").and_then(Value::as_str) == Some("TopK") {
+        if let Some(Value::String(field)) = obj.remove("field") {
+            let k = obj.remove("k").unwrap_or(Value::Null);
+            obj.insert("type".into(), Value::String("Ranked".into()));
+            obj.insert("expr".into(), Value::String(field.clone()));
+            obj.insert("k".into(), k);
+            obj.insert(
+                "selection".into(),
+                serde_json::json!({
+                    "key": format!("filter:{field}:has:null"),
+                    "color": NO_COLOR,
+                    "selector": { "type": "Filter", "field": field, "test": { "op": "has" } },
+                }),
+            );
+        }
+    }
+    if let Some(child) = obj.get_mut("selection").and_then(Value::as_object_mut) {
+        if let Some(inner) = child.get_mut("selector") {
+            *inner = modernize(inner.take());
+        }
+    }
+    if let Some(Value::Array(children)) = obj.get_mut("selections") {
+        for child in children {
+            if let Some(inner) = child.get_mut("selector") {
+                *inner = modernize(inner.take());
+            }
+        }
+    }
+    selector
+}
+
+pub(crate) fn create(
+    conn: &Connection,
+    name: String,
+    selector: Selector,
+    tag_names: HashMap<u32, String>,
+    color: [u8; 3],
+) -> AppResult<SavedSelection> {
+    let saved = SavedSelection {
+        info: SavedSelectionInfo {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            color,
+            created_at: now_iso(),
+        },
+        selector,
+        tag_names,
+    };
+    insert(conn, &saved)?;
+    Ok(saved)
+}
+
+fn insert(conn: &Connection, s: &SavedSelection) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO saved_selections (id, name, selector, tag_names, color, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        rusqlite::params![
+            s.info.id,
+            s.info.name,
+            serde_json::to_string(&s.selector)?,
+            serde_json::to_string(&s.tag_names)?,
+            serde_json::to_string(&s.info.color)?,
+            s.info.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn delete(conn: &Connection, id: &str) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM saved_selections WHERE id = ?",
+        rusqlite::params![id],
+    )?;
+    Ok(())
+}
+
+// --- Command wrappers ---
+
+/// List every saved selection rule (name, color, date), without their selector trees.
+#[tauri::command]
+#[specta::specta]
+pub async fn store_list_saved_selections() -> AppResult<Vec<SavedSelectionInfo>> {
+    storage::with_db(|conn| list_info(conn)).await
+}
+
+/// Fetch the full saved selection rules for the given `ids`, including their selector trees.
+#[tauri::command]
+#[specta::specta]
+pub async fn store_get_saved_selections(ids: Vec<String>) -> AppResult<Vec<SavedSelection>> {
+    storage::with_db(move |conn| get(conn, &ids)).await
+}
+
+/// Save a new selection rule.
+#[tauri::command]
+#[specta::specta]
+pub async fn store_save_selection(
+    name: String,
+    selector: Selector,
+    tag_names: HashMap<u32, String>,
+    color: [u8; 3],
+) -> AppResult<SavedSelection> {
+    storage::with_db(move |conn| create(conn, name, selector, tag_names, color)).await
+}
+
+/// Delete a saved selection rule by `id`.
+#[tauri::command]
+#[specta::specta]
+pub async fn store_delete_saved_selection(id: String) -> AppResult<()> {
+    storage::with_db(move |conn| delete(conn, &id)).await
+}
+
+/// The pre-0.9.3 localStorage import, kept in its own file so it can be deleted whole.
+#[path = "saved_legacy.rs"]
+pub(crate) mod legacy;
+
+#[cfg(test)]
+#[path = "saved.test.rs"]
+mod tests;

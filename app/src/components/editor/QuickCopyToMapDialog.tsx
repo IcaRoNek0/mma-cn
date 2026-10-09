@@ -2,7 +2,8 @@ import { useState, useMemo, useRef } from "react";
 import { cmd } from "@/lib/commands";
 import { useAsync } from "@/lib/hooks/useAsync";
 import { log } from "@/lib/util/log";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
+import { search } from "@/lib/search";
+import { Dialog, DialogContent, type DialogProps } from "@/components/primitives/Dialog";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
 import { getMapState } from "@/store/useMapStore";
 import { isVirtualLocation } from "@/types";
@@ -10,12 +11,11 @@ import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
 
 export function QuickCopyToMapDialog({
+	open,
+	onOpenChange,
 	locationId,
-	onClose,
-}: {
-	locationId: number;
-	onClose: () => void;
-}) {
+}: DialogProps & { locationId: number }) {
+	const close = () => onOpenChange(false);
 	const [query, setQuery] = useState("");
 	const contentRef = useRef<HTMLDivElement>(null);
 	const { data: maps } = useAsync(
@@ -27,25 +27,28 @@ export function QuickCopyToMapDialog({
 		[],
 	);
 
-	const lower = query.trim().toLowerCase();
+	const q = query.trim();
 	const suggestions = useMemo(
 		() =>
-			lower
-				? (maps ?? [])
-						.filter((m) => m.id !== getMapState().mapId && m.name.toLowerCase().includes(lower))
-						.sort((a, b) => a.name.localeCompare(b.name))
+			q
+				? search(maps ?? [], q, (m) => [m.name])
+						.filter((m) => m.id !== getMapState().mapId)
 						.slice(0, 8)
 				: [],
-		[maps, lower],
+		[maps, q],
 	);
 
 	const doCopy = (targetMapId: string) => {
 		if (isVirtualLocation({ id: locationId })) {
-			onClose();
+			close();
 			return;
 		}
 		cmd
-			.storeCopyLocationsToMap(targetMapId, [locationId])
+			.storeCopyLocationsToMap(targetMapId, {
+				type: "Locations",
+				locations: [locationId],
+				name: null,
+			})
 			.then((res) => {
 				const container = contentRef.current;
 				if (container)
@@ -56,23 +59,18 @@ export function QuickCopyToMapDialog({
 						1500,
 						container,
 					);
-				setTimeout(onClose, 600);
+				setTimeout(close, 600);
 			})
 			.catch((e) => {
 				log.error("[quickCopy] failed:", e);
 				const container = contentRef.current;
 				if (container) toast(t("Copy failed"), 1500, container);
-				setTimeout(onClose, 600);
+				setTimeout(close, 600);
 			});
 	};
 
 	return (
-		<Dialog
-			open
-			onOpenChange={(open) => {
-				if (!open) onClose();
-			}}
-		>
+		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent title={t("Copy location to map")} className="copy-to-map-modal-host">
 				<div className="copy-to-map-modal" ref={contentRef}>
 					<SuggestInput
@@ -88,7 +86,9 @@ export function QuickCopyToMapDialog({
 						renderItem={(m) => (
 							<>
 								<strong>{m.name || t("(unnamed)")}</strong>
-								{m.folder && <span className="search-result__context"> &middot; {m.folder}</span>}
+								{m.folder && (
+									<span className="search-result__context truncate"> &middot; {m.folder}</span>
+								)}
 							</>
 						)}
 					/>

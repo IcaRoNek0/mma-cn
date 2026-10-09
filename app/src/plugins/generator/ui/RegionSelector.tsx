@@ -1,35 +1,105 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { useMapState, getActiveSelections } from "@/store/useMapStore";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
+import { Dialog, DialogActions, DialogContent, DialogForm } from "@/components/primitives/Dialog";
 import { Button } from "@/components/primitives/Button";
 import { TextInput } from "@/components/primitives/TextInput";
+import { Flag } from "@/components/primitives/Flag";
+import { Hint } from "@/components/primitives/Hint";
+import { Spinner } from "@/components/primitives/Spinner";
 import type { Selection } from "@/bindings.gen";
 import type { GeneratorRegionMeta } from "../engine/types";
+import { useFoundRate } from "./progressSignal";
+import { usePluginEvent } from "@/plugins/pluginEvents";
+import { GENERATOR_CHANGED } from "../session";
 import { t } from "@/lib/i18n";
+import { Kbd } from "@/components/primitives/Kbd";
+
+const regionProgressKey = (meta: Map<string, GeneratorRegionMeta>) =>
+	[...meta.values()].map((m) => `${m.found.length}:${m.isProcessing}`).join();
 
 function getPolygonName(sel: Selection): string {
-	if (sel.props.type !== "Polygon") return sel.key;
-	return sel.props.polygon.properties?.name || t("Unnamed polygon");
+	if (sel.selector.type !== "Polygon") return sel.key;
+	return sel.selector.polygon.properties?.name || t("Unnamed polygon");
 }
 
-function getPolygonCode(sel: Selection): string | undefined {
-	if (sel.props.type !== "Polygon") return undefined;
-	return sel.props.polygon.properties?.code;
+function getPolygonCode(sel: Selection): string | null {
+	if (sel.selector.type !== "Polygon") return null;
+	return sel.selector.polygon.properties?.code ?? null;
+}
+
+function rateLabel(rate: number | null): string | null {
+	if (rate == null) return null;
+	return t("{rate}/s", { rate: rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1) });
+}
+
+function RegionRow({
+	sel,
+	found,
+	target,
+	processing,
+	running,
+	objective,
+	onTargetChange,
+}: {
+	sel: Selection;
+	found: number;
+	target: number;
+	processing: boolean;
+	running: boolean;
+	objective: "count" | "spacing";
+	onTargetChange: (v: number) => void;
+}) {
+	const name = getPolygonName(sel);
+	const code = getPolygonCode(sel);
+	const rate = useFoundRate(
+		found,
+		running && (objective === "spacing" ? processing : found < target),
+	);
+	return (
+		<div className="generator-regions__item">
+			<div className="generator-regions__item-name">
+				<Flag code={code} className="generator-regions__flag" />
+				<span className="truncate">{name}</span>
+				{processing && <Spinner size="10px" />}
+			</div>
+			<div className="generator-regions__item-count">
+				{rate != null && <span className="generator-regions__rate mono">{rateLabel(rate)}</span>}
+				{found}
+				{objective === "count" && (
+					<>
+						{" /"}
+						<TextInput
+							type="number"
+							min={found || 1}
+							value={target}
+							onChange={(e) => onTargetChange(Number(e.target.value) || 1)}
+							style={{ width: "5rem", fontSize: "inherit" }}
+						/>
+					</>
+				)}
+			</div>
+		</div>
+	);
 }
 
 export function RegionSelector({
+	objective,
 	defaultTarget,
 	onDefaultTargetChange,
 	meta,
 	onMetaChange,
+	running,
 }: {
+	objective: "count" | "spacing";
 	defaultTarget: number;
 	onDefaultTargetChange: (v: number) => void;
 	meta: Map<string, GeneratorRegionMeta>;
 	onMetaChange: (meta: Map<string, GeneratorRegionMeta>) => void;
+	running: boolean;
 }) {
+	usePluginEvent(GENERATOR_CHANGED, () => regionProgressKey(meta));
 	const selections = useMapState(getActiveSelections);
-	const polygonSelections = selections.filter((s) => s.props.type === "Polygon");
+	const polygonSelections = selections.filter((s) => s.selector.type === "Polygon");
 	const [capDialogOpen, setCapDialogOpen] = useState(false);
 	const [capInput, setCapInput] = useState("");
 
@@ -65,6 +135,14 @@ export function RegionSelector({
 		onMetaChange(next);
 	};
 
+	let totalFound = 0;
+	let totalTarget = 0;
+	for (const sel of polygonSelections) {
+		const m = meta.get(sel.key);
+		totalFound += m?.found.length ?? 0;
+		totalTarget += m?.target ?? defaultTarget;
+	}
+
 	const confirmCap = () => {
 		const val = Math.abs(parseInt(capInput || ""));
 		if (!isNaN(val) && val > 0) {
@@ -88,38 +166,38 @@ export function RegionSelector({
 	return (
 		<div className="generator-regions">
 			{polygonSelections.length === 0 && (
-				<div className="generator-regions__hint">
-					{t("Draw a polygon on the map or hold")} <kbd>{t("Q")}</kbd>{" "}
+				<Hint>
+					{t("Draw a polygon on the map or hold")} <Kbd>{t("Q")}</Kbd>{" "}
 					{t("+ click to select a country outline.")}
+				</Hint>
+			)}
+			{objective === "count" && (
+				<div className="generator-regions__controls">
+					<label className="generator-regions__target-label">
+						{t("Locations per region:")}
+						<TextInput
+							type="number"
+							min={1}
+							value={defaultTarget}
+							onChange={(e) => onDefaultTargetChange(Number(e.target.value) || 10)}
+							style={{ width: "5.5rem" }}
+						/>
+					</label>
+					<Button
+						style={{ fontSize: "inherit" }}
+						disabled={polygonSelections.length === 0}
+						onClick={() => {
+							setCapInput("");
+							setCapDialogOpen(true);
+						}}
+					>
+						{t("Change all caps")}
+					</Button>
 				</div>
 			)}
-			<div className="generator-regions__controls">
-				<label className="generator-regions__target-label">
-					{t("Locations per region:")}
-					<input
-						type="number"
-						className="text-input"
-						min={1}
-						value={defaultTarget}
-						onChange={(e) => onDefaultTargetChange(Number(e.target.value) || 10)}
-						style={{ width: "5.5rem" }}
-					/>
-				</label>
-				<button
-					className="button"
-					style={{ fontSize: "inherit" }}
-					disabled={polygonSelections.length === 0}
-					onClick={() => {
-						setCapInput("");
-						setCapDialogOpen(true);
-					}}
-				>
-					{t("Change all caps")}
-				</button>
-			</div>
 			<Dialog open={capDialogOpen} onOpenChange={setCapDialogOpen}>
-				<DialogContent title={t("Change all caps")}>
-					<div className="generator-cap-dialog">
+				<DialogContent title={t("Change all caps")} size="sm">
+					<DialogForm onSubmit={confirmCap}>
 						<label className="generator-regions__target-label">
 							{t("Locations cap for all regions:")}
 							<TextInput
@@ -128,57 +206,61 @@ export function RegionSelector({
 								autoFocus
 								value={capInput}
 								onChange={(e) => setCapInput(e.target.value)}
-								onKeyDown={(e) => e.key === "Enter" && confirmCap()}
 								style={{ width: "6rem" }}
 							/>
 						</label>
-						<div className="generator-cap-dialog__actions">
-							<Button variant="primary" onClick={confirmCap}>
-								{t("Apply")}
-							</Button>
-							<Button onClick={() => setCapDialogOpen(false)}>{t("Cancel")}</Button>
-						</div>
-					</div>
+						<DialogActions cancel primary={{ label: t("Apply") }} />
+					</DialogForm>
 				</DialogContent>
 			</Dialog>
 			{polygonSelections.length > 0 && (
-				<div className="generator-regions__list">
-					{polygonSelections.map((sel) => {
-						const name = getPolygonName(sel);
-						const code = getPolygonCode(sel);
-						const m = meta.get(sel.key);
-						const found = m?.found.length ?? 0;
-						const target = m?.target ?? defaultTarget;
-						return (
-							<div key={sel.key} className="generator-regions__item">
-								<div className="generator-regions__item-name">
-									{code && (
-										<img
-											src={`/flags/${code.toUpperCase()}.svg`}
-											alt={code}
-											width={20}
-											height={15}
-											style={{ borderRadius: 2, flexShrink: 0 }}
-										/>
-									)}
-									<span>{name}</span>
-								</div>
-								<div className="generator-regions__item-count">
-									{found} /
-									<input
-										type="number"
-										className="text-input"
-										min={found || 1}
-										value={target}
-										onChange={(e) => setTarget(sel.key, Number(e.target.value) || 1)}
-										style={{ width: "5rem", fontSize: "inherit" }}
-									/>
-								</div>
-							</div>
-						);
-					})}
-				</div>
+				<>
+					<div className="generator-regions__list">
+						{polygonSelections.map((sel) => {
+							const m = meta.get(sel.key);
+							return (
+								<RegionRow
+									key={sel.key}
+									sel={sel}
+									found={m?.found.length ?? 0}
+									target={m?.target ?? defaultTarget}
+									processing={m?.isProcessing ?? false}
+									running={running}
+									objective={objective}
+									onTargetChange={(v) => setTarget(sel.key, v)}
+								/>
+							);
+						})}
+					</div>
+					<TotalRow
+						found={totalFound}
+						target={totalTarget}
+						running={running}
+						objective={objective}
+					/>
+				</>
 			)}
+		</div>
+	);
+}
+
+function TotalRow({
+	found,
+	target,
+	running,
+	objective,
+}: {
+	found: number;
+	target: number;
+	running: boolean;
+	objective: "count" | "spacing";
+}) {
+	const rate = useFoundRate(found, running && (objective === "spacing" || found < target));
+	return (
+		<div className="generator-regions__total">
+			{t("Total:")} {found}
+			{objective === "count" && ` / ${target}`}
+			{rate != null && <span className="generator-regions__rate mono">{rateLabel(rate)}</span>}
 		</div>
 	);
 }

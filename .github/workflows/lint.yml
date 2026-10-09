@@ -6,94 +6,31 @@ on:
   pull_request:
 
 jobs:
-  eslint:
+  node:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
-      - run: npx eslint src/
-        working-directory: app
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+          # check-legacy and check-floors read mma.d.ts out of release tags.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - uses: actions/cache@v5
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
-      - run: npx tsc --noEmit -p tsconfig.app.json
-        working-directory: app
+          path: app/node_modules/.vitest-cache
+          key: ${{ runner.os }}-node-gates-v1-${{ hashFiles('app/package-lock.json', 'plugins/**/package-lock.json', '.nvmrc', 'app/vitest.config.ts') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-node-gates-v1-${{ hashFiles('app/package-lock.json', 'plugins/**/package-lock.json', '.nvmrc', 'app/vitest.config.ts') }}-
+      - run: sh scripts/gates.sh --env node
+        env:
+          GATES_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
 
-  clippy:
-    runs-on: ubuntu-latest
+  rust:
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
-      - uses: awalsh128/cache-apt-pkgs-action@latest
+      - uses: ./.github/actions/setup
         with:
-          packages: libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-      - run: cargo clippy -- -D clippy::correctness
-        working-directory: app/src-tauri
-
-  rust-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-      - run: cargo test
-        working-directory: app/src-tauri
-
-  js-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
-      - run: npx vitest run
-        working-directory: app
-
-  generated:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
-      - run: npm run gen:image-dims
-        working-directory: app
-      - name: Fail if image dimensions are stale (run npm run gen:image-dims)
-        run: git diff --exit-code -- app/src/components/manual/manual-img-dims.gen.ts
+          rust: true
+      - run: sh scripts/gates.sh --env rust

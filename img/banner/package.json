@@ -1,0 +1,12 @@
+{
+  "name": "mma-social-preview",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-wasm": "^2.6.2",
+    "opentype.js": "^2.0.0"
+  }
+}

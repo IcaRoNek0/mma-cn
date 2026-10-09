@@ -1,9 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { useDebouncedCallback } from "@/lib/hooks/useDebouncedCallback";
-import { Dialog, DialogContent, type DialogProps } from "@/components/primitives/Dialog";
+import {
+	Dialog,
+	DialogActions,
+	DialogContent,
+	type DialogProps,
+} from "@/components/primitives/Dialog";
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { NSelect } from "@/components/primitives/NSelect";
 import { Button } from "@/components/primitives/Button";
-import { TextInput } from "@/components/primitives/TextInput";
+import { Flag } from "@/components/primitives/Flag";
 import {
 	getSeenEntries,
 	getSeenCount,
@@ -14,6 +20,7 @@ import {
 import { dayMonthFmt } from "@/lib/util/format";
 import { getLocale, t } from "@/lib/i18n";
 import type { SeenEntry, SeenFilter } from "@/bindings.gen";
+import { SearchInput } from "@/components/primitives/SearchInput";
 
 const PAGE_SIZE = 9;
 
@@ -45,19 +52,11 @@ function SeenEntryCard({
 				{src ? <img src={src} alt="" /> : <div className="seen-entry__no-thumb" />}
 			</div>
 			<div className="seen-entry__info">
-				<span className="seen-entry__location">
-					{entry.countryCode && (
-						<img
-							height={12}
-							width={16}
-							src={`/flags/${entry.countryCode.toUpperCase()}.svg`}
-							alt={entry.countryCode}
-							style={{ borderRadius: "2px", verticalAlign: "middle", marginRight: 4 }}
-						/>
-					)}
+				<span className="seen-entry__location truncate">
+					<Flag code={entry.countryCode} height={12} className="seen-entry__flag" />
 					{entry.address || `${entry.lat.toFixed(4)}, ${entry.lng.toFixed(4)}`}
 				</span>
-				<span className="seen-entry__time mono">{formatDateTime(entry.enteredAt)}</span>
+				<span className="seen-entry__time mono truncate">{formatDateTime(entry.enteredAt)}</span>
 			</div>
 		</button>
 	);
@@ -73,7 +72,6 @@ export function SeenDialog({
 	const [page, setPage] = useState(0);
 	const [loading, setLoading] = useState(false);
 	const [ready, setReady] = useState(false);
-	const [confirmingClear, setConfirmingClear] = useState(false);
 
 	const [countries, setCountries] = useState<string[]>([]);
 	const [maps, setMaps] = useState<{ id: string; name: string }[]>([]);
@@ -108,7 +106,7 @@ export function SeenDialog({
 			setFilterCountry("");
 			setFilterMap("");
 			setFilterSearch("");
-			Promise.all([
+			void Promise.all([
 				load(0),
 				getSeenCountries().then(setCountries),
 				getSeenMaps().then(setMaps),
@@ -118,11 +116,11 @@ export function SeenDialog({
 
 	useEffect(() => {
 		if (!ready) return;
-		load(0, buildFilter());
+		void load(0, buildFilter());
 	}, [filterCountry, filterMap]);
 
 	const debouncedSearch = useDebouncedCallback((value: string) => {
-		load(0, { ...buildFilter(), search: value || undefined });
+		void load(0, { ...buildFilter(), search: value || undefined });
 	}, 250);
 
 	const handleSearchInput = (value: string) => {
@@ -136,11 +134,6 @@ export function SeenDialog({
 	};
 
 	const handleClear = async () => {
-		if (!confirmingClear) {
-			setConfirmingClear(true);
-			return;
-		}
-		setConfirmingClear(false);
 		await clearSeen();
 		setEntries([]);
 		setTotal(0);
@@ -150,7 +143,7 @@ export function SeenDialog({
 
 	return (
 		<Dialog open={open && ready} onOpenChange={onOpenChange}>
-			<DialogContent title={t("Seen ({n})", { n: total })} className="seen-dialog">
+			<DialogContent title={t("Seen ({n})", { n: total })} className="seen-dialog" size="lg">
 				<div className="seen-dialog__filters">
 					<NSelect
 						className="seen-dialog__select"
@@ -176,9 +169,8 @@ export function SeenDialog({
 							</option>
 						))}
 					</NSelect>
-					<TextInput
+					<SearchInput
 						className="seen-dialog__search"
-						type="text"
 						placeholder={t("Search address...")}
 						value={filterSearch}
 						onChange={(e) => handleSearchInput(e.target.value)}
@@ -186,32 +178,30 @@ export function SeenDialog({
 				</div>
 				<div className="seen-dialog__grid">
 					{entries.length === 0 && !loading ? (
-						<div className="seen-dialog__empty">{t("No panos found.")}</div>
+						<EmptyState>{t("No panos found.")}</EmptyState>
 					) : (
 						entries.map((e) => <SeenEntryCard key={e.id} entry={e} onLoad={handleLoad} />)
 					)}
 				</div>
-				<div className="seen-dialog__footer">
+				<div className="seen-dialog__pagination">
 					<Button
-						variant="destructive"
-						onClick={handleClear}
-						onBlur={() => setConfirmingClear(false)}
+						disabled={page === 0 || loading}
+						onClick={() => void load(page - 1, buildFilter())}
 					>
-						{confirmingClear ? t("Are you sure?") : t("Clear")}
+						{t("Prev")}
 					</Button>
-					<div className="seen-dialog__pagination">
-						<Button disabled={page === 0 || loading} onClick={() => load(page - 1, buildFilter())}>
-							{t("Prev")}
-						</Button>
-						<span className="mono">{totalPages > 0 ? `${page + 1} / ${totalPages}` : "0 / 0"}</span>
-						<Button
-							disabled={page >= totalPages - 1 || loading}
-							onClick={() => load(page + 1, buildFilter())}
-						>
-							{t("Next")}
-						</Button>
-					</div>
+					<span className="mono">{totalPages > 0 ? `${page + 1} / ${totalPages}` : "0 / 0"}</span>
+					<Button
+						disabled={page >= totalPages - 1 || loading}
+						onClick={() => void load(page + 1, buildFilter())}
+					>
+						{t("Next")}
+					</Button>
 				</div>
+				<DialogActions
+					destructive={{ label: t("Clear"), confirm: true, onClick: () => void handleClear() }}
+					cancel={{ label: t("Close") }}
+				/>
 			</DialogContent>
 		</Dialog>
 	);

@@ -1,20 +1,9 @@
 import { init } from "./inat";
 import { INatSidebar } from "./INatSidebar";
 
-MMA.registerPlugin({
-	activate() {
-		let cancelled = false;
-		let teardown: (() => void) | null = null;
+const { registerPlugin } = MMA;
 
-		(async () => {
-			if (cancelled) return;
-			teardown = await init();
-		})();
-
-		return () => {
-			cancelled = true;
-			teardown?.();
-		};
-	},
+registerPlugin({
+	activate: init,
 	sidebar: INatSidebar,
 });

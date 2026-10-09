@@ -5,8 +5,9 @@
 // overlap darkening. This module is deck-free (so it stays unit-testable); the buffer
 // is rendered by coverageOverlay.ts into the plugin's own GoogleMapsOverlay.
 
-import { foldLng, lngSpan, M_PER_DEG } from "@/lib/geo/geo";
+import { wrapDeg, lngSpan, unionBounds, M_PER_DEG } from "@/lib/geo/geo";
 import type { Bounds } from "@/types";
+import type { RGB } from "@/lib/util/color";
 
 /** deck.gl BitmapLayer bounds, `[left, bottom, right, top]`. Unwrapped, so `right` runs
  *  past 180 for a region crossing the antimeridian rather than doubling back west. */
@@ -15,7 +16,7 @@ export type BitmapBounds = [number, number, number, number];
 const TARGET_DISC_PX = 6; // texels per probe radius at full resolution
 const MIN_DISC_PX = 2.5; // floor so coarse (large-region) textures still draw round dots, not plus-signs
 const MAX_DIM = 2048; // cap texture size (memory + upload bandwidth)
-const COLOR: readonly [number, number, number] = [56, 189, 248];
+const COLOR: Readonly<RGB> = [56, 189, 248];
 const FLUSH_MS = 200; // coalesce probe bursts; each flush costs a full-texture GPU upload
 
 let enabled = false;
@@ -63,7 +64,7 @@ export function stampDisc(
 	cx: number,
 	cy: number,
 	r: number,
-	color: readonly [number, number, number] = COLOR,
+	color: Readonly<RGB> = COLOR,
 ): void {
 	// 1px anti-aliased edge so small discs read as round dots, not blocky plus-signs.
 	const x0 = Math.max(0, Math.floor(cx - r - 1));
@@ -103,7 +104,7 @@ export function lngLatToPixel(
 	lng: number,
 	lat: number,
 ): [number, number] {
-	const px = (foldLng(lng - b.west, 0) / lngSpan(b)) * w;
+	const px = (wrapDeg(lng - b.west, 0) / lngSpan(b)) * w;
 	const py = ((b.north - lat) / (b.north - b.south)) * h;
 	return [px, py];
 }
@@ -145,6 +146,56 @@ export function beginSession(b: Bounds, radiusMeters: number): void {
 	images = null; // dimensions changed
 	version++;
 	notify();
+}
+
+/** Widen the session to take in `b` as well, carrying over what is already drawn.
+ *
+ *  Regions can be added while a run is in flight. Without this the texture keeps the bounds
+ *  of whatever was selected at the start and every probe outside them is clipped away. */
+export function growSession(b: Bounds, radiusMeters: number): void {
+	if (!bounds) {
+		beginSession(b, radiusMeters);
+		return;
+	}
+	const merged = unionBounds(bounds, b);
+	if (
+		merged.west === bounds.west &&
+		merged.east === bounds.east &&
+		merged.south === bounds.south &&
+		merged.north === bounds.north
+	) {
+		return;
+	}
+
+	const prev = { bounds, buffer, texW, texH };
+	beginSession(merged, radiusMeters);
+	if (!prev.buffer || !bounds) return;
+
+	// Resample the old texture through lng/lat rather than pixels: the new session may have
+	// landed on a different metres-per-texel after the MAX_DIM clamp.
+	const next = new Uint8ClampedArray(texW * texH * 4);
+	const latSpan = bounds.north - bounds.south;
+	const span = lngSpan(bounds);
+	for (let y = 0; y < texH; y++) {
+		const lat = bounds.north - ((y + 0.5) / texH) * latSpan;
+		for (let x = 0; x < texW; x++) {
+			const lng = bounds.west + ((x + 0.5) / texW) * span;
+			const [sx, sy] = lngLatToPixel(prev.bounds, prev.texW, prev.texH, lng, lat);
+			const ix = Math.floor(sx);
+			const iy = Math.floor(sy);
+			if (ix < 0 || iy < 0 || ix >= prev.texW || iy >= prev.texH) continue;
+			const src = (iy * prev.texW + ix) * 4;
+			if (prev.buffer[src + 3] === 0) continue;
+			const dst = (y * texW + x) * 4;
+			next[dst] = prev.buffer[src];
+			next[dst + 1] = prev.buffer[src + 1];
+			next[dst + 2] = prev.buffer[src + 2];
+			next[dst + 3] = prev.buffer[src + 3];
+		}
+	}
+	buffer = next;
+	dirty = true;
+	scheduleFlush();
 }
 
 export function addProbe(lng: number, lat: number): void {
@@ -203,6 +254,7 @@ export function getVersion(): number {
 
 export const searchCoverage = {
 	beginSession,
+	growSession,
 	addProbe,
 	endSession,
 	setEnabled,

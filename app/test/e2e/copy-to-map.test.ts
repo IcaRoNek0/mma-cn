@@ -33,7 +33,12 @@ import {
 } from "./helpers";
 
 const copy = (targetMapId: string, ids: number[]) =>
-	withApi((api, t, i) => api.cmd.storeCopyLocationsToMap(t, i), targetMapId, ids);
+	withApi(
+		(api, t, i) =>
+			api.cmd.storeCopyLocationsToMap(t, { type: "Locations", locations: i, name: null }),
+		targetMapId,
+		ids,
+	);
 
 // Seed + persist a map, then close it (store evicted) so copies hit the closed-target branch.
 async function makeClosedMap(name: string, locs: any[] = []): Promise<string> {
@@ -105,7 +110,8 @@ describe("Copy to a closed map", () => {
 
 		await openMap(tgt);
 		const locs = await getAllLocs();
-		const tags = Object.values(await withApi((api) => api.getMapState().tags));
+		const tags = Object.values(await withApi((api) => api.getTags()));
+		const tagCounts = await withApi((api) => api.getTagCounts());
 
 		// "Shared" reconciled to the target's existing tag (no duplicate created).
 		expect(tags.filter((t) => t.name === "Shared").length).toBe(1);
@@ -118,8 +124,8 @@ describe("Copy to a closed map", () => {
 		expect(locs.filter((l) => l.tags.includes(sharedId)).length).toBe(3);
 		expect(locs.filter((l) => l.tags.includes(uniqueId)).length).toBe(1);
 		// Counts must reflect membership (the exact thing the cross-window fix guards).
-		expect(tags.find((t) => t.name === "Shared")!.count).toBe(3);
-		expect(tags.find((t) => t.name === "Unique")!.count).toBe(1);
+		expect(tagCounts[sharedId]).toBe(3);
+		expect(tagCounts[uniqueId]).toBe(1);
 
 		await closeMap();
 		await deleteMap(src);
@@ -139,7 +145,7 @@ describe("Copy to a closed map", () => {
 		const locs = await getAllLocs();
 		expect(locs[0].extra?.altitude).toBe(120);
 		expect(locs[0].extra?.country).toBe("US");
-		const fields = await withApi((api) => api.getMapState().map!.meta.extra?.fields ?? {});
+		const fields = await withApi((api) => api.getMapState().map!.extra?.fields ?? {});
 		expect(Object.keys(fields).sort()).toEqual(["altitude", "country"]);
 
 		await closeMap();
@@ -196,7 +202,11 @@ describe("Copy to a closed map", () => {
 		const err = await withApi(async (api, i) => {
 			const selfId = api.getMapState().mapId!;
 			try {
-				await api.cmd.storeCopyLocationsToMap(selfId, i);
+				await api.cmd.storeCopyLocationsToMap(selfId, {
+					type: "Locations",
+					locations: i,
+					name: null,
+				});
 				return null;
 			} catch (e) {
 				return (e && (e as Error).message) || String(e);

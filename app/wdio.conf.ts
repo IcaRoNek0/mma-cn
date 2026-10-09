@@ -1,26 +1,31 @@
 import path from "path";
 import fs from "fs";
 import { installSvMock } from "./test/e2e/svMock";
+import { svMockCore } from "./test/e2e/svMockCore";
+import { startSvStub, svMockConfig, type SvStub } from "./test/e2e/svStubServer";
+import { startGgStub, type GgStub } from "./test/e2e/ggStubServer";
 
 process.env.MMA_TEST_DB = "1";
 process.env.TSX_TSCONFIG_PATH = path.resolve("tsconfig.app.json");
 
+// wdio.conf is imported once per process -- the launcher plus one worker per spec --
+// so only the launcher may open the log.
 const isWorker = !!process.env.WDIO_WORKER_ID;
 let logStream: fs.WriteStream | undefined;
+let logPath: string | undefined;
+let svStub: SvStub | undefined;
+let ggStub: GgStub | undefined;
 
-if (!isWorker) {
+// Two ways in, one record either way. Under scripts/e2e.sh the shell tees the container's
+// whole output -- wdio plus tauri-driver and the sv-stub -- to a file it names, and hands
+// the path in as MMA_E2E_LOG_PATH, so this stands down. A bare `npm run test:e2e` has no
+// shell above it, so wdio records itself.
+if (!isWorker && !process.env.MMA_E2E_LOG_PATH) {
 	const logDir = path.resolve("./test/logs");
 	fs.mkdirSync(logDir, { recursive: true });
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-	// Random suffix keeps parallel shards (separate containers, shared logs mount)
-	// from clobbering one another's log file.
-	const suffix = Math.random().toString(36).slice(2, 7);
-	const logPath = path.join(
-		logDir,
-		`e2e-${process.env.MMA_E2E_LOG_TAG ?? "native"}-${timestamp}-${suffix}.txt`,
-	);
+	logPath = path.join(logDir, `e2e-native-${timestamp}.txt`);
 	logStream = fs.createWriteStream(logPath, { encoding: "utf-8" });
-	process.env.MMA_E2E_LOG_PATH = logPath;
 
 	const origWrite = process.stdout.write.bind(process.stdout);
 	process.stdout.write = (chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -30,15 +35,25 @@ if (!isWorker) {
 	};
 }
 
-/** Excluded from both suites: scratch and perf specs, run explicitly via --spec. */
+/** The one bound on a test, and on any single in-page script within it. Runtime
+ *  `this.timeout()` is not honored under wdio's mocha runner, so the benchmark suite
+ *  (MMA_BENCH_REVISION set by e2e.sh --bench) gets its whole per-scale budget here. */
+export const TEST_TIMEOUT =
+	process.env.MMA_BENCH_REVISION || process.env.MMA_SCALE_ROWS ? 7_200_000 : 300_000;
+
+/** Excluded from both suites: scratch and the benchmark suite, run explicitly
+ *  (`scripts/e2e.sh --bench`, or `--spec`). */
 export const SHARED_EXCLUDES = [
 	"./test/e2e/scratch.test.ts",
-	"./test/e2e/benchmarks.test.ts",
-	"./test/e2e/speed-matrix.test.ts",
-	"./test/e2e/bulk-import-rust.test.ts",
-	"./test/e2e/perf-import.test.ts",
-	"./test/e2e/perf-sel.test.ts",
-	"./test/e2e/perf-render.test.ts",
+	"./test/e2e/performance.test.ts",
+	// Engine A/B suites: driven explicitly against two images, never part of a suite run.
+	"./test/e2e/procedure-parity.test.ts",
+	"./test/e2e/procedure-faults.test.ts",
+	"./test/e2e/procedure-scale.test.ts",
+	"./test/e2e/sv-stub-ceiling.test.ts",
+	// Throughput tools: run explicitly against a host-path fixture, never in a suite.
+	"./test/e2e/benchFixture.test.ts",
+	"./test/e2e/providerBench.test.ts",
 ];
 
 export const config: WebdriverIO.Config = {
@@ -65,32 +80,56 @@ export const config: WebdriverIO.Config = {
 	port: 4444,
 	path: "/",
 	logLevel: "warn",
-	waitforTimeout: 10000,
-	connectionRetryTimeout: 20000,
+	// A hang bound, never an expected duration: waits end on their condition.
+	waitforTimeout: 120_000,
+	// A single in-page block can legitimately run for minutes (the benchmark suite imports
+	// hundreds of thousands of rows inside one `execute/async`). Mocha's per-test timeout is
+	// the real bound on a wedged app; this only has to be larger than the slowest command.
+	connectionRetryTimeout: 900000,
 	connectionRetryCount: 2,
 	framework: "mocha",
 	reporters: ["spec"],
 	mochaOpts: {
 		ui: "bdd",
-		timeout: 300000,
+		timeout: TEST_TIMEOUT,
+	},
+	before: async () => {
+		await browser.setTimeout({ script: TEST_TIMEOUT });
 	},
 	// Monkey-patch Street View (window.fetch + google.maps) from the test side when
 	// --mock is on, so the network-bound specs run deterministically with no network.
 	// Per-suite + idempotent so it survives any per-spec session reset.
 	beforeSuite: async () => {
 		if (process.env.MMA_TEST_MOCK_SV) {
-			try {
-				await browser.execute(installSvMock);
-			} catch (e) {
-				console.log("[sv-mock] install failed:", (e as Error).message);
-			}
+			// One WebDriver script, not a page-side eval: the app ships a CSP without
+			// 'unsafe-eval', so `new Function` inside the page would be blocked. esbuild's
+			// keepNames wraps nested functions in a `__name` helper that only exists at the
+			// top of the emitted module, so the serialized sources need their own.
+			// A failed install must abort: --mock is a claim that no result came off the
+			// network, and carrying on unmocked answers every spec from the real one.
+			await browser.execute(
+				`var __name = (f) => f;
+				 window.__mmaSvCore = (${svMockCore.toString()})(${JSON.stringify(svMockConfig())});
+				 return (${installSvMock.toString()})();`,
+			);
 		}
 	},
-	onComplete: () => {
+	// The Rust procedure engine fetches outside the webview, so it gets an HTTP stub instead
+	// of the monkey-patch. The app was launched with MMA_E2E_SV_ORIGIN pointing here
+	// (scripts/internal/e2e-*.sh); this only has to be listening before the first session.
+	// The GeoGuessr stub is unconditional: the app is launched pointed at it in every e2e
+	// run, so no run can reach geoguessr.com for real.
+	onPrepare: async () => {
+		ggStub = await startGgStub();
+		if (!process.env.MMA_TEST_MOCK_SV) return;
+		svStub = await startSvStub();
+	},
+	onComplete: async () => {
+		await svStub?.close();
+		await ggStub?.close();
 		if (logStream) {
-			const p = process.env.MMA_E2E_LOG_PATH;
 			logStream.end();
-			console.log(`\nLog: ${p}`);
+			console.log(`\nLog: ${logPath}`);
 		}
 	},
 };

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createElement, act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createElement } from "react";
+import { mount as mountRoot } from "./fixtures/harness";
 
 vi.mock("@/lib/events", () => ({
 	emit: () => {},
 	useEventValue: (_: string, get: () => unknown) => get(),
 	subscribeMany: () => () => {},
+	bridgeAcrossWindows: () => {},
 	LOCATION_DATA_EVENTS: [],
 }));
 vi.mock("@/store/useMapStore", () => ({
@@ -22,8 +23,6 @@ import {
 } from "@/lib/sv/measure";
 import { addClickInterceptor, tryInterceptClick } from "@/lib/map/mapState";
 import type { MapHost } from "@/lib/map/host";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("click interceptor priority", () => {
 	it("calls the most recently registered interceptor first", () => {
@@ -62,11 +61,9 @@ function Probe() {
 	return null;
 }
 
-let root: Root | null = null;
 function mountMeasuring(at: { lat: number; lng: number }) {
 	startMeasure(at);
-	root = createRoot(document.createElement("div"));
-	act(() => root!.render(createElement(Probe)));
+	mountRoot(createElement(Probe), { attach: false });
 }
 
 const down = (x: number, y: number) =>
@@ -76,8 +73,6 @@ const move = (x: number, y: number) =>
 const up = () => window.dispatchEvent(new MouseEvent("pointerup"));
 
 afterEach(() => {
-	if (root) act(() => root!.unmount());
-	root = null;
 	endMeasure();
 });
 
@@ -114,7 +109,9 @@ describe("measure drag then click", () => {
 
 describe("measure Escape layering", () => {
 	const escape = () =>
-		div.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		div.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+		);
 
 	it("leaves the measurement alone when a capture-phase handler consumed Escape", () => {
 		mountMeasuring({ lat: 0.01, lng: 0.01 });

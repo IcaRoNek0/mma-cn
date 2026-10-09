@@ -1,23 +1,35 @@
 import { useState, useMemo } from "react";
 import { cmd } from "@/lib/commands";
 import { useAsync } from "@/lib/hooks/useAsync";
+import { search } from "@/lib/search";
 import { log } from "@/lib/util/log";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
+import { mdiEarth } from "@mdi/js";
+import { Dialog, DialogContent, type DialogProps } from "@/components/primitives/Dialog";
+import { Hint } from "@/components/primitives/Hint";
 import { HotkeyInput } from "@/components/primitives/HotkeyInput";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
 import { Button } from "@/components/primitives/Button";
 import { useMapSetting } from "@/store/useMapSetting";
-import { getMapCopyBindingKey, withMapCopyBinding } from "@/lib/map/mapKeyBindings";
+import { useLocalStorage } from "@/lib/hooks/useLocalStorage";
+import {
+	GLOBAL_COPY_BINDINGS,
+	getMapCopyBindingKey,
+	withMapCopyBinding,
+} from "@/lib/map/mapKeyBindings";
 import { getMapState } from "@/store/useMapStore";
 import { t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
 
-/** Assign per-map hotkeys that copy the active location into other maps.
- *  Shows only configured maps; new targets are added via autocomplete (type a
- *  map name), then keyed. Bindings persist to this map's settings as changed. */
-export function CopyToMapDialog({ onClose }: { onClose: () => void }) {
+/** Assign hotkeys that copy the active location into other maps. Each binding is
+ *  either per-map (this map's settings) or global (works in every map); the globe
+ *  toggle on a row moves it between the two stores. New targets are added via
+ *  autocomplete (type a map name), then keyed. */
+export function CopyToMapDialog({ open, onOpenChange }: DialogProps) {
 	const [bindings, setBindings] = useMapSetting("keyBindings");
+	const [globalBindings, setGlobalBindings] = useLocalStorage(GLOBAL_COPY_BINDINGS);
 	// Added via autocomplete but not yet keyed; persisted only once a key is recorded.
 	const [pendingIds, setPendingIds] = useState<string[]>([]);
+	const [pendingGlobal, setPendingGlobal] = useState<string[]>([]);
 	const [query, setQuery] = useState("");
 	const { data: maps } = useAsync(
 		() =>
@@ -30,25 +42,25 @@ export function CopyToMapDialog({ onClose }: { onClose: () => void }) {
 
 	const byId = useMemo(() => new Map((maps ?? []).map((m) => [m.id, m])), [maps]);
 
+	const copyIds = (list: typeof globalBindings) =>
+		list.flatMap((b) => (b.action.type === "copyToMap" ? [b.action.mapId] : []));
+
 	const boundIds = useMemo(() => {
-		const ids = (bindings ?? []).flatMap((b) =>
-			b.action.type === "copyToMap" ? [b.action.mapId] : [],
-		);
+		const ids = [...new Set([...copyIds(bindings ?? []), ...copyIds(globalBindings)])];
 		return ids.sort((a, b) => (byId.get(a)?.name ?? "").localeCompare(byId.get(b)?.name ?? ""));
-	}, [bindings, byId]);
+	}, [bindings, globalBindings, byId]);
 
 	const rowIds = [...boundIds, ...pendingIds.filter((id) => !boundIds.includes(id))];
 
-	const lower = query.trim().toLowerCase();
-	const suggestions = lower
-		? (maps ?? [])
-				.filter(
-					(m) =>
-						m.id !== getMapState().mapId &&
-						!rowIds.includes(m.id) &&
-						m.name.toLowerCase().includes(lower),
-				)
-				.sort((a, b) => a.name.localeCompare(b.name))
+	const isGlobal = (id: string) =>
+		getMapCopyBindingKey(globalBindings, id) !== undefined || pendingGlobal.includes(id);
+	const keyFor = (id: string) =>
+		getMapCopyBindingKey(globalBindings, id) ?? getMapCopyBindingKey(bindings ?? [], id) ?? "";
+
+	const q = query.trim();
+	const suggestions = q
+		? search(maps ?? [], q, (m) => [m.name])
+				.filter((m) => m.id !== getMapState().mapId && !rowIds.includes(m.id))
 				.slice(0, 8)
 		: [];
 
@@ -59,11 +71,17 @@ export function CopyToMapDialog({ onClose }: { onClose: () => void }) {
 
 	const removeRow = (id: string) => {
 		setBindings(withMapCopyBinding(bindings ?? [], id, ""));
+		setGlobalBindings(withMapCopyBinding(globalBindings, id, ""));
 		setPendingIds((prev) => prev.filter((p) => p !== id));
+		setPendingGlobal((prev) => prev.filter((p) => p !== id));
 	};
 
 	const setRowKey = (id: string, combo: string) => {
-		setBindings(withMapCopyBinding(bindings ?? [], id, combo));
+		if (isGlobal(id)) {
+			setGlobalBindings(withMapCopyBinding(globalBindings, id, combo));
+		} else {
+			setBindings(withMapCopyBinding(bindings ?? [], id, combo));
+		}
 		if (combo) {
 			setPendingIds((prev) => prev.filter((p) => p !== id));
 		} else if (!pendingIds.includes(id)) {
@@ -72,32 +90,54 @@ export function CopyToMapDialog({ onClose }: { onClose: () => void }) {
 		}
 	};
 
+	/** Move a row's binding between this map's settings and the global set. */
+	const toggleScope = (id: string) => {
+		const key = keyFor(id);
+		if (isGlobal(id)) {
+			setGlobalBindings(withMapCopyBinding(globalBindings, id, ""));
+			if (key) setBindings(withMapCopyBinding(bindings ?? [], id, key));
+			setPendingGlobal((prev) => prev.filter((p) => p !== id));
+		} else {
+			setBindings(withMapCopyBinding(bindings ?? [], id, ""));
+			if (key) setGlobalBindings(withMapCopyBinding(globalBindings, id, key));
+			else setPendingGlobal((prev) => [...prev, id]);
+		}
+	};
+
 	return (
-		<Dialog
-			open
-			onOpenChange={(open) => {
-				if (!open) onClose();
-			}}
-		>
+		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent title={t("Copy location to map (hotkeys)")} className="copy-to-map-modal-host">
 				<div className="copy-to-map-modal">
-					<p className="copy-to-map-modal__hint">
+					<Hint>
 						{t(
 							"Pressing an assigned key while a location is open copies that location into the map\n\t\t\t\t\t\t(duplicates are skipped).",
 						)}
-					</p>
+					</Hint>
 					{rowIds.length > 0 && (
 						<ul className="copy-to-map-modal__list">
 							{rowIds.map((id) => {
 								const meta = byId.get(id);
-								const key = getMapCopyBindingKey(bindings ?? [], id) ?? "";
+								const global = isGlobal(id);
 								return (
 									<li key={id} className="copy-to-map-modal__row">
-										<span className="copy-to-map-modal__name">
+										<span className="copy-to-map-modal__name truncate">
 											{meta ? meta.name || t("(unnamed)") : t("(missing map)")}
 											{meta?.folder && <small> · {meta.folder}</small>}
 										</span>
-										<HotkeyInput value={key} onChange={(combo) => setRowKey(id, combo)} />
+										<IconButton
+											className="copy-to-map-modal__scope"
+											icon={mdiEarth}
+											size={16}
+											label={t("Global hotkey")}
+											tooltip={
+												global
+													? t("Works in every map (click for this map only)")
+													: t("Only in this map (click to make it work everywhere)")
+											}
+											active={global}
+											onClick={() => toggleScope(id)}
+										/>
+										<HotkeyInput value={keyFor(id)} onChange={(combo) => setRowKey(id, combo)} />
 										<Button onClick={() => removeRow(id)}>{t("Remove")}</Button>
 									</li>
 								);
@@ -117,7 +157,7 @@ export function CopyToMapDialog({ onClose }: { onClose: () => void }) {
 						renderItem={(m) => (
 							<>
 								<strong>{m.name || t("(unnamed)")}</strong>
-								{m.folder && <span className="search-result__context"> · {m.folder}</span>}
+								{m.folder && <span className="search-result__context truncate"> · {m.folder}</span>}
 							</>
 						)}
 					/>

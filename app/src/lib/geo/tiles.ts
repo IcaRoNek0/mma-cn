@@ -2,7 +2,9 @@
 // Protobuf tile URL builder
 // Constructs Google Maps Vector Tile URLs with protobuf-encoded parameters.
 
+import { PanoType } from "@/bindings.consts";
 import { resolveSvColorHex, hexToHsl, hslToHex } from "@/lib/util/color";
+import { TILE_SIZE } from "@/lib/geo/mercator";
 
 // --- Protobuf encoding primitives ---
 
@@ -33,7 +35,6 @@ function pbSerialize(serializer: (arr: any[], out: string[]) => void, arr: any[]
 
 // --- Enums ---
 
-export const CoverageType = { OFFICIAL: 2, UNKNOWN: 3, USER_UPLOADED: 10 } as const;
 export const ImageFormat = { Y: 1, Z: 2 } as const;
 export const LayerType = {
 	ROADMAP: 0,
@@ -386,14 +387,46 @@ export function buildMapStyles(basemap: string, styles: MapStyle[] = []): Styler
 	if (name)
 		result.push(new Styler({ type: StyleType.BASEMAP, params: [{ key: "set", value: name }] }));
 	result.push(new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }));
-	if (styles.length > 0) {
-		const encoded = serializeStyles(styles);
-		if (encoded)
-			result.push(
-				new Styler({ type: StyleType.STYLERS, params: [{ key: "styles", value: encoded }] }),
-			);
-	}
+	result.push(...customStylers(styles));
 	return result;
+}
+
+/** The styler carrying `styles`, or none when they encode to nothing. */
+function customStylers(styles: MapStyle[]): Styler[] {
+	const encoded = serializeStyles(styles);
+	return encoded
+		? [new Styler({ type: StyleType.STYLERS, params: [{ key: "styles", value: encoded }] })]
+		: [];
+}
+
+const ROADMAP_LAYER = { type: LayerType.ROADMAP, layerName: "m", layerOptions: [] };
+
+const terrainStylers = () => [
+	new Styler({ type: StyleType.BASEMAP, params: [{ key: "set", value: "Terrain" }] }),
+	new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
+	new Styler({ type: StyleType.TERRAIN, params: [] }),
+	new Styler({ type: StyleType.TERRAIN_ROADS, params: [] }),
+];
+
+/** A tile request for `layers` drawn with `styles`, in English at the display's pixel ratio. */
+function tileConfig(
+	layers: object[],
+	styles: Styler[],
+	extra: {
+		options?: { outputFormat?: number; unknownStyleFlag?: number };
+		renderOptions?: { rasterType?: number };
+		tileHash?: number;
+		footerStyleTypes?: number[];
+	} = {},
+): TileConfig {
+	const { options, renderOptions, ...rest } = extra;
+	return new TileConfig({
+		query: { tile: {} },
+		layers,
+		options: { language: "en", region: "US", ...options, styles },
+		renderOptions: { ...renderOptions, scale: devicePixelRatio },
+		...rest,
+	});
 }
 
 export function buildSvCoverageConfig(opts: {
@@ -406,7 +439,7 @@ export function buildSvCoverageConfig(opts: {
 	if (opts.showOfficial ?? true) {
 		strategies.push(
 			new RenderStrategy({
-				frontend: CoverageType.OFFICIAL,
+				frontend: PanoType.Official,
 				tiled: true,
 				imageFormat: ImageFormat.Z,
 			}),
@@ -415,14 +448,14 @@ export function buildSvCoverageConfig(opts: {
 	if (opts.showUnofficial ?? true) {
 		strategies.push(
 			new RenderStrategy({
-				frontend: CoverageType.UNKNOWN,
+				frontend: PanoType.Unknown,
 				tiled: true,
 				imageFormat: ImageFormat.Z,
 			}),
 		);
 		strategies.push(
 			new RenderStrategy({
-				frontend: CoverageType.USER_UPLOADED,
+				frontend: PanoType.UserUploaded,
 				tiled: true,
 				imageFormat: ImageFormat.Z,
 			}),
@@ -446,7 +479,7 @@ function applyTileCoords(cfg: TileConfig, x: number, y: number, zoom: number) {
 	tile.x = ((x % n) + n) % n;
 	tile.y = y;
 	tile.zoom = zoom;
-	tile.size = 256;
+	tile.size = TILE_SIZE;
 }
 
 export function buildTileUrl(cfg: TileConfig, x: number, y: number, zoom: number): string {
@@ -472,47 +505,34 @@ export function buildStyledTileUrl(
 }
 
 export function createRoadmapTileConfig(styles: MapStyle[] = []): TileConfig {
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [{ type: LayerType.ROADMAP, layerName: "m", layerOptions: [] }],
-		options: {
-			language: "en",
-			region: "US",
-			unknownStyleFlag: LegacyFlag.CURRENT,
-			styles: buildMapStyles("roadmap", [
-				{ elementType: "labels", stylers: [{ visibility: "off" }] },
-				{
-					elementType: "geometry.stroke",
-					featureType: "administrative",
-					stylers: [{ visibility: "off" }],
-				},
-				...styles,
-			]),
-		},
-		renderOptions: { scale: devicePixelRatio },
-	});
+	return tileConfig(
+		[ROADMAP_LAYER],
+		buildMapStyles("roadmap", [
+			{ elementType: "labels", stylers: [{ visibility: "off" }] },
+			{
+				elementType: "geometry.stroke",
+				featureType: "administrative",
+				stylers: [{ visibility: "off" }],
+			},
+			...styles,
+		]),
+		{ options: { unknownStyleFlag: LegacyFlag.CURRENT } },
+	);
 }
 
+const LABELS_ONLY: MapStyle[] = [
+	{ elementType: "geometry", stylers: [{ visibility: "off" }] },
+	{
+		featureType: "administrative",
+		elementType: "geometry.stroke",
+		stylers: [{ visibility: "on" }],
+	},
+	{ elementType: "labels", stylers: [{ visibility: "on" }] },
+];
+
 export function createLabelsTileConfig(styles: MapStyle[] = []): TileConfig {
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [{ type: LayerType.ROADMAP, layerName: "m", layerOptions: [] }],
-		options: {
-			language: "en",
-			region: "US",
-			unknownStyleFlag: LegacyFlag.CURRENT,
-			styles: buildMapStyles("roadmap", [
-				{ elementType: "geometry", stylers: [{ visibility: "off" }] },
-				{
-					featureType: "administrative",
-					elementType: "geometry.stroke",
-					stylers: [{ visibility: "on" }],
-				},
-				{ elementType: "labels", stylers: [{ visibility: "on" }] },
-				...styles,
-			]),
-		},
-		renderOptions: { scale: devicePixelRatio },
+	return tileConfig([ROADMAP_LAYER], buildMapStyles("roadmap", [...LABELS_ONLY, ...styles]), {
+		options: { unknownStyleFlag: LegacyFlag.CURRENT },
 	});
 }
 
@@ -520,31 +540,14 @@ export function createLabelsTileConfig(styles: MapStyle[] = []): TileConfig {
 // The colors come from the map_id, so configs must be served via buildStyledTileUrl.
 export const LEGACY_STYLE_MAP_ID = "61449c20e7fc278b";
 
-function buildLegacyStylers(styleType: number, styles: MapStyle[] = []): Styler[] {
-	const stylers: Styler[] = [
-		new Styler({ type: styleType, params: [] }),
-		new Styler({ type: StyleType.HIGH_DPI, params: [] }),
-	];
-	if (styles.length > 0) {
-		const encoded = serializeStyles(styles);
-		if (encoded)
-			stylers.push(
-				new Styler({ type: StyleType.STYLERS, params: [{ key: "styles", value: encoded }] }),
-			);
-	}
-	return stylers;
-}
-
 // Legacy basemap via map_id with NO_LABELS so labels/borders can be stacked above SV coverage.
 export function createLegacyTileConfig(styles: MapStyle[] = []): TileConfig {
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [{ type: LayerType.ROADMAP, layerName: "m", layerOptions: [] }],
-		options: {
-			language: "en",
-			region: "US",
-			unknownStyleFlag: LegacyFlag.CURRENT,
-			styles: buildLegacyStylers(StyleType.NO_LABELS, [
+	return tileConfig(
+		[ROADMAP_LAYER],
+		[
+			new Styler({ type: StyleType.NO_LABELS, params: [] }),
+			new Styler({ type: StyleType.HIGH_DPI, params: [] }),
+			...customStylers([
 				{
 					elementType: "geometry.stroke",
 					featureType: "administrative",
@@ -552,18 +555,17 @@ export function createLegacyTileConfig(styles: MapStyle[] = []): TileConfig {
 				},
 				...styles,
 			]),
-		},
-		renderOptions: { scale: devicePixelRatio },
-	});
+		],
+		{ options: { unknownStyleFlag: LegacyFlag.CURRENT } },
+	);
 }
 
 const LEGACY_TERRAIN_LAYER_VERSIONS = { terrain: 725, roads: 725483392 } as const;
 const LEGACY_TERRAIN_TILE_HASH = 56565656;
 
 export function createLegacyTerrainTileConfig(): TileConfig {
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [
+	return tileConfig(
+		[
 			{
 				type: LayerType.TERRAIN,
 				layerName: "t",
@@ -575,77 +577,55 @@ export function createLegacyTerrainTileConfig(): TileConfig {
 				layerVersion: LEGACY_TERRAIN_LAYER_VERSIONS.roads,
 			},
 		],
-		options: {
-			language: "en",
-			region: "US",
-			outputFormat: 0,
-			unknownStyleFlag: LegacyFlag.LEGACY,
-			styles: [
-				new Styler({
-					type: StyleType.NO_LABELS,
-					params: [{ key: "set", value: "Terrain" }],
-				}),
-				new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
-			],
+		[
+			new Styler({ type: StyleType.NO_LABELS, params: [{ key: "set", value: "Terrain" }] }),
+			new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
+		],
+		{
+			options: { outputFormat: 0, unknownStyleFlag: LegacyFlag.LEGACY },
+			renderOptions: { rasterType: 3 },
+			tileHash: LEGACY_TERRAIN_TILE_HASH,
+			footerStyleTypes: [StyleType.HIGH_DPI, StyleType.NO_LABELS],
 		},
-		renderOptions: { rasterType: 3, scale: devicePixelRatio },
-		tileHash: LEGACY_TERRAIN_TILE_HASH,
-		footerStyleTypes: [StyleType.HIGH_DPI, StyleType.NO_LABELS],
-	});
+	);
 }
 
 export function createSatelliteLabelsTileConfig(styles: MapStyle[] = []): TileConfig {
-	const stylers: Styler[] = [
-		new Styler({ type: StyleType.SATELLITE, params: [] }),
-		new Styler({ type: StyleType.HIGH_DPI, params: [] }),
-	];
-	if (styles.length > 0) {
-		const encoded = serializeStyles([
-			{ elementType: "geometry", stylers: [{ visibility: "off" }] },
-			{
-				featureType: "administrative",
-				elementType: "geometry.stroke",
-				stylers: [{ visibility: "on" }],
-			},
-			{ elementType: "labels", stylers: [{ visibility: "on" }] },
-			...styles,
-		]);
-		if (encoded)
-			stylers.push(
-				new Styler({ type: StyleType.STYLERS, params: [{ key: "styles", value: encoded }] }),
-			);
-	}
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [{ type: LayerType.ROADMAP, layerName: "m", layerOptions: [] }],
-		options: {
-			language: "en",
-			region: "US",
-			outputFormat: 0,
-			unknownStyleFlag: LegacyFlag.CURRENT,
-			styles: stylers,
-		},
-		renderOptions: { scale: devicePixelRatio },
-	});
+	return tileConfig(
+		[ROADMAP_LAYER],
+		[
+			new Styler({ type: StyleType.SATELLITE, params: [] }),
+			new Styler({ type: StyleType.HIGH_DPI, params: [] }),
+			...(styles.length > 0 ? customStylers([...LABELS_ONLY, ...styles]) : []),
+		],
+		{ options: { outputFormat: 0, unknownStyleFlag: LegacyFlag.CURRENT } },
+	);
 }
 
 export function createSatelliteTileConfig(): TileConfig {
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [{ type: LayerType.SATELLITE, layerName: "s", layerOptions: [] }],
-		options: {
-			language: "en",
-			region: "US",
-			styles: [
-				new Styler({
-					type: StyleType.BASEMAP,
-					params: [{ key: "set", value: "RoadmapSatellite" }],
-				}),
-				new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
-			],
-		},
-		renderOptions: { scale: devicePixelRatio },
-	});
+	return tileConfig(
+		[{ type: LayerType.SATELLITE, layerName: "s", layerOptions: [] }],
+		[
+			new Styler({ type: StyleType.BASEMAP, params: [{ key: "set", value: "RoadmapSatellite" }] }),
+			new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
+		],
+	);
+}
+
+function svTileConfig(coverage: { cc: string; svl: string; mapStyles: Styler[] }): TileConfig {
+	return tileConfig(
+		[
+			{
+				type: LayerType.STREETVIEW,
+				layerName: "svv",
+				layerOptions: [
+					{ key: "cc", value: coverage.cc },
+					{ key: "svl", value: coverage.svl },
+				],
+			},
+		],
+		coverage.mapStyles,
+	);
 }
 
 export function createSvTileConfig(opts: {
@@ -657,7 +637,7 @@ export function createSvTileConfig(opts: {
 }): TileConfig {
 	const fill = resolveSvColorHex(opts.color);
 	const { h, s, l } = hexToHsl(fill);
-	const stroke = hslToHex(h, s, Math.min(l + 40, 90));
+	const stroke = hslToHex({ h, s, l: Math.min(l + 40, 90) });
 	const w = opts.thickness === "high" ? 0.5 : 1;
 	const sw = opts.thickness === "high" ? 0.5 : 3;
 
@@ -667,28 +647,14 @@ export function createSvTileConfig(opts: {
 		{ elementType: "geometry.stroke", stylers: [{ color: stroke, weight: sw }] },
 	];
 
-	const { cc, svl, mapStyles } = buildSvCoverageConfig({
-		showOfficial: opts.showOfficial ?? true,
-		showUnofficial: opts.showUnofficial ?? true,
-		styles: svStyles,
-		useDetailedLines: opts.useDetailedLines ?? true,
-	});
-
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [
-			{
-				type: LayerType.STREETVIEW,
-				layerName: "svv",
-				layerOptions: [
-					{ key: "cc", value: cc },
-					{ key: "svl", value: svl },
-				],
-			},
-		],
-		options: { language: "en", region: "US", styles: mapStyles },
-		renderOptions: { scale: devicePixelRatio },
-	});
+	return svTileConfig(
+		buildSvCoverageConfig({
+			showOfficial: opts.showOfficial ?? true,
+			showUnofficial: opts.showUnofficial ?? true,
+			styles: svStyles,
+			useDetailedLines: opts.useDetailedLines ?? true,
+		}),
+	);
 }
 
 export function createSvBlobbyTileConfig(opts: {
@@ -706,70 +672,30 @@ export function createSvBlobbyTileConfig(opts: {
 				{ elementType: "geometry.stroke", stylers: [{ visibility: "off" }] },
 			];
 
-	const { cc, svl, mapStyles } = buildSvCoverageConfig({
-		showOfficial: showBoth ? true : (opts.showOfficial ?? true),
-		showUnofficial: showBoth ? true : (opts.showUnofficial ?? true),
-		styles: svStyles,
-		useDetailedLines: !showBoth,
-	});
-
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [
-			{
-				type: LayerType.STREETVIEW,
-				layerName: "svv",
-				layerOptions: [
-					{ key: "cc", value: cc },
-					{ key: "svl", value: svl },
-				],
-			},
-		],
-		options: { language: "en", region: "US", styles: mapStyles },
-		renderOptions: { scale: devicePixelRatio },
-	});
+	return svTileConfig(
+		buildSvCoverageConfig({
+			showOfficial: showBoth ? true : (opts.showOfficial ?? true),
+			showUnofficial: showBoth ? true : (opts.showUnofficial ?? true),
+			styles: svStyles,
+			useDetailedLines: !showBoth,
+		}),
+	);
 }
 
 export function createTerrainBasemapTileConfig(styles: MapStyle[] = []): TileConfig {
-	const stylers: Styler[] = [
-		new Styler({ type: StyleType.BASEMAP, params: [{ key: "set", value: "Terrain" }] }),
-		new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
-		new Styler({ type: StyleType.TERRAIN, params: [] }),
-		new Styler({ type: StyleType.TERRAIN_ROADS, params: [] }),
-	];
-	if (styles.length > 0) {
-		const encoded = serializeStyles(styles);
-		if (encoded)
-			stylers.push(
-				new Styler({ type: StyleType.STYLERS, params: [{ key: "styles", value: encoded }] }),
-			);
-	}
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [
-			{ type: LayerType.ROADMAP, layerName: "m", layerOptions: [] },
+	return tileConfig(
+		[
+			ROADMAP_LAYER,
 			{ type: LayerType.TERRAIN_RELIEF, layerName: "shading", layerOptions: [] },
 			{ type: LayerType.TERRAIN_CONTOURS, layerName: "contours", layerOptions: [] },
 		],
-		options: { language: "en", region: "US", styles: stylers },
-		renderOptions: { scale: devicePixelRatio },
-	});
+		[...terrainStylers(), ...customStylers(styles)],
+	);
 }
 
 export function createTerrainOverlayTileConfig(): TileConfig {
-	return new TileConfig({
-		query: { tile: {} },
-		layers: [{ type: LayerType.TERRAIN, layerName: "t", layerOptions: [] }],
-		options: {
-			language: "en",
-			region: "US",
-			styles: [
-				new Styler({ type: StyleType.BASEMAP, params: [{ key: "set", value: "Terrain" }] }),
-				new Styler({ type: StyleType.SMARTMAPS, params: [{ key: "smartmaps" }] }),
-				new Styler({ type: StyleType.TERRAIN, params: [] }),
-				new Styler({ type: StyleType.TERRAIN_ROADS, params: [] }),
-			],
-		},
-		renderOptions: { scale: devicePixelRatio },
-	});
+	return tileConfig(
+		[{ type: LayerType.TERRAIN, layerName: "t", layerOptions: [] }],
+		terrainStylers(),
+	);
 }

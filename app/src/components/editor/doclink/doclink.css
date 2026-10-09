@@ -13,8 +13,7 @@
 	position: relative;
 	height: calc(100vh - 2rem);
 	margin: 0.5rem 0.5rem 0.5rem 0;
-	background: var(--item-color);
-	border-radius: 4px;
+	border-radius: var(--radius-1);
 	min-width: 0;
 }
 
@@ -38,9 +37,6 @@
 .doclink-panel__title {
 	flex: 1;
 	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 	font-weight: 600;
 }
 
@@ -55,22 +51,21 @@
 .doclink-panel__pager button {
 	border: 1px solid transparent;
 	border-radius: 3px;
-	background: var(--sand-10, #33332e);
+	background: var(--surface-2);
 	color: inherit;
 	font-size: 0.75rem;
 	padding: 0.125rem 0.5rem;
 	cursor: pointer;
 }
 .doclink-panel__pager button.is-selected {
-	border-color: var(--sand-4, #b3b2a6);
+	border-color: var(--accent);
 }
 
 .doclink-panel__body {
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	border-radius: 0 0 4px 4px;
-	background: var(--item-color);
+	border-radius: 0 0 var(--radius-1) var(--radius-1);
 	position: relative;
 }
 
@@ -85,16 +80,6 @@
 	float: right;
 	margin-right: 0.5rem;
 	z-index: 1;
-}
-
-.doclink-spinner {
-	display: inline-block;
-	width: 1rem;
-	height: 1rem;
-	border: 2px solid var(--sand-7, #66655c);
-	border-top-color: var(--sand-2, #e0dfd4);
-	border-radius: 50%;
-	animation: rotate 0.8s linear infinite;
 }
 
 .doclink-native {
@@ -151,125 +136,239 @@
 	border-radius: 3px;
 }
 .doclink-native a {
-	color: var(--text-color, #fff);
+	color: var(--text-1);
 	text-decoration: underline;
 	text-underline-offset: 2px;
 }
 .doclink-native hr {
 	border: none;
-	border-top: 1px solid var(--sand-8, #4d4c45);
+	border-top: 1px solid var(--border-subtle);
 	margin: 0.75rem 0;
 }
 .doclink-native__placeholder {
-	color: var(--sand-5, #999888);
+	color: var(--text-3);
 	font-style: italic;
 }
 
 /* --- Assign dialog --- */
-.doclink-assign {
-	width: 1100px;
-	max-width: 95vw;
-}
 .doclink-assign__url {
 	margin-top: 4px;
 	display: flex;
 	gap: 0.5rem;
 }
-.doclink-assign__url .input {
+.doclink-assign__url .text-input {
 	flex: 1;
 	min-width: 0;
 }
 .doclink-assign__url .button {
 	flex-shrink: 0;
 }
-.doclink-assign__hint {
-	margin: 0.5rem 0 0;
+.doclink-assign__docs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.375rem;
+	margin-top: 0.5rem;
+}
+.doclink-assign__docs .button.is-active {
+	background: var(--accent-muted);
+	color: var(--text-1);
+}
+.doclink-assign__armed {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin-top: 0.75rem;
+	/* Fixed: the content swaps between a text line and a 2rem pill; the strip
+	   must not resize the dialog when a tag is armed. */
+	height: 2.75rem;
+	padding: 0 0.625rem;
+	background: var(--surface-1);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-2);
 	font-size: 0.85rem;
-	color: #888;
+	color: var(--text-2);
+}
+.doclink-assign__match {
+	margin-top: 0.5rem;
+	padding: 0.5rem 0.625rem;
+	background: var(--surface-1);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-2);
+}
+.doclink-assign__match-head {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.doclink-assign__match-head .doclink-assign__pane-title {
+	flex: 1;
+}
+.doclink-assign__match-rows {
+	margin-top: 0.375rem;
+	max-height: 9rem;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.doclink-assign__match-row {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	font-size: 0.85rem;
+	min-height: 1.5rem;
+}
+.doclink-assign__match-row > svg {
+	flex-shrink: 0;
+	color: var(--text-3);
+}
+.doclink-assign__match-heading {
+	flex: 1;
+	min-width: 0;
 }
 .doclink-assign__panes {
 	display: grid;
 	grid-template-columns: 280px minmax(0, 1fr);
 	gap: 0.75rem;
 	margin-top: 0.75rem;
-	height: 65vh;
+	height: 60vh;
+}
+.doclink-assign__pane {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	background: var(--surface-1);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-2);
+}
+.doclink-assign__pane-head {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.5rem;
+	border-bottom: 1px solid var(--border-subtle);
+}
+.doclink-assign__pane-head .search-input {
+	flex: 1;
+	min-width: 0;
 }
 .doclink-assign__pane-title {
 	font-weight: 600;
 	font-size: 0.85rem;
-	margin-bottom: 0.375rem;
+	flex-shrink: 0;
+	max-width: 50%;
 }
 .doclink-assign__tags {
 	overflow-y: auto;
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: 4px;
 	/* Room for the armed outline, which draws outside the pill. */
-	padding: 4px 8px;
+	padding: 8px;
+}
+.doclink-assign__pills {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	padding: 2px 0;
+}
+.doclink-assign__branch {
+	margin-top: 2px;
+}
+/* Folder rows at the sidebar tree's scale: 2rem colored pill-rows. */
+.doclink-assign__folder-row {
+	display: flex;
+	align-items: center;
+	height: 2rem;
+	gap: 0.25rem;
+	padding-right: 0.75rem;
+	border-radius: 1rem;
+	box-shadow: var(--shadow-1);
+	cursor: pointer;
+	user-select: none;
+	min-width: 0;
+}
+.doclink-assign__folder-row.is-armed {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.doclink-assign__chevron {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.25rem;
+	min-width: 0;
+	flex-shrink: 0;
+}
+.doclink-assign__folder-row > .icon-button {
+	color: inherit;
+}
+.doclink-assign__folder-name {
+	min-width: 0;
+	line-height: 2rem;
+}
+.doclink-assign__folder-count {
+	flex-shrink: 0;
+	margin-left: auto;
+	font-size: 0.8rem;
+	font-weight: 600;
+}
+.doclink-assign__branch-children {
+	margin-left: 0.5rem;
+	padding-left: 0.625rem;
+	border-left: 1px solid var(--border-subtle);
+}
+/* Flex pills (like .tag:has(> .tag__button)) so .tag__text's own min-width/
+   ellipsis engage and long names truncate instead of overflowing. */
+.doclink-assign .tag {
+	display: inline-flex;
+	align-items: center;
+	min-width: 0;
+	max-width: 100%;
+}
+.doclink-assign__armed > span {
+	flex-shrink: 0;
 }
 .doclink-assign__tag {
 	cursor: pointer;
-	/* Clip long names (base .tag lets them overflow). overflow:hidden zeroes the
-	   flex minimum size, so pin the pill's height against column-flex shrinking. */
-	overflow: hidden;
-	text-overflow: ellipsis;
+	border: none;
+	font: inherit;
+	/* Pin the pill's height against column-flex shrinking. */
 	flex-shrink: 0;
-}
-/* .tag__text's negative right margin is for pills ending in a button; here the
-   pill ends in the count, which it would push outside the pill. */
-.doclink-assign__tag .tag__text {
-	margin-right: 0;
-	padding-right: 0;
 }
 .doclink-assign__tag.is-armed {
 	opacity: 1;
-	outline: 2px solid #1a73e8;
+	outline: 2px solid var(--accent);
 	outline-offset: 1px;
-}
-.doclink-assign__count {
-	margin-left: 0.375rem;
-	font-weight: 700;
-	opacity: 0.75;
 }
 .doclink-assign__outline {
 	overflow-y: auto;
-	border: 1px solid #ddd;
-	border-radius: 4px;
-	padding: 0.5rem 0.75rem;
+	padding: 0.375rem;
 }
 .doclink-assign__heading {
 	display: flex;
 	align-items: center;
 	gap: 0.375rem;
+	width: 100%;
 	padding: 0.2rem 0.5rem;
+	border: none;
+	border-radius: var(--radius-1);
+	background: none;
+	color: var(--text-1);
+	text-align: left;
 	font-size: 0.85rem;
 	min-height: 1.5rem;
+	cursor: default;
 }
 .doclink-assign__heading.is-assignable {
 	cursor: pointer;
 }
 .doclink-assign__heading.is-assignable:hover {
-	background: #f0f0f0;
+	background: var(--surface-2);
 }
 .doclink-assign__heading.is-active {
-	background: #e8f0fe;
+	background: var(--accent-muted);
 }
-.doclink-assign__heading-text {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.doclink-assign__chip {
-	border-radius: 3px;
-	padding: 0 0.375rem;
-	font-size: 0.7rem;
-	white-space: nowrap;
-}
-
 .doclink-panel__status {
 	padding: 1rem;
-	color: var(--sand-5, #999888);
+	color: var(--text-2);
 }
 .doclink-panel__status--center {
 	display: flex;

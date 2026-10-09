@@ -13,9 +13,8 @@ vi.mock("@/store/useMapStore", () => ({
 }));
 
 import { PluginSidebarHost } from "@/components/editor/PluginSidebarHost";
-import { registerPlugin, unregisterPlugin, setPluginEnabled } from "@/plugins/registry";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+import { registerPlugin, unregisterPlugin } from "@/plugins/registry";
+import { setPluginEnabled } from "@/plugins/pluginHost";
 
 const normalPlugin = {
 	id: "normal-p",

@@ -2,29 +2,28 @@ import { useState, useEffect, useCallback } from "react";
 import { Dialog, DialogContent, type DialogProps } from "@/components/primitives/Dialog";
 import { Icon } from "@/components/primitives/Icon";
 import { Button } from "@/components/primitives/Button";
-import { TextInput } from "@/components/primitives/TextInput";
+import { SegmentedControl } from "@/components/primitives/Sidebar";
+import { EmptyState } from "@/components/primitives/EmptyState";
 import {
-	getPlugin,
 	getPlugins,
-	getPluginSetting,
-	setPluginSetting,
+	unregisterPlugin,
+	isBackgroundPlugin,
+	type Plugin,
+	type PluginIdentity,
+} from "@/plugins/registry";
+import {
 	isPluginEnabled,
 	setPluginEnabled,
 	activatePlugin,
 	deactivatePlugin,
-	unregisterPlugin,
-	needsUpdate,
-	isPluginCompatible,
-	isBackgroundPlugin,
-} from "@/plugins/registry";
+} from "@/plugins/pluginHost";
+import { resolveBuild, needsBuildUpdate, fetchPluginRegistry } from "@/plugins/marketplace";
 import { events, type PluginManifest } from "@/bindings.gen";
 import { loadAndActivatePlugin, loadUserPlugin } from "@/plugins/index";
 import { cmd } from "@/lib/commands";
+import { appVersion } from "@/lib/version";
 import { log } from "@/lib/util/log";
-
-const REGISTRY_URL = "https://raw.githubusercontent.com/ccmdi/mma/master/plugins/registry.json";
-
-declare const __APP_VERSION__: string;
+import { toast } from "@/lib/util/toast";
 
 // Download a plugin's sidecar (if declared), reporting progress via onProgress. Shared by
 // install + update so both paths fetch the binary the same way.
@@ -47,72 +46,34 @@ async function installSidecar(
 
 type Tab = "core" | "additional";
 
-let registryCache: PluginManifest[] | null = null;
-
-function PluginSettings({ pluginId }: { pluginId: string }) {
-	const plugin = getPlugin(pluginId);
-	const [, rerender] = useState(0);
-	if (!plugin?.settings?.length) return null;
-	return (
-		<div className="plugin-card__settings">
-			{plugin.settings.map((def) => {
-				const value = getPluginSetting(plugin, def.key);
-				const update = (v: unknown) => {
-					setPluginSetting(plugin.id, def.key, v);
-					rerender((n) => n + 1);
-				};
-				if (def.type === "boolean") {
-					return (
-						<SwitchRow
-							key={def.key}
-							className="plugin-card__setting"
-							checked={Boolean(value)}
-							onChange={(v) => update(v)}
-							label={t(def.label)}
-						>
-							<span>{t(def.label)}</span>
-						</SwitchRow>
-					);
-				}
-				return (
-					<label key={def.key} className="plugin-card__setting">
-						<span>{t(def.label)}</span>
-						<TextInput
-							type={def.type === "number" ? "number" : "text"}
-							value={def.type === "number" ? Number(value ?? 0) : String(value ?? "")}
-							onChange={(e) =>
-								update(def.type === "number" ? Number(e.target.value) : e.target.value)
-							}
-						/>
-					</label>
-				);
-			})}
-		</div>
-	);
-}
-
 import { mdiAutoFix, mdiDownload, mdiFlaskOutline, mdiRefresh, mdiTrashCanOutline } from "@mdi/js";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { Switch } from "@/components/primitives/Switch";
-import { SwitchRow } from "@/components/primitives/SwitchRow";
 import { t, msg } from "@/lib/i18n";
 
 /** One card's worth of state. Core plugins are just entries that ship installed and
  *  can't be uninstalled or updated independently of the app. */
-interface PluginEntry {
-	id: string;
-	name: string;
-	description: string;
-	icon: string;
+interface PluginEntry extends PluginIdentity {
 	/** Built in — no install/uninstall/update affordances. */
 	core?: boolean;
 	installed: boolean;
 	enabled: boolean;
 	updatable?: boolean;
 	latestVersion?: string;
-	comingSoon?: boolean;
-	experimental?: boolean;
+	/** Commit the offered build ships at; null for the registry's latest. */
+	ref?: string | null;
 	requiresApp?: string | null;
+}
+
+function identity(p: Plugin | PluginManifest): PluginIdentity {
+	return {
+		id: p.id,
+		name: p.name,
+		description: p.description,
+		icon: p.icon,
+		comingSoon: p.comingSoon,
+		experimental: p.experimental,
+	};
 }
 
 /** Small hover-explained markers on a card. Each either derives from the loaded
@@ -140,11 +101,11 @@ const CARD_LABELS: {
 interface PluginCardProps {
 	entry: PluginEntry;
 	installProgress?: number;
-	onInstall: (id: string) => void;
+	onInstall: (id: string, ref: string | null) => void;
 	onEnable: (id: string) => void;
 	onDisable: (id: string) => void;
 	onUninstall: (id: string) => void;
-	onUpdate: (id: string) => void;
+	onUpdate: (id: string, ref: string | null) => void;
 }
 
 function PluginCard({
@@ -159,13 +120,15 @@ function PluginCard({
 	const { id, name, description, icon, core, installed, enabled, comingSoon, requiresApp } = entry;
 	const [busy, setBusy] = useState(false);
 
-	const run = (fn: (id: string) => void | Promise<void>) => async () => {
-		setBusy(true);
-		try {
-			await fn(id);
-		} finally {
-			setBusy(false);
-		}
+	const run = (fn: (id: string, ref: string | null) => void | Promise<void>) => () => {
+		void (async () => {
+			setBusy(true);
+			try {
+				await fn(id, entry.ref ?? null);
+			} finally {
+				setBusy(false);
+			}
+		})();
 	};
 
 	return (
@@ -189,7 +152,7 @@ function PluginCard({
 			{!comingSoon && (
 				<div className="plugin-card__actions">
 					{busy && installProgress !== undefined && (
-						<span className="plugin-card__progress">{installProgress}%</span>
+						<span className="plugin-card__progress mono">{installProgress}%</span>
 					)}
 					{!installed ? (
 						<button
@@ -243,14 +206,13 @@ function PluginCard({
 					)}
 				</div>
 			)}
-			{installed && enabled && <PluginSettings pluginId={id} />}
 		</div>
 	);
 }
 
 export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 	const [tab, setTab] = useState<Tab>("core");
-	const [registry, setRegistry] = useState<PluginManifest[] | null>(registryCache);
+	const [registry, setRegistry] = useState<PluginManifest[] | null>(null);
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [installedManifests, setInstalledManifests] = useState<PluginManifest[]>([]);
 	const [sidecarVersions, setSidecarVersions] = useState<Record<string, string | null>>({});
@@ -260,15 +222,10 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 	const coreEntries: PluginEntry[] = getPlugins()
 		.filter((p) => p.core)
 		.map((p) => ({
-			id: p.id,
-			name: p.name,
-			description: p.description || "",
-			icon: p.icon,
+			...identity(p),
 			core: true,
 			installed: true,
 			enabled: isPluginEnabled(p.id),
-			comingSoon: p.comingSoon,
-			experimental: p.experimental,
 		}));
 
 	const refreshInstalled = useCallback(async () => {
@@ -286,20 +243,13 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 	}, []);
 
 	useEffect(() => {
-		if (open) refreshInstalled();
+		if (open) void refreshInstalled();
 	}, [open, refreshInstalled]);
 
 	const fetchRegistry = useCallback(() => {
 		setFetchError(null);
-		fetch(REGISTRY_URL)
-			.then((r) => {
-				if (!r.ok) throw new Error(`HTTP ${r.status}`);
-				return r.json();
-			})
-			.then((data: PluginManifest[]) => {
-				registryCache = data;
-				setRegistry(data);
-			})
+		fetchPluginRegistry()
+			.then(setRegistry)
 			.catch((e) => setFetchError(e.message));
 	}, []);
 
@@ -316,23 +266,21 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 			for (const r of registry) {
 				const manifest = installedById.get(r.id);
 				const isInstalled = !!manifest;
+				// Same build the startup update pass would pick.
+				const target = resolveBuild(r, appVersion() ?? "0");
 				const updatable =
 					isInstalled &&
-					needsUpdate(manifest.version, r.version, sidecarVersions[r.id], r.sidecar?.version);
+					!!target &&
+					needsBuildUpdate(manifest.version, target, sidecarVersions[r.id]);
 				const entry: PluginEntry = {
-					id: r.id,
-					name: r.name,
-					description: r.description,
-					icon: r.icon,
+					...identity(r),
 					installed: isInstalled,
 					enabled: isPluginEnabled(r.id),
 					updatable,
-					latestVersion: r.version,
-					comingSoon: r.comingSoon,
+					latestVersion: target?.version ?? r.version,
+					ref: target?.ref,
 					experimental: r.experimental ?? manifest?.experimental,
-					requiresApp: isPluginCompatible(r.minAppVersion, __APP_VERSION__)
-						? undefined
-						: r.minAppVersion,
+					requiresApp: target ? undefined : r.minAppVersion,
 				};
 				if (isInstalled) installed.push(entry);
 				else fromRegistry.push(entry);
@@ -342,14 +290,10 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 		for (const m of installedManifests) {
 			if (registry && installed.some((e) => e.id === m.id)) continue;
 			installed.push({
-				id: m.id,
-				name: m.name,
-				description: m.description || "",
-				icon: m.icon,
+				...identity(m),
 				installed: true,
 				enabled: isPluginEnabled(m.id),
 				updatable: false,
-				experimental: m.experimental,
 			});
 		}
 
@@ -368,9 +312,9 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 	}, []);
 
 	const handleInstall = useCallback(
-		async (id: string) => {
+		async (id: string, ref: string | null) => {
 			try {
-				const manifest = await cmd.installPlugin(id);
+				const manifest = await cmd.installPlugin(id, ref);
 				try {
 					await installSidecar(manifest, (pct) => setProgress(id, pct));
 				} finally {
@@ -382,6 +326,7 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 				rerender((n) => n + 1);
 			} catch (e) {
 				log.error(`[marketplace] install failed for "${id}":`, e);
+				toast(t("Install failed: {error}", { error: String(e) }));
 			}
 		},
 		[refreshInstalled, setProgress],
@@ -409,33 +354,40 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 			} catch (e) {
 				log.error(`[marketplace] uninstall failed for "${id}":`, e);
 			}
-			refreshInstalled();
+			void refreshInstalled();
 			rerender((n) => n + 1);
 		},
 		[refreshInstalled],
 	);
 
 	const handleUpdate = useCallback(
-		async (id: string) => {
+		async (id: string, ref: string | null) => {
 			const wasEnabled = isPluginEnabled(id);
+			// Download before tearing down, so a failed fetch leaves the plugin running.
+			let manifest: PluginManifest;
 			try {
-				// Tear down the running plugin, re-download (install overwrites the files),
-				// then re-register the fresh code — preserving enabled/disabled state.
-				if (wasEnabled) deactivatePlugin(id);
-				unregisterPlugin(id);
-				const manifest = await cmd.installPlugin(id);
+				manifest = await cmd.installPlugin(id, ref);
 				try {
 					await installSidecar(manifest, (pct) => setProgress(id, pct));
 				} finally {
 					setProgress(id, null);
 				}
+			} catch (e) {
+				log.error(`[marketplace] update download failed for "${id}":`, e);
+				toast(t("Update failed: {error}", { error: String(e) }));
+				return;
+			}
+			try {
+				if (wasEnabled) deactivatePlugin(id);
+				unregisterPlugin(id);
 				await loadUserPlugin(manifest);
 				if (wasEnabled) activatePlugin(id);
-				await refreshInstalled();
-				rerender((n) => n + 1);
 			} catch (e) {
 				log.error(`[marketplace] update failed for "${id}":`, e);
+				toast(t("Update failed: {error}", { error: String(e) }));
 			}
+			await refreshInstalled();
+			rerender((n) => n + 1);
 		},
 		[refreshInstalled, setProgress],
 	);
@@ -450,21 +402,18 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent title={t("Plugins")} className="plugin-marketplace">
-				<div className="plugin-marketplace__tabs">
-					<button
-						className={`plugin-marketplace__tab ${tab === "core" ? "plugin-marketplace__tab--active" : ""}`}
-						onClick={() => setTab("core")}
-					>
-						{t("Core")}
-					</button>
-					<button
-						className={`plugin-marketplace__tab ${tab === "additional" ? "plugin-marketplace__tab--active" : ""}`}
-						onClick={() => setTab("additional")}
-					>
-						{t("Additional")}
-					</button>
-				</div>
+			<DialogContent title={t("Plugins")} className="plugin-marketplace" size="xl">
+				<SegmentedControl
+					role="tabs"
+					fill
+					className="plugin-marketplace__tabs"
+					options={[
+						{ value: "core", label: t("Core") },
+						{ value: "additional", label: t("Additional") },
+					]}
+					value={tab}
+					onChange={setTab}
+				/>
 
 				{tab === "core" && (
 					<div className="plugin-marketplace__grid">
@@ -490,20 +439,20 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 								<div key={i} className="plugin-card plugin-card--skeleton" aria-hidden="true">
 									<div className="plugin-card__icon" />
 									<div className="plugin-card__info">
-										<div className="plugin-skeleton__line plugin-skeleton__line--title" />
-										<div className="plugin-skeleton__line" />
+										<div className="skeleton plugin-skeleton__line plugin-skeleton__line--title" />
+										<div className="skeleton plugin-skeleton__line" />
 									</div>
-									<div className="plugin-skeleton__btn" />
+									<div className="skeleton plugin-skeleton__btn" />
 								</div>
 							))}
 						{fetchError && (
-							<div className="plugin-marketplace__empty">
+							<EmptyState>
 								{t("Failed to load registry:")} {fetchError}
 								<br />
 								<Button onClick={fetchRegistry} style={{ marginTop: 8 }}>
 									{t("Retry")}
 								</Button>
-							</div>
+							</EmptyState>
 						)}
 						{registryEntries.map((e) => (
 							<PluginCard
@@ -514,9 +463,7 @@ export function PluginMarketplace({ open, onOpenChange }: DialogProps) {
 							/>
 						))}
 						{registry && installedEntries.length === 0 && registryEntries.length === 0 && (
-							<div className="plugin-marketplace__empty">
-								{t("No additional plugins available.")}
-							</div>
+							<EmptyState>{t("No additional plugins available.")}</EmptyState>
 						)}
 					</div>
 				)}

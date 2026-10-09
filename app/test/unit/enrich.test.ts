@@ -1,21 +1,35 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// enrich.add pulls in Tauri/store/SV modules at import; stub the ones buildPatch
-// doesn't use so the pure patch logic is testable in a node environment. The real
-// filterEnrichPatch (from fieldDefs.add) is kept -- the bug lives in its interaction.
+// enrich.add pulls in Tauri/store/SV modules at import; stub the ones the single-location
+// path doesn't use so it is drivable in a node environment. The real filterEnrichPatch
+// (from fieldDefs.add) is kept -- the bug lived in its interaction.
+const h = vi.hoisted(() => ({
+	enrichFields: null as string[] | null,
+	enrichMetadata: true,
+	ran: [] as [string, string[]][],
+	runs: 0,
+}));
+
 vi.mock("@/store/useMapStore", () => ({
-	getMapState: () => ({ map: null }),
-	fetchLocationsByIds: async () => [],
-	updateLocations: async () => {},
+	getMapState: () => ({
+		map: { settings: { enrichMetadata: h.enrichMetadata, enrichFields: h.enrichFields } },
+	}),
 }));
-vi.mock("@/lib/sv/svMeta", () => ({ fetchSvMetadata: async () => [] }));
-const resolveExactTimestampMock = vi.hoisted(() => vi.fn(async (): Promise<number | null> => null));
-vi.mock("@/lib/sv/exactDate", () => ({ resolveExactTimestamp: resolveExactTimestampMock }));
-vi.mock("@/lib/util/timezone", () => ({ resolveTimezone: () => null }));
-vi.mock("@/lib/sv/lookup", () => ({ resolvePanoIds: async () => [] }));
-vi.mock("@/lib/util/log", () => ({
-	log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, trace: () => {} },
+vi.mock("@/lib/sv/query", () => ({ svMetadata: async () => [] }));
+vi.mock("@/lib/data/procedures", () => ({
+	procedureEntry: (name: string) => `res://procedures/${name}.js`,
+	runProviders: async (items: { provider: { id: string }; fields?: string[] }[], rows: unknown) => {
+		h.runs++;
+		h.ran = items.map((i) => [i.provider.id, i.fields ?? []]);
+		if (!Array.isArray(rows)) return {};
+		return {
+			rows: (rows as Location[]).map((r) => ({ ...r, extra: { ...r.extra, enriched: true } })),
+			failed: {},
+		};
+	},
 }));
+vi.mock("@/lib/util/timezone", () => ({ resolveTimezone: () => "America/New_York" }));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 const cmdMock = vi.hoisted(() => ({
 	checkBorderFile: vi.fn(async () => true),
 	downloadBorderFile: vi.fn(async () => {}),
@@ -26,65 +40,52 @@ const cmdMock = vi.hoisted(() => ({
 vi.mock("@/lib/commands", () => ({ cmd: cmdMock }));
 vi.mock("@/lib/util/toast", () => ({ toast: () => {} }));
 
-import { buildPatch, exactDateProvider, subdivisionProvider } from "@/lib/sv/enrich";
-import { getDefaultEnrichKeys } from "@/lib/data/fieldDefs";
+import { enrich } from "@/lib/sv/enrich";
+import {
+	exactDateProvider,
+	panoResolveProvider,
+	subdivisionProvider,
+	svMetaProvider,
+	timezoneProvider,
+} from "@/lib/sv/providers";
 import { createLocation } from "@/types";
-import type { Location } from "@/types";
-
-// Minimal StreetViewPanoramaData stub: only the fields buildPatch reads.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function svData(imageDate: string, extra: Record<string, unknown> = {}): any {
-	return {
-		imageDate,
-		extra: { altitude: 10, countryCode: "US", cameraType: "gen4", panoType: "car", ...extra },
-	};
-}
+import type { Location } from "@/bindings.gen";
 
 function loc(extra: Record<string, unknown>): Location {
 	return { ...createLocation({ lat: 1, lng: 2 }), extra };
 }
 
-describe("buildPatch — stale datetime/timezone clearing", () => {
-	it("clears stale datetime/timezone when imageDate changes, even with datetime enrichment OFF", () => {
-		// Default enrich set excludes datetime/timezone (opt-in). The clear must still apply.
-		const defaults = getDefaultEnrichKeys();
-		expect(defaults).not.toContain("datetime");
-
-		const patch = buildPatch(
-			svData("2023-03"),
-			loc({ imageDate: "2099-01", datetime: 9999999999, timezone: "Fake/Zone" }),
-			defaults,
-		)!;
-
-		expect(patch.imageDate).toBe("2023-03");
-		expect(patch.datetime).toBeNull();
-		expect(patch.timezone).toBeNull();
+describe("enrich", () => {
+	beforeEach(() => {
+		h.enrichFields = null;
+		h.enrichMetadata = true;
+		h.ran = [];
+		h.runs = 0;
 	});
 
-	it("does NOT add datetime/timezone keys when imageDate is unchanged", () => {
-		const patch = buildPatch(
-			svData("2099-01"),
-			loc({ imageDate: "2099-01", datetime: 9999999999, timezone: "Fake/Zone" }),
-			getDefaultEnrichKeys(),
-		)!;
-		expect("datetime" in patch).toBe(false);
-		expect("timezone" in patch).toBe(false);
+	it("runs every field-producing provider over the one row and answers the engine's row", async () => {
+		const out = await enrich(loc({ keep: 1 }));
+		expect(h.runs).toBe(1);
+		expect(h.ran.map(([id]) => id)).toEqual(["svMeta", "exactDate", "timezone", "subdivision"]);
+		expect(out.extra).toEqual({ keep: 1, enriched: true });
 	});
 
-	it("does NOT clear when there was no stale datetime to begin with", () => {
-		const patch = buildPatch(
-			svData("2023-03"),
-			loc({ imageDate: "2099-01" }), // no datetime
-			getDefaultEnrichKeys(),
-		)!;
-		expect("datetime" in patch).toBe(false);
+	it("narrows each provider to the map's enabled fields", async () => {
+		h.enrichFields = ["altitude", "timezone"];
+		await enrich(loc({}));
+		expect(h.ran).toEqual([
+			["svMeta", ["altitude"]],
+			["exactDate", []],
+			["timezone", ["timezone"]],
+			["subdivision", []],
+		]);
 	});
 
-	it("still respects the filter for normal enrich keys", () => {
-		// altitude is in the default set; cameraType too -- both should pass through.
-		const patch = buildPatch(svData("2023-03"), loc({ imageDate: "2023-03" }), ["altitude"])!;
-		expect(patch.altitude).toBe(10);
-		expect("countryCode" in patch).toBe(false); // filtered out
+	it("hands the row back untouched when the map's enrichment is off", async () => {
+		h.enrichMetadata = false;
+		const row = loc({ keep: 1 });
+		expect(await enrich(row)).toBe(row);
+		expect(h.runs).toBe(0);
 	});
 });
 
@@ -93,76 +94,61 @@ describe("exactDateProvider", () => {
 		expect(exactDateProvider.requires).toContain("imageDate");
 	});
 
-	it("is inert when the datetime field is not enabled", async () => {
-		const l = loc({ imageDate: "2023-03" });
-		expect(exactDateProvider.units!([l], ["altitude"], false)).toBe(0);
-		expect((await exactDateProvider.enrich([l], ["altitude"])).size).toBe(0);
-	});
-
-	it("resolves only locations with imageDate and no datetime; force re-resolves", async () => {
-		resolveExactTimestampMock.mockResolvedValue(1700000000);
-		const target = loc({ imageDate: "2023-03" });
-		const already = loc({ imageDate: "2023-03", datetime: 1 });
-		const noDate = loc({});
-		const fields = ["datetime", "timezone"];
-
-		expect(exactDateProvider.units!([target, already, noDate], fields, false)).toBe(1);
-		expect(exactDateProvider.units!([target, already, noDate], fields, true)).toBe(2);
-
-		const out = await exactDateProvider.enrich([target, already, noDate], fields);
-		expect(out.size).toBe(1);
-		expect(out.get(target.id)).toMatchObject({ datetime: 1700000000 });
-	});
-
-	it("reports failures through ctx.onFail and keeps going", async () => {
-		resolveExactTimestampMock.mockRejectedValueOnce(new Error("boom"));
-		const target = loc({ imageDate: "2023-03" });
-		const failed: number[] = [];
-		const out = await exactDateProvider.enrich([target], ["datetime"], {
-			onFail: (id) => failed.push(id),
+	it("is procedure-backed, producing datetime only", () => {
+		expect(Object.keys(exactDateProvider.fieldDefs ?? {})).toEqual(["datetime"]);
+		expect(exactDateProvider.procedure).toMatchObject({
+			entry: "res://procedures/exactDate.js",
+			batch: { mode: "chunk", size: 50 },
 		});
-		expect(out.size).toBe(0);
-		expect(failed).toEqual([target.id]);
+	});
+
+	it("takes the engine's transient-status retry default", () => {
+		expect(exactDateProvider.procedure!.retry).toBeUndefined();
+	});
+});
+
+describe("timezoneProvider", () => {
+	it("requires datetime, so it runs after the exact-date pass", () => {
+		expect(timezoneProvider.requires).toContain("datetime");
+	});
+
+	it("is procedure-backed, producing timezone only", () => {
+		expect(Object.keys(timezoneProvider.fieldDefs ?? {})).toEqual(["timezone"]);
+		expect(timezoneProvider.procedure).toMatchObject({
+			entry: "res://procedures/timezone.js",
+			batch: { mode: "chunk", size: 10000 },
+		});
 	});
 });
 
 describe("subdivisionProvider", () => {
-	const locAt = (id: number, extra: Record<string, unknown> = {}): Location => ({
-		...createLocation({ lat: id, lng: id }),
-		id,
-		extra,
+	it("is procedure-backed with an adm1 prepare gate", () => {
+		expect(Object.keys(subdivisionProvider.fieldDefs ?? {})).toEqual(["subdivision"]);
+		expect(subdivisionProvider.procedure).toMatchObject({
+			entry: "res://procedures/subdivision.js",
+			batch: { mode: "chunk", size: 2000 },
+		});
+		expect(typeof subdivisionProvider.procedure?.prepare).toBe("function");
+	});
+});
+
+describe("panoResolveProvider", () => {
+	it("writes the panoId column instead of an extra field, so it is never selectable", () => {
+		expect(panoResolveProvider.fieldDefs).toBeUndefined();
+		expect(panoResolveProvider.provides).toEqual(["panoId"]);
 	});
 
-	it("is inert when the subdivision field is not enabled", async () => {
-		const out = await subdivisionProvider.enrich([locAt(1)], ["altitude"]);
-		expect(out.size).toBe(0);
-		expect(cmdMock.borderClassify).not.toHaveBeenCalled();
+	it("resolves panos in chunks of 200 within the search radius", () => {
+		expect(panoResolveProvider.procedure).toMatchObject({
+			entry: "res://procedures/panoResolve.js",
+			batch: { mode: "chunk", size: 200 },
+			config: { radius: 50 },
+		});
 	});
+});
 
-	it("classifies only pending locations and skips unmatched points", async () => {
-		cmdMock.borderClassify.mockResolvedValueOnce(["Sarawak", null]);
-		const fresh = locAt(1);
-		const ocean = locAt(2);
-		const done = locAt(3, { subdivision: "Sabah" });
-
-		const out = await subdivisionProvider.enrich([fresh, ocean, done], ["subdivision"]);
-		expect(cmdMock.borderClassify).toHaveBeenCalledWith("adm1", [
-			[1, 1],
-			[2, 2],
-		]);
-		expect(out.size).toBe(1);
-		expect(out.get(1)).toEqual({ subdivision: "Sarawak" });
-	});
-
-	it("re-classifies enriched locations under force", async () => {
-		cmdMock.borderClassify.mockResolvedValueOnce(["Johor"]);
-		const done = locAt(3, { subdivision: "Sabah" });
-		const out = await subdivisionProvider.enrich([done], ["subdivision"], { force: true });
-		expect(out.get(3)).toEqual({ subdivision: "Johor" });
-	});
-
-	it("checks the adm1 archive once across enrich calls", async () => {
-		expect(cmdMock.checkBorderFile).toHaveBeenCalledTimes(1);
-		expect(cmdMock.downloadBorderFile).not.toHaveBeenCalled();
+describe("svMetaProvider", () => {
+	it("requires panoId, so the engine schedules it after the pano-resolve wave", () => {
+		expect(svMetaProvider.requires).toContain("panoId");
 	});
 });

@@ -1,17 +1,18 @@
 import { useCallback } from "react";
-import { addSelections } from "@/store/useMapStore";
+import { applySelectionUpdate } from "@/store/useMapStore";
 import { getSettings } from "@/store/settings";
 import { cmd } from "@/lib/commands";
 import { useHeldHotkeyClick } from "@/lib/map/useHeldHotkeyClick";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
+import { addSelection } from "@/store/selections";
 
 /** Select the country (or subdivision) containing a point, fetching the border file on
  *  first use. Shared by the hold-key gesture and the map context menu. */
 export async function selectBorderAt(lat: number, lng: number, subdivision: boolean) {
 	const { borderDetail, subdivisionDetail } = getSettings();
 	if (subdivision && subdivisionDetail === "off") {
-		toast(t("Subdivision borders are off -- enable them in Settings"));
+		toast(t("Subdivision borders are off. Enable them in Settings."));
 		return;
 	}
 	const level = subdivision ? subdivisionDetail : borderDetail;
@@ -21,17 +22,16 @@ export async function selectBorderAt(lat: number, lng: number, subdivision: bool
 		geometry = await lookup();
 	} catch (e) {
 		if (level === "light" || (await cmd.checkBorderFile(level))) throw e;
-		toast(t("Border data missing -- downloading..."));
+		toast(t("Border data missing. Downloading..."));
 		try {
 			await cmd.downloadBorderFile(level);
 		} catch {
-			toast(t("Couldn't download border data -- check your connection"));
+			toast(t("Couldn't download border data. Check your connection."));
 			return;
 		}
 		geometry = await lookup();
 	}
-	if (geometry)
-		addSelections([{ type: "Polygon", polygon: geometry, includeInformational: false }]);
+	if (geometry) await applySelectionUpdate(addSelection({ type: "Polygon", polygon: geometry }));
 }
 
 export function useCountrySelect() {

@@ -1,0 +1,408 @@
+.psv-move-marker {
+	--marker-scale: 1;
+}
+@media (prefers-color-scheme: dark) {
+	:where(html) {
+		--shadow-color: 220 40% 2%;
+		--shadow-strength: 25%;
+		--inner-shadow-highlight: inset 0 -0.5px 0 0 #fff1, inset 0 0.5px 0 0 #0007;
+	}
+}
+
+@media (prefers-reduced-motion) {
+	.modal[open],
+	.modal::backdrop {
+		animation: none;
+	}
+}
+
+@media (min-width: 801px) {
+	.updates {
+		height: calc(100vh - 1rem);
+	}
+}
+
+@media (max-width: 800px) {
+	.updates__history {
+		height: auto;
+		max-height: 70vh;
+	}
+}
+
+@media (max-width: 800px) {
+	.page-map-list {
+		grid-template-columns: 100%;
+		width: 100%;
+	}
+}
+
+.map-settings-control__icon {
+	display: none;
+}
+
+@media (prefers-reduced-motion) {
+	.map-type-control__toggle,
+	.map-type-control__toggle svg,
+	.map-type-control__background {
+		transition: none;
+	}
+}
+
+.psv-metadata-panel {
+	width: min(360px, calc(100vw - 32px));
+	max-height: min(70vh, 560px);
+	overflow: auto;
+	background: var(--surface-3);
+	color: var(--text-1);
+	border: 1px solid var(--border-subtle);
+	box-shadow: var(--shadow-4);
+	border-radius: var(--radius-3);
+	padding: 0.75rem;
+	z-index: 100;
+}
+
+.psv-metadata-panel__header,
+.psv-metadata-panel__copy {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.psv-metadata-panel__header {
+	justify-content: space-between;
+	margin-bottom: 0.5rem;
+}
+
+.psv-metadata-panel__header button,
+.psv-metadata-panel__copy button {
+	background: none;
+	border: 0;
+	color: var(--text-2);
+	cursor: pointer;
+	padding: 0.25rem;
+}
+
+.psv-metadata-panel dl {
+	display: grid;
+	grid-template-columns: 7rem minmax(0, 1fr);
+	gap: 0.35rem 0.5rem;
+	margin: 0;
+	font-size: 0.82rem;
+}
+
+.psv-metadata-panel dt {
+	color: var(--text-2);
+}
+
+.psv-metadata-panel dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.psv-metadata-panel code {
+	font-size: 0.75rem;
+}
+
+.psv-metadata-panel details {
+	margin-top: 0.75rem;
+}
+
+.psv-metadata-panel pre {
+	max-height: 180px;
+	overflow: auto;
+	font-size: 0.68rem;
+	white-space: pre-wrap;
+}
+
+.location-preview__panorama {
+	aspect-ratio: 16/9;
+	position: relative;
+	overflow: hidden;
+}
+
+.location-preview.free-resize .location-preview__panorama {
+	aspect-ratio: unset;
+	min-height: 0;
+}
+
+.location-preview__panorama.is-fullscreen {
+	position: fixed;
+	inset: 0;
+	z-index: 9999;
+	aspect-ratio: unset;
+	background: #000;
+	--fs-tray-h: 0px;
+}
+
+.location-preview__embed {
+	width: 100%;
+	height: 100%;
+	position: absolute;
+}
+
+.location-preview__meta {
+	grid-gap: 0.5rem;
+	grid-template-areas: "desc date actions" "tags tags tags";
+	grid-template-columns: minmax(0, 1fr) minmax(0, 300px) max-content;
+	align-items: center;
+	display: grid;
+	min-width: 0;
+}
+
+.location-preview__meta > * {
+	min-width: 0;
+}
+
+.location-preview__timestamps,
+.location-preview__timestamp-sep {
+	color: var(--text-3);
+}
+
+.location-preview__description {
+	grid-area: desc;
+	font-size: 0.875rem;
+	line-height: 1rem;
+	overflow-wrap: anywhere;
+}
+
+.location-preview__date {
+	grid-area: date;
+	justify-self: center;
+	width: min(300px, 100%);
+}
+
+.location-preview__actions {
+	grid-area: actions;
+	align-items: center;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	display: flex;
+}
+
+.location-preview__tags {
+	grid-gap: 0.25rem;
+	grid-area: tags;
+	grid-template-columns: 1fr;
+	display: grid;
+}
+
+.location-preview__tags p {
+	margin: 0;
+}
+
+@media (max-width: 1799px) {
+	.location-preview__meta {
+		grid-template-areas: "desc desc" "date actions" "tags tags";
+		grid-template-columns: minmax(0, 1fr) max-content;
+	}
+	.location-preview__date {
+		justify-self: start;
+	}
+}
+
+@container location-preview (max-width: 620px) {
+	.location-preview__meta {
+		grid-template-areas: "desc" "date" "actions" "tags";
+		grid-template-columns: minmax(0, 1fr);
+		align-items: start;
+	}
+	.location-preview__date {
+		justify-self: stretch;
+	}
+	.location-preview__actions {
+		justify-content: flex-start;
+	}
+	.location-preview__tags .form-add-tag {
+		max-width: 100%;
+	}
+	.location-preview__tags .form-add-tag__input {
+		width: min(12rem, calc(100cqw - 4rem));
+		min-width: 0;
+	}
+}
+
+.map-control.location-preview__date {
+	padding: 0;
+}
+
+.map-control.location-preview__date input {
+	height: 40px;
+}
+
+@container map-embed (max-width: 620px) {
+	.map-settings-control__button {
+		width: 40px;
+		padding: 0;
+		place-items: center;
+		display: grid;
+	}
+	.map-settings-control__button::after {
+		display: none;
+	}
+	.map-settings-control__icon {
+		display: block;
+	}
+	.map-settings-control__label {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		clip: rect(0 0 0 0);
+		overflow: hidden;
+	}
+	.map-type-control__basemap {
+		min-width: 140px;
+	}
+	.search-control__input {
+		width: min(210px, calc(100cqw - 168px));
+		min-width: 112px;
+	}
+	.sv-opacity-control__slider {
+		width: clamp(3.5rem, 16cqw, 6rem);
+	}
+	.search-control .search-results {
+		width: min(260px, calc(100cqw - 1rem));
+	}
+}
+
+@container map-embed (max-width: 330px) {
+	.embed-controls__opacity {
+		top: 104px !important;
+	}
+	.embed-controls__polygon {
+		top: 156px !important;
+	}
+	.search-control__input {
+		width: calc(100cqw - 1rem);
+		min-width: 0;
+	}
+}
+
+@media (max-width: 800px) {
+	.page-map-editor {
+		grid-template: "header back" min-content "map-embed map-embed" 400px "work-area work-area" min-content "map-meta map-meta" min-content/1fr 1fr;
+	}
+}
+
+@media (prefers-reduced-motion) {
+	.settings-popup {
+		animation: none;
+	}
+}
+
+.location-preview__panorama:has(.compass-tape) .fullscreen-topbar {
+	top: 48px;
+}
+
+/* Kill drag text-selection (blue highlight) while panning the pano */
+.location-preview__embed,
+.location-preview__embed * {
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+/* Hide Google logo in Street View panorama */
+.location-preview__embed a[href*="maps.google.com/maps"] {
+	display: none !important;
+}
+
+/* Hide all pano UI (Google close button, attribution, etc.) when toggled */
+.location-preview__panorama.hide-pano-ui .gm-style > div > div > div > div > button,
+.location-preview__panorama.hide-pano-ui .gm-style > div > div > div > div > a {
+	visibility: hidden !important;
+}
+
+.location-preview__panorama.hide-pano-ui .embed-controls,
+.location-preview__panorama.hide-pano-ui .viewport-lock-badge,
+.location-preview__panorama.hide-pano-ui .fullscreen-minimap,
+.location-preview__panorama.hide-pano-ui .fullscreen-bottom-tray,
+.location-preview__panorama.hide-pano-ui .fullscreen-date-picker,
+.location-preview__panorama.hide-pano-ui .fullscreen-topbar {
+	visibility: hidden !important;
+}
+
+.psv-move-markers {
+	pointer-events: none;
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+}
+
+.psv-move-marker {
+	pointer-events: all;
+	position: absolute;
+	width: 4.25rem;
+	height: 4.25rem;
+	padding: 0;
+	border: 2px solid #ffffffb8;
+	border-radius: 50%;
+	color: #fff;
+	background: transparent;
+	box-shadow: 0 8px 22px #0007;
+	cursor: pointer;
+	transform: translate(-50%, -50%) scale(var(--marker-scale, 1)) rotateX(56deg);
+	transform-origin: center;
+	transition:
+		background 120ms ease,
+		opacity 120ms ease,
+		filter 120ms ease;
+}
+
+.psv-move-marker::after {
+	content: "";
+	position: absolute;
+	inset: 0.45rem;
+	border: 1px solid #ffffff70;
+	border-radius: inherit;
+}
+
+.psv-move-marker svg {
+	position: relative;
+	z-index: 1;
+	width: 3rem;
+	height: 3rem;
+	filter: drop-shadow(0 2px 1px #0008);
+	transform: rotateX(-56deg);
+}
+
+.psv-move-marker:not(:disabled):hover,
+.psv-move-marker:not(:disabled):focus-visible {
+	background: transparent;
+	filter: brightness(1.18);
+	outline: 3px solid #ffffffd9;
+	outline-offset: 2px;
+}
+
+.psv-move-marker:disabled,
+.psv-move-markers.is-loading .psv-move-marker {
+	cursor: wait;
+	opacity: 0.45;
+}
+
+.psv-move-marker.is-hidden,
+.psv-move-markers.is-loading .psv-move-marker.is-hidden {
+	opacity: 0;
+}
+
+@media (max-width: 600px) {
+	.psv-move-marker {
+		width: 3.75rem;
+		height: 3.75rem;
+	}
+}
+
+.psv-metadata-panel__row {
+	display: contents;
+}
+
+.psv-metadata-panel__copy span {
+	min-width: 0;
+	flex: 1;
+	overflow-wrap: anywhere;
+}
+
+.psv-metadata-panel__copy button {
+	flex-shrink: 0;
+	min-width: 32px;
+	min-height: 32px;
+}

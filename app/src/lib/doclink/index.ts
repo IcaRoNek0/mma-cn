@@ -1,10 +1,5 @@
-import { open as openExternal } from "@tauri-apps/plugin-shell";
-import type { Tag } from "@/bindings.gen";
 import { gdocProvider } from "@/lib/doclink/gdoc";
-import { parseMapsUrl } from "@/lib/data/importExport";
-import { cmd } from "@/lib/commands";
-import { setActiveLocation } from "@/store/useMapStore";
-import { addParsedLocations } from "@/lib/map/mapClick";
+import type { Tag } from "@/types";
 
 /** A parsed doclink: which provider, which document, where inside it. */
 export interface DocRef {
@@ -142,27 +137,59 @@ export function prefetchDoclinks(tags: Record<string, Tag>): void {
 	}
 }
 
-/** Doc links that parse as a location route into the map: open the existing
- *  location if the map already has it (same pano, else within 2m -- the
- *  duplicate-detection radius), otherwise add it as if pasted. Everything
- *  else opens externally. */
-export async function openDocHref(href: string) {
-	const parsed = await parseMapsUrl(href);
-	if (!parsed) {
-		await openExternal(href);
-		return;
-	}
-	const nearby = await cmd.storeFindNearby(parsed.lat, parsed.lng, 2.0);
-	const match = nearby.find((l) => parsed.panoId && l.panoId === parsed.panoId) ?? nearby[0];
-	if (match) {
-		await setActiveLocation(match);
-		return;
-	}
-	await addParsedLocations([parsed]);
-}
-
 export function doclinkedTags(tags: Record<string, Tag>): Tag[] {
 	return Object.values(tags).filter((t) => (t.doclinks?.length ?? 0) > 0);
+}
+
+/** Anchors a tag's doclinks point at, within the given doc only. */
+export function anchorsInDoc(tag: Tag, docId: string): Set<string> {
+	const out = new Set<string>();
+	for (const url of tag.doclinks ?? []) {
+		const ref = parseDoclink(url);
+		if (ref?.docId === docId && ref.anchor) out.add(ref.anchor);
+	}
+	return out;
+}
+
+export interface DoclinkMatch {
+	tag: Tag;
+	heading: DocHeading;
+}
+
+const normName = (s: string) =>
+	s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Propose (tag, heading) links by name: exact normalized full-name matches, plus
+ *  leaf-segment matches ("Poland/Bollard" -> heading "Bollard") when exactly one
+ *  tag carries that leaf. Pairs already assigned in this doc are skipped. */
+export function matchTagsToHeadings(
+	tags: Tag[],
+	headings: DocHeading[],
+	docId: string,
+): DoclinkMatch[] {
+	const byFull = new Map<string, Tag[]>();
+	const byLeaf = new Map<string, Tag[]>();
+	for (const tag of tags) {
+		const full = normName(tag.name);
+		if (!full) continue;
+		byFull.set(full, [...(byFull.get(full) ?? []), tag]);
+		const leaf = normName(tag.name.split("/").at(-1) ?? "");
+		if (leaf && leaf !== full) byLeaf.set(leaf, [...(byLeaf.get(leaf) ?? []), tag]);
+	}
+	const out: DoclinkMatch[] = [];
+	for (const heading of headings) {
+		const key = normName(heading.text);
+		if (!key) continue;
+		let candidates = byFull.get(key) ?? [];
+		if (candidates.length === 0) {
+			const leaves = byLeaf.get(key) ?? [];
+			if (leaves.length === 1) candidates = leaves;
+		}
+		for (const tag of candidates) {
+			if (!anchorsInDoc(tag, docId).has(heading.anchor)) out.push({ tag, heading });
+		}
+	}
+	return out;
 }
 
 // A section isn't "loaded" until its images are fetched and decoded -- otherwise

@@ -65,7 +65,6 @@ export function SummaryView({
 								{r.distanceMeters != null ? formatDistance(r.distanceMeters) : "—"}
 							</span>
 							<span
-								className="gg-summary__row-place"
 								dangerouslySetInnerHTML={{
 									__html: formatCountryLabel(r.countryCode, r.countryName, r.admin, locale) || "—",
 								}}

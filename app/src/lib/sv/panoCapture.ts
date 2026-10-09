@@ -1,5 +1,6 @@
 import { google } from "@/lib/sv/opensv";
-import { singletonDiv } from "@/lib/sv/panoSingleton";
+import { releaseWebglContexts } from "@/lib/render/webglContexts";
+import type { PanoView } from "@/types";
 
 const PANO_LOAD_TIMEOUT_MS = 15_000;
 const CANVAS_SETTLE_TIMEOUT_MS = 3_000;
@@ -7,20 +8,6 @@ const CANVAS_QUIET_MS = 400;
 const CANVAS_SAMPLE_INTERVAL_MS = 100;
 // Slight oversize so fractional-DPR rounding can never undershoot the target buffer.
 const HOST_OVERSCAN = 1.01;
-
-export interface PanoView {
-	panoId: string;
-	pov: { heading: number; pitch: number };
-	zoom: number;
-}
-
-// --- Live viewer capture ---
-
-/** The live viewer's WebGL scene canvas, or null before first render. */
-export function getPanoCanvas(): HTMLCanvasElement | null {
-	const canvas = singletonDiv.querySelector("canvas");
-	return canvas && canvas.width > 0 && canvas.height > 0 ? canvas : null;
-}
 
 /** Source rect of the largest centered region matching the target aspect. */
 export function coverCrop(
@@ -35,36 +22,7 @@ export function coverCrop(
 	return { sx: (srcW - sw) / 2, sy: (srcH - sh) / 2, sw, sh };
 }
 
-/** Cover-crop the live scene canvas into an exact width x height canvas.
- *  Detail is capped by the on-screen resolution. Null before first render. */
-export function captureLivePano(width: number, height: number): HTMLCanvasElement | null {
-	const source = getPanoCanvas();
-	if (!source) return null;
-	return drawScaled(source, width, height);
-}
-
 // --- Offscreen fixed-resolution render ---
-
-/** Freeze the live viewer camera before offscreen rendering starts. */
-export function snapshotPanoView(panorama: google.maps.StreetViewPanorama): PanoView {
-	const panoId = panorama.getPano();
-	const pov = panorama.getPov();
-	const zoom = panorama.getZoom();
-	if (
-		!panoId ||
-		!pov ||
-		!Number.isFinite(pov.heading) ||
-		!Number.isFinite(pov.pitch) ||
-		!Number.isFinite(zoom)
-	) {
-		throw new Error("Street View is not ready");
-	}
-	return {
-		panoId,
-		pov: { heading: pov.heading, pitch: pov.pitch },
-		zoom,
-	};
-}
 
 /** Render `view` in a hidden viewer and return an exact width x height canvas at
  *  native source quality, independent of the on-screen viewer's size or UI. */
@@ -83,7 +41,7 @@ export async function renderPanoView(
 	try {
 		const panorama = new google.maps.StreetViewPanorama(host, {
 			pano: view.panoId,
-			pov: { ...view.pov },
+			pov: { heading: view.heading, pitch: view.pitch },
 			zoom: view.zoom,
 			disableDefaultUI: true,
 			linksControl: false,
@@ -103,13 +61,14 @@ export async function renderPanoView(
 		if (!scaled) throw new Error("Could not create output canvas");
 		return scaled;
 	} finally {
+		releaseWebglContexts(host);
 		container.remove();
 	}
 }
 
 // --- Shared internals ---
 
-function drawScaled(
+export function drawScaled(
 	source: HTMLCanvasElement,
 	width: number,
 	height: number,
@@ -201,9 +160,14 @@ export function frameFingerprint(pixels: Uint8ClampedArray): number | null {
 	return visible > pixels.length / 8 && max - min > 4 ? hash >>> 0 : null;
 }
 
-function sceneCanvas(host: HTMLElement): HTMLCanvasElement | null {
+export function sceneCanvas(host: HTMLElement): HTMLCanvasElement | null {
 	const canvas = host.querySelector<HTMLCanvasElement>("canvas.widget-scene-canvas");
 	return canvas && canvas.width > 0 && canvas.height > 0 ? canvas : null;
+}
+
+export function hasImagery(canvas: HTMLCanvasElement): boolean {
+	const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+	return !!pixels && frameFingerprint(pixels) !== null;
 }
 
 /** Poll the scene canvas until its content holds still for CANVAS_QUIET_MS.

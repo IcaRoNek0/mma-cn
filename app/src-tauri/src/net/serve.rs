@@ -1,0 +1,86 @@
+//! Headless web-serve entry. Builds the real app with the `webserve` plugin and a
+//! hidden `about:blank` webview (the default client's IPC host), registers the app's URI
+//! schemes for the web, then runs. All HTTP/bridge logic lives in the plugin -
+//! the only app-facing surface is enabling the plugin, its channel interceptor, and the
+//! scheme registrations.
+//!
+//! Gate: `--features web-serve`. Entry: the `mma-serve` bin.
+
+use tauri::http::header::CONTENT_TYPE;
+use tauri::http::Response as HttpResponse;
+use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_webserve::{on_client_release, register_scheme, SchemeRequest, SchemeResponse};
+
+use crate::net::proxy;
+use crate::store::commands::release_window_binding;
+
+pub fn run_server() {
+    crate::install_crypto_provider();
+    // Drop the configured visible window; we make our own hidden blank "main"
+    // webview (the browser gets the bundle over HTTP). Browser tabs get their own
+    // webviews from the plugin; this one outlives them, so closing tabs never ends the app.
+    let mut ctx = crate::app_context();
+    ctx.config_mut().app.windows.clear();
+
+    crate::manage_command_state(tauri::Builder::default())
+        .invoke_handler(crate::specta_builder().invoke_handler())
+        .plugin(tauri_plugin_webserve::init())
+        .channel_interceptor(tauri_plugin_webserve::forward_channel)
+        .setup(|app| {
+            crate::init_backend(app.handle())?;
+            register_web_schemes(app.handle());
+            let handle = app.handle().clone();
+            on_client_release({
+                let handle = handle.clone();
+                move |label| release_window_binding(&handle, label)
+            });
+            WebviewWindowBuilder::new(
+                &handle,
+                "main",
+                WebviewUrl::External("about:blank".parse().unwrap()),
+            )
+            .visible(false)
+            .build()?;
+            Ok(())
+        })
+        .build(ctx)
+        .expect("failed to build web sidecar app")
+        .run(|_app, _event| {});
+}
+
+/// Convert a Tauri proxy response into the plugin's scheme response.
+fn relay(r: HttpResponse<Vec<u8>>) -> SchemeResponse {
+    let status = r.status().as_u16();
+    let content_type = r
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    SchemeResponse {
+        status,
+        content_type,
+        body: r.into_body(),
+    }
+}
+
+/// Serve every app URI scheme through the web server.
+fn register_web_schemes(app: &tauri::AppHandle) {
+    let app = app.clone();
+    register_scheme("mma-tencent-archive", move |req: SchemeRequest| {
+        relay(crate::tencent_coverage::response(&app, &req.query))
+    });
+    for scheme in proxy::SCHEMES {
+        let handle = scheme.handle;
+        register_scheme(scheme.name, move |req: SchemeRequest| {
+            relay(handle(proxy::SchemeCall::from_http(
+                &req.method,
+                &req.path,
+                req.query,
+                req.content_type,
+                req.user_agent,
+                req.body,
+            )))
+        });
+    }
+}

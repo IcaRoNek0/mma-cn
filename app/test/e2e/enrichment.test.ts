@@ -1,20 +1,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { createFieldDef } from "@/types";
 import {
 	addLocs,
-	createLocation,
-	openLocation,
 	closeLocation,
+	createLocation,
+	getLocOrNull,
+	openLocation,
 	refreshSelections,
-	withApi,
+	updateMapSettings,
 	useMap,
+	waitForPreview,
+	saveLocation,
+	withApi,
 } from "./helpers";
 import type { Location } from "@/bindings.gen";
+import { LocationFlag } from "@/bindings.consts";
 
 const OFFICIAL_PANO = "-zrYsLR4Fh-cfJG_EMZ1-A";
 const OFFICIAL_COORDS = { lat: 52.10947502806108, lng: 34.90131410856584 };
-
-const LoadAsPanoId = 1;
-const PANO_TIMEOUT = 10_000;
 
 function loc(overrides: Partial<Location> = {}): Location {
 	return createLocation({
@@ -25,24 +28,12 @@ function loc(overrides: Partial<Location> = {}): Location {
 	});
 }
 
-async function readLocation(id: number): Promise<any> {
-	return withApi(async (api, locId) => {
-		return await api.fetchLocation(locId);
-	}, id);
-}
+const readLocation = getLocOrNull as (id: number) => Promise<any>;
 
 async function getMapMeta(): Promise<any> {
 	return withApi(async (api) => {
-		return api.getMapState().map?.meta ?? null;
+		return api.getMapState().map ?? null;
 	});
-}
-
-async function updateMapSettings(patch: Record<string, any>) {
-	await withApi(async (api, p) => {
-		const map = api.getMapState().map!;
-		await api.updateMapMeta({ settings: { ...map.meta.settings, ...p } });
-		return "ok";
-	}, patch);
 }
 
 async function waitForEnrichment(locId: number, field = "countryCode") {
@@ -52,15 +43,24 @@ async function waitForEnrichment(locId: number, field = "countryCode") {
 			return l?.extra?.[field] != null;
 		},
 		{
-			timeout: PANO_TIMEOUT,
 			timeoutMsg: `Enrichment field '${field}' never populated on ${locId}`,
 		},
 	);
 }
 
-async function waitForPreview() {
-	const el = await browser.$(".location-preview");
-	await el.waitForExist({ timeout: 5000 });
+// knownFieldKeys propagate asynchronously after an extra write lands; poll instead of
+// asserting once, or the read races the registration under slow (SwiftShader) runs.
+async function waitForFieldKeys(...wanted: string[]) {
+	await browser.waitUntil(
+		async () => {
+			const keys = await withApi((api) => [...api.getKnownFieldKeys()]);
+			return wanted.every((k) => keys.includes(k));
+		},
+		{
+			interval: 50,
+			timeoutMsg: `field defs never registered: ${wanted.join(", ")}`,
+		},
+	);
 }
 
 // ============================================================================
@@ -81,20 +81,20 @@ describe("Enrichment — single location via preview", () => {
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 			}),
 			loc({
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 				extra: { myCustomField: "keep-me", anotherField: 42 },
 			}),
 			loc({
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 				extra: { countryCode: "XX", altitude: 999, datetime: 1600000000, timezone: "Europe/Fake" },
 			}),
 			loc({
@@ -115,6 +115,7 @@ describe("Enrichment — single location via preview", () => {
 	it("populates all standard enrichment fields", async () => {
 		await openLocation(enrichBasicId);
 		await waitForPreview();
+		await saveLocation();
 		await waitForEnrichment(enrichBasicId);
 
 		const l = await readLocation(enrichBasicId);
@@ -128,6 +129,7 @@ describe("Enrichment — single location via preview", () => {
 	it("preserves custom extra fields during enrichment", async () => {
 		await openLocation(enrichCustomExtraId);
 		await waitForPreview();
+		await saveLocation();
 		await waitForEnrichment(enrichCustomExtraId);
 
 		const l = await readLocation(enrichCustomExtraId);
@@ -139,13 +141,14 @@ describe("Enrichment — single location via preview", () => {
 	it("overwrites stale enrichment fields with fresh data", async () => {
 		await openLocation(enrichExistingMetaId);
 		await waitForPreview();
+		await saveLocation();
 		// Wait for enrichment to overwrite the fake "XX"
 		await browser.waitUntil(
 			async () => {
 				const l = await readLocation(enrichExistingMetaId);
 				return l?.extra?.countryCode != null && l.extra.countryCode !== "XX";
 			},
-			{ timeout: PANO_TIMEOUT, timeoutMsg: "countryCode was never overwritten from XX" },
+			{ timeoutMsg: "countryCode was never overwritten from XX" },
 		);
 
 		const l = await readLocation(enrichExistingMetaId);
@@ -156,7 +159,8 @@ describe("Enrichment — single location via preview", () => {
 	it("clears datetime/timezone when imageDate changes", async () => {
 		// Default enrich set excludes datetime/timezone, so no live resolution interferes
 		await updateMapSettings({ enrichFields: undefined });
-		// Pre-seed with stale datetime
+		// Pre-seed with a stale datetime and one metadata field missing: a row holding every
+		// field a provider produces is not derived again, so the gap is what makes it run.
 		const dtLoc = await readLocation(enrichExistingMetaId);
 		await withApi(async (api, l) => {
 			await api.updateLocations(
@@ -164,7 +168,12 @@ describe("Enrichment — single location via preview", () => {
 					{
 						id: l.id,
 						patch: {
-							extra: { imageDate: "2099-01", datetime: 9999999999, timezone: "Fake/Zone" },
+							extra: {
+								imageDate: "2099-01",
+								altitude: null,
+								datetime: 9999999999,
+								timezone: "Fake/Zone",
+							},
 						},
 					},
 				],
@@ -178,12 +187,13 @@ describe("Enrichment — single location via preview", () => {
 
 		await openLocation(enrichExistingMetaId);
 		await waitForPreview();
+		await saveLocation();
 		await browser.waitUntil(
 			async () => {
 				const l = await readLocation(enrichExistingMetaId);
 				return l?.extra?.imageDate != null && l.extra.imageDate !== "2099-01";
 			},
-			{ timeout: PANO_TIMEOUT, timeoutMsg: "imageDate was never overwritten from 2099-01" },
+			{ timeoutMsg: "imageDate was never overwritten from 2099-01" },
 		);
 
 		const after = await readLocation(enrichExistingMetaId);
@@ -195,6 +205,7 @@ describe("Enrichment — single location via preview", () => {
 	it("location without panoId resolves pano from coords and enriches", async () => {
 		await openLocation(enrichNoPanoId);
 		await waitForPreview();
+		await saveLocation();
 		await waitForEnrichment(enrichNoPanoId);
 
 		const l = await readLocation(enrichNoPanoId);
@@ -216,7 +227,7 @@ describe("Enrichment — respects enrichFields setting", () => {
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 			}),
 		];
 		const ids = await addLocs(locs);
@@ -232,9 +243,8 @@ describe("Enrichment — respects enrichFields setting", () => {
 
 		await openLocation(fieldsSelectiveId);
 		await waitForPreview();
+		await saveLocation();
 		await waitForEnrichment(fieldsSelectiveId, "countryCode");
-		// eslint-disable-next-line no-restricted-syntax -- negative assertion: give disabled fields a bounded window to (not) appear
-		await browser.pause(2000);
 
 		const l = await readLocation(fieldsSelectiveId);
 		expect(l.extra.countryCode).toBeTruthy();
@@ -257,8 +267,7 @@ describe("Enrichment — respects enrichFields setting", () => {
 
 		await openLocation(fieldsSelectiveId);
 		await waitForPreview();
-		// eslint-disable-next-line no-restricted-syntax -- negative assertion: confirm enrichment never populates with metadata disabled
-		await browser.pause(5000);
+		await saveLocation();
 
 		const l = await readLocation(fieldsSelectiveId);
 		expect(l.extra?.countryCode).toBeFalsy();
@@ -281,7 +290,7 @@ describe("Enrichment — auto-registers field defs on map meta", () => {
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 			}),
 		];
 		const ids = await addLocs(locs);
@@ -294,38 +303,44 @@ describe("Enrichment — auto-registers field defs on map meta", () => {
 	it("field defs appear after enrichment", async () => {
 		await openLocation(defsAutoId);
 		await waitForPreview();
+		await saveLocation();
 		await waitForEnrichment(defsAutoId);
-
-		const keys = await withApi((api) => [...api.getMapState().knownFieldKeys]);
-		expect(keys).toContain("countryCode");
-		expect(keys).toContain("altitude");
-		expect(keys).toContain("imageDate");
-
-		const defs = await withApi((api) => ({
-			countryCode: api.getFieldDef("countryCode"),
-			altitude: api.getFieldDef("altitude"),
-			imageDate: api.getFieldDef("imageDate"),
-		}));
-		expect(defs.countryCode?.type).toBe("string");
-		expect(defs.altitude?.type).toBe("number");
-		expect(defs.imageDate?.type).toBe("month");
+		// Poll getFieldDef rather than knownFieldKeys: concurrent enrichment mutations
+		// can land out of order and transiently regress the keys set.
+		const defsOk = async () => {
+			const defs = await withApi((api) => ({
+				countryCode: api.getFieldDef("countryCode"),
+				altitude: api.getFieldDef("altitude"),
+				imageDate: api.getFieldDef("imageDate"),
+			}));
+			return (
+				defs.countryCode?.type === "string" &&
+				defs.altitude?.type === "number" &&
+				defs.imageDate?.type === "month"
+			);
+		};
+		await browser.waitUntil(defsOk, {
+			interval: 50,
+			timeoutMsg: "enrichment field defs never registered",
+		});
 	});
 
 	it("does not clobber user-customized field defs", async () => {
 		// Manually set countryCode to a custom type
-		await withApi(async (api) => {
-			const cur = api.getMapState().map!.meta.extra?.fields ?? {};
+		const countryCode = createFieldDef("enum", {
+			label: "My Custom Country",
+			values: [
+				{ value: "US", label: null },
+				{ value: "RU", label: null },
+			],
+		});
+		await withApi(async (api, countryCode) => {
+			const cur = api.getMapState().map!.extra?.fields ?? {};
 			await api.updateMapMeta({
-				extra: {
-					...api.getMapState().map!.meta.extra,
-					fields: {
-						...cur,
-						countryCode: { type: "enum", label: "My Custom Country", values: ["US", "RU"] },
-					},
-				},
+				extra: { ...api.getMapState().map!.extra, fields: { ...cur, countryCode } },
 			});
 			return "ok";
-		});
+		}, countryCode);
 
 		// Clear extra and re-enrich
 		const defLoc = await readLocation(defsAutoId);
@@ -336,6 +351,7 @@ describe("Enrichment — auto-registers field defs on map meta", () => {
 
 		await openLocation(defsAutoId);
 		await waitForPreview();
+		await saveLocation();
 		await waitForEnrichment(defsAutoId);
 
 		const meta = await getMapMeta();
@@ -354,25 +370,23 @@ describe("Enrichment — auto-registers field defs on map meta", () => {
 			return "ok";
 		}, patchLoc);
 
-		await new Promise((r) => setTimeout(r, 500));
-		const keys = await withApi((api) => [...api.getMapState().knownFieldKeys]);
-		expect(keys).toContain("datetime");
+		await waitForFieldKeys("datetime");
 		const def = await withApi((api) => api.getFieldDef("datetime"));
 		expect(def?.type).toBe("date");
 	});
 
 	it("addLocations auto-registers known field keys", async () => {
-		await addLocs([loc({ lat: 10, lng: 20, extra: { altitude: 100, countryCode: "US" } })]);
+		// countryCode carries the custom enum def from the clobber test above, so probe a
+		// known string field nothing in this map has touched.
+		await addLocs([loc({ lat: 10, lng: 20, extra: { altitude: 100, uploaderName: "Google" } })]);
 
-		const keys = await withApi((api) => [...api.getMapState().knownFieldKeys]);
-		expect(keys).toContain("altitude");
-		expect(keys).toContain("countryCode");
+		await waitForFieldKeys("altitude", "uploaderName");
 		const defs = await withApi((api) => ({
 			altitude: api.getFieldDef("altitude"),
-			countryCode: api.getFieldDef("countryCode"),
+			uploaderName: api.getFieldDef("uploaderName"),
 		}));
 		expect(defs.altitude?.type).toBe("number");
-		expect(defs.countryCode?.type).toBe("string");
+		expect(defs.uploaderName?.type).toBe("string");
 	});
 
 	it("unknown extra fields get auto-registered as known keys", async () => {
@@ -384,8 +398,7 @@ describe("Enrichment — auto-registers field defs on map meta", () => {
 			return "ok";
 		}, customLoc);
 
-		const keys = await withApi((api) => [...api.getMapState().knownFieldKeys]);
-		expect(keys).toContain("randomCustomThing");
+		await waitForFieldKeys("randomCustomThing");
 	});
 });
 
@@ -404,7 +417,7 @@ describe("Enrichment — exact date via preview", () => {
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
+				flags: LocationFlag.LoadAsPanoId,
 			}),
 		];
 		const ids = await addLocs(locs);
@@ -431,6 +444,7 @@ describe("Enrichment — exact date via preview", () => {
 		});
 		await openLocation(exactEnrichId);
 		await waitForPreview();
+		await saveLocation();
 
 		await browser.waitUntil(
 			async () => {
@@ -438,7 +452,6 @@ describe("Enrichment — exact date via preview", () => {
 				return l?.extra?.datetime != null;
 			},
 			{
-				timeout: 60_000,
 				timeoutMsg: "datetime never populated (exact date resolution can be slow)",
 			},
 		);
@@ -451,10 +464,12 @@ describe("Enrichment — exact date via preview", () => {
 	});
 
 	it("datetime field def is available", async () => {
-		const keys = await withApi((api) => [...api.getMapState().knownFieldKeys]);
-		expect(keys).toContain("datetime");
-		const def = await withApi((api) => api.getFieldDef("datetime"));
-		expect(def?.type).toBe("date");
+		// getFieldDef is monotonic; knownFieldKeys can regress when concurrent
+		// enrichment mutations land out of order.
+		await browser.waitUntil(
+			async () => (await withApi((api) => api.getFieldDef("datetime")))?.type === "date",
+			{ interval: 50, timeoutMsg: "datetime field def never available" },
+		);
 	});
 });
 
@@ -462,150 +477,128 @@ describe("Enrichment — exact date via preview", () => {
 // Multiple providers merge without clobbering each other (single-pass enrichment)
 // ============================================================================
 
+// Wave ordering is not observable here: every provider's `requires` is satisfied by the
+// seeded `datetime`, so nothing has to wait. The Rust engine tests own wave scheduling.
 describe("Enrichment — multiple providers merge without clobbering", () => {
 	useMap("E2E Enrich Merge", { closeLocation: true });
-	let singleId: number;
-	let bulkAId: number;
-	let bulkBId: number;
-	let trigId: number;
+	let mergeIds: number[] = [];
+
+	// The sunPosition plugin's procedure module, present in the e2e image at the repo root.
+	// Pure compute over lat/lng + extra.datetime: deterministic and offline.
+	const SUN_ENTRY = "/repo/plugins/sunPosition/procedure.js";
 
 	before(async () => {
-		await updateMapSettings({ enrichMetadata: true, enrichFields: undefined });
-
-		// Register four providers writing distinct keys. They gate on per-test sentinel
-		// extra keys so they never touch other suites' locations — there is no unregister
-		// API, so these persist for the rest of the app session.
-		await withApi(async (api) => {
-			const gated = (sentinel: string, key: string, value: number) => async (locs: any[]) =>
-				new Map(locs.filter((l) => l.extra?.[sentinel]).map((l) => [l.id, { [key]: value }]));
-			api.registerEnrichmentProvider({
-				id: "e2e-clobber-a",
-				fieldDefs: {},
-				enrich: gated("__clobberTest", "clobberA", 1),
-			});
-			api.registerEnrichmentProvider({
-				id: "e2e-clobber-b",
-				fieldDefs: {},
-				enrich: gated("__clobberTest", "clobberB", 2),
-			});
-			api.registerEnrichmentProvider({
-				id: "e2e-trig-a",
-				fieldDefs: {},
-				requires: ["datetime"],
-				enrich: gated("__trigTest", "trigA", 1),
-			});
-			api.registerEnrichmentProvider({
-				id: "e2e-trig-b",
-				fieldDefs: {},
-				requires: ["datetime"],
-				enrich: gated("__trigTest", "trigB", 2),
-			});
-			return "ok";
+		// A provider whose fields are all deselected is skipped, so the sun keys must be enabled.
+		// The seeded imageDate matches the mock pano's: a changed imageDate nulls datetime,
+		// which would starve every provider that requires it.
+		await updateMapSettings({
+			enrichMetadata: true,
+			enrichFields: ["countryCode", "timezone", "sunAzimuth", "sunAltitude"],
 		});
 
-		const ids = await addLocs([
+		mergeIds = await addLocs([
 			loc({
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
-				extra: { __clobberTest: true },
+				flags: LocationFlag.LoadAsPanoId,
+				extra: { datetime: 1700000000, imageDate: "2021-09", keep: "a" },
 			}),
 			loc({
 				lat: OFFICIAL_COORDS.lat,
 				lng: OFFICIAL_COORDS.lng,
 				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
-				extra: { __clobberTest: true },
+				flags: LocationFlag.LoadAsPanoId,
+				extra: { datetime: 1700003600, imageDate: "2021-09", keep: "b" },
 			}),
-			loc({
-				lat: OFFICIAL_COORDS.lat,
-				lng: OFFICIAL_COORDS.lng,
-				panoId: OFFICIAL_PANO,
-				flags: LoadAsPanoId,
-				extra: { __clobberTest: true },
-			}),
-			loc({ lat: 12, lng: 34, extra: { __trigTest: true } }),
 		]);
-		singleId = ids[0];
-		bulkAId = ids[1];
-		bulkBId = ids[2];
-		trigId = ids[3];
+
+		// Registration disposables are only tracked during a plugin's activation window, so
+		// a provider registered from a test lives for the rest of the app session. Pinning
+		// `select` to these ids is what keeps it off every other suite's locations.
+		await withApi(
+			async (api, ids, entry, fieldDefs) => {
+				api.registerProvider({
+					id: "e2e-sun",
+					label: "Sun position",
+					requires: ["datetime"],
+					fieldDefs,
+					procedure: {
+						entry,
+						select: { type: "Locations", locations: ids, name: null },
+						batch: { mode: "chunk", size: 1000 },
+					},
+				});
+				return "ok";
+			},
+			mergeIds,
+			SUN_ENTRY,
+			{
+				sunAzimuth: createFieldDef("number", { label: "Sun azimuth" }),
+				sunAltitude: createFieldDef("number", { label: "Sun altitude" }),
+			},
+		);
 	});
 	afterEach(async () => {
 		await closeLocation();
 	});
 
-	it("single-location enrich keeps both providers' fields plus core metadata", async () => {
-		await openLocation(singleId);
+	it("single-location enrich keeps the plugin procedure's fields plus core metadata", async () => {
+		await openLocation(mergeIds[0]);
 		await waitForPreview();
-		await waitForEnrichment(singleId); // core countryCode
+		await saveLocation();
+		await waitForEnrichment(mergeIds[0]); // core countryCode, written in JS from the pano data
 		await browser.waitUntil(
 			async () => {
-				const l = await readLocation(singleId);
-				return l?.extra?.clobberA != null && l?.extra?.clobberB != null;
+				const l = await readLocation(mergeIds[0]);
+				return l?.extra?.sunAzimuth != null && l?.extra?.timezone != null;
 			},
-			{ timeout: PANO_TIMEOUT, timeoutMsg: "both provider fields never present" },
+			{ timeoutMsg: "plugin procedure fields never present" },
 		);
 
-		const l = await readLocation(singleId);
-		expect(l.extra.clobberA).toBe(1);
-		expect(l.extra.clobberB).toBe(2);
+		const l = await readLocation(mergeIds[0]);
+		expect(typeof l.extra.sunAzimuth).toBe("number");
+		expect(typeof l.extra.sunAltitude).toBe("number");
+		expect(typeof l.extra.timezone).toBe("string");
 		expect(l.extra.countryCode).toBeTruthy();
-	});
-
-	it("bulk enrichAll keeps both providers' fields on every location", async () => {
-		await withApi(async (api) => {
-			await api.enrichAll(await api.fetchAllLocations());
-			return "ok";
-		});
-		await browser.waitUntil(
-			async () => {
-				const a = await readLocation(bulkAId);
-				const b = await readLocation(bulkBId);
-				return (
-					a?.extra?.clobberA != null &&
-					a?.extra?.clobberB != null &&
-					b?.extra?.clobberA != null &&
-					b?.extra?.clobberB != null
-				);
-			},
-			{ timeout: PANO_TIMEOUT, timeoutMsg: "bulk provider fields never present on both locations" },
-		);
-
-		for (const id of [bulkAId, bulkBId]) {
-			const l = await readLocation(id);
-			expect(l.extra.clobberA).toBe(1);
-			expect(l.extra.clobberB).toBe(2);
-			expect(l.extra.countryCode).toBeTruthy();
-		}
-	});
-
-	it("provider waves merge with pre-existing extra instead of clobbering it", async () => {
-		const l0 = await readLocation(trigId);
-		await withApi(async (api, loc0) => {
-			await api.updateLocations([{ id: loc0.id, patch: { extra: { datetime: 1700000000 } } }], {
-				undoable: false,
-			});
-			return "ok";
-		}, l0);
-
-		await withApi(async (api) => {
-			await api.enrichAll(await api.fetchAllLocations());
-			return "ok";
-		});
-		await browser.waitUntil(
-			async () => {
-				const l = await readLocation(trigId);
-				return l?.extra?.trigA != null && l?.extra?.trigB != null;
-			},
-			{ timeout: 5000, timeoutMsg: "both wave-2 provider fields never present" },
-		);
-
-		const l = await readLocation(trigId);
-		expect(l.extra.trigA).toBe(1);
-		expect(l.extra.trigB).toBe(2);
+		expect(l.extra.keep).toBe("a");
 		expect(l.extra.datetime).toBe(1700000000);
+	});
+
+	it("bulk enrichAll merges every provider into the pre-existing extra", async () => {
+		// Only offline fields are selected, so the network-bound core providers (svMeta,
+		// exactDate) sit the run out and every write below comes from an offline module.
+		await updateMapSettings({ enrichFields: ["timezone", "sunAzimuth", "sunAltitude"] });
+		await withApi(async (api) => {
+			await api.enrichAll({ type: "Everything" }, { force: true });
+			return "ok";
+		});
+		await browser.waitUntil(
+			async () => {
+				for (const id of mergeIds) {
+					const l = await readLocation(id);
+					if (l?.extra?.sunAzimuth == null || l?.extra?.timezone == null) return false;
+				}
+				return true;
+			},
+			{
+				timeoutMsg: "plugin procedure fields never present on every location",
+			},
+		);
+
+		const expected = [
+			{ keep: "a", datetime: 1700000000 },
+			{ keep: "b", datetime: 1700003600 },
+		];
+		for (let i = 0; i < mergeIds.length; i++) {
+			const l = await readLocation(mergeIds[i]);
+			expect(typeof l.extra.sunAzimuth).toBe("number");
+			expect(typeof l.extra.sunAltitude).toBe("number");
+			expect(typeof l.extra.timezone).toBe("string");
+			expect(l.extra.timezone.length).toBeGreaterThan(0);
+			expect(l.extra.keep).toBe(expected[i].keep);
+			expect(l.extra.datetime).toBe(expected[i].datetime);
+		}
 	});
 });
 
@@ -642,32 +635,28 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 		filterBId = ids[1];
 		filterCId = ids[2];
 		// Register field defs
-		await withApi(async (api) => {
-			const cur = api.getMapState().map!.meta.extra?.fields ?? {};
+		const defs = {
+			altitude: createFieldDef("number", { label: "Altitude" }),
+			countryCode: createFieldDef("string", { label: "Country code" }),
+			imageDate: createFieldDef("month", { label: "Image date" }),
+		};
+		await withApi(async (api, defs) => {
+			const cur = api.getMapState().map!.extra?.fields ?? {};
 			await api.updateMapMeta({
-				extra: {
-					...api.getMapState().map!.meta.extra,
-					fields: {
-						...cur,
-						altitude: { type: "number", label: "Altitude" },
-						countryCode: { type: "string", label: "Country code" },
-						imageDate: { type: "month", label: "Image date" },
-					},
-				},
+				extra: { ...api.getMapState().map!.extra, fields: { ...cur, ...defs } },
 			});
 			return "ok";
-		});
+		}, defs);
 	});
 	it("numeric filter (altitude > 75) selects correct locations", async () => {
 		await withApi(async (api) => {
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
-					op: "gt",
-					value: 75,
-				},
-			]);
+					test: { op: "gt", value: 75 },
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -678,15 +667,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("string equality filter (countryCode = US) selects correct location", async () => {
 		await withApi(async (api) => {
-			api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "countryCode",
-					op: "eq",
-					value: "US",
-				},
-			]);
+					test: { op: "eq", value: "US" },
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -697,16 +685,14 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("between filter (altitude 60-150) selects correct location", async () => {
 		await withApi(async (api) => {
-			api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "altitude",
-					op: "between",
-					value: 60,
-					value2: 150,
-				},
-			]);
+					test: { op: "between", lo: 60, hi: 150 },
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -717,34 +703,32 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("string inequality filter (countryCode != US)", async () => {
 		await withApi(async (api) => {
-			api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "countryCode",
-					op: "neq",
-					value: "US",
-				},
-			]);
+					test: { op: "neq", value: "US" },
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
 		expect(ids).toContain(filterBId);
 		expect(ids).not.toContain(filterAId);
-		// filter-c has no countryCode, so it's excluded (null != "US" is truthy but field is missing)
+		// filter-c has no countryCode: an absent field matches only nothas
 	});
 
 	it("month comparison filter (imageDate >= 2024-01)", async () => {
 		await withApi(async (api) => {
-			api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "imageDate",
-					op: "gte",
-					value: "2024-01",
-				},
-			]);
+					test: { op: "gte", value: "2024-01" },
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
@@ -754,19 +738,89 @@ describe("Enrichment — metadata filter uses registered field types", () => {
 
 	it("filter on missing field excludes locations without it", async () => {
 		await withApi(async (api) => {
-			api.resetSelections();
-			await api.addSelections([
-				{
+			await api.applySelectionUpdate(() => []);
+			await api.applySelectionUpdate(
+				api.addSelection({
 					type: "Filter",
 					field: "imageDate",
-					op: "eq",
-					value: "2023-06",
-				},
-			]);
+					test: { op: "eq", value: "2023-06" },
+				}),
+			);
 			return "ok";
 		});
 		const ids = await refreshSelections();
 		expect(ids).toContain(filterAId);
 		expect(ids).not.toContain(filterCId);
+	});
+});
+
+describe("Enrichment — the read-only query surface", () => {
+	useMap("query-surface");
+
+	it("svMeta answers metadata for arbitrary panos without touching the store", async () => {
+		const before = await withApi(async (api) => (await api.cmd.storeGetSummary()).locationCount);
+
+		const answers = (await withApi(
+			async (api, pano) =>
+				JSON.parse(
+					await api.cmd.procedureQuery(
+						{ entry: "res://procedures/svMeta.js" },
+						JSON.stringify({ op: "metadata", panoIds: [pano, "DEAD_PANO"] }),
+						null,
+					),
+				),
+			OFFICIAL_PANO,
+		)) as any[];
+
+		expect(answers).toHaveLength(2);
+		expect(answers[1]).toBe(null);
+		expect(answers[0].id).toBe(OFFICIAL_PANO);
+		expect(answers[0].lat).toBeCloseTo(OFFICIAL_COORDS.lat, 6);
+		expect(answers[0].lng).toBeCloseTo(OFFICIAL_COORDS.lng, 6);
+		expect(answers[0].countryCode).toBe("RU");
+		expect(answers[0].worldSize).toEqual({ width: 16384, height: 8192 });
+		expect(answers[0].tileSize).toEqual({ width: 512, height: 512 });
+
+		expect(await withApi(async (api) => (await api.cmd.storeGetSummary()).locationCount)).toBe(
+			before,
+		);
+	});
+
+	it("the JS wrapper hands the module's answer over as plain data", async () => {
+		const data = (await withApi(async (api, pano) => {
+			const [d] = await api.svMetadata([pano]);
+			if (!d) return null;
+			return {
+				pano: d.id,
+				lat: d.lat,
+				worldHeight: d.worldSize.height,
+				date: d.date,
+				timePanos: d.time.map((t: any) => t.panoId),
+				timeDates: d.time.map((t: any) => t.date),
+			};
+		}, OFFICIAL_PANO)) as any;
+
+		expect(data).not.toBe(null);
+		expect(data.pano).toBe(OFFICIAL_PANO);
+		// A number, not an accessor: nothing pretends to be a live opensv object.
+		expect(data.lat).toBeCloseTo(OFFICIAL_COORDS.lat, 6);
+		expect(data.worldHeight).toBe(8192);
+		expect(data.date).toEqual({ year: 2021, month: 9, day: 1 });
+		// The whole capture history, each entry its own pano: the fixture has three dates.
+		expect(new Set(data.timePanos).size).toBe(3);
+		expect(data.timePanos).toContain(OFFICIAL_PANO);
+		expect(data.timeDates).toEqual(["2012-08-01", "2015-06-01", "2021-09-01"]);
+	});
+
+	it("a module without a query export fails loudly", async () => {
+		const err = await withApi(async (api) => {
+			try {
+				await api.cmd.procedureQuery({ entry: "res://procedures/timezone.js" }, "{}", null);
+				return "no error";
+			} catch (e: any) {
+				return String(e?.message ?? e);
+			}
+		});
+		expect(err).toContain("query");
 	});
 });

@@ -1,27 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "@/components/primitives/Icon";
-import { mdiMinus, mdiPlus } from "@mdi/js";
 import { CUSTOM_STYLES_KEY, type CustomStyle } from "@/lib/geo/mapStack";
 import { useMapSurface } from "@/lib/render/useMapSurface";
-import { useSetting, setSetting } from "@/store/settings";
-import { range, clamp } from "@/types/util";
+import { useSetting } from "@/store/settings";
+import { range } from "@/types/util";
 import { useLocalStorage, getLocal } from "@/lib/hooks/useLocalStorage";
-import { type MapEmbedPrefs, DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
+import { MAP_EMBED_PREFS, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 import {
 	createMapHost,
 	hostKindForMapType,
 	type MapHost,
 	type DeckOverlayHandle,
 } from "@/lib/map/host";
-import { usePanoViewer } from "./PanoViewerContext";
-import { useHoverExpand } from "@/lib/hooks/useHoverExpand";
+import { usePanoViewer, viewerPosition } from "./PanoViewerContext";
+import { useMapState } from "@/store/useMapStore";
+import { useHoverExpand, panelSize } from "@/lib/hooks/useHoverExpand";
 import { t } from "@/lib/i18n";
+import { ScaleStepper } from "./ScaleStepper";
 
 const MINIMAP_SCALE = range([0.5, 2]);
 const MINIMAP_SCALE_STEP = 0.25;
 const MINIMAP_BASE_W = 800;
 const MINIMAP_BASE_H = 600;
-const BASELINE_SHORT_EDGE = 1080;
 
 // Singleton host + overlay reused across mounts (opening/closing the pano viewer),
 // rebuilt only when the basemap kind changes.
@@ -60,13 +59,15 @@ async function ensureMinimapHost(
 }
 
 export function FullscreenMiniMap() {
-	const { lat, lng } = usePanoViewer();
+	const { draft } = usePanoViewer();
+	const location = useMapState((s) => s.activeLocation);
+	const { lat, lng } = viewerPosition(draft, location);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const scale = useSetting("fullscreenMinimapScale");
 	const closeDelay = useSetting("fullscreenMinimapCloseDelay");
 	const { expanded, hoverProps } = useHoverExpand(rootRef, closeDelay);
-	const [prefs] = useLocalStorage<MapEmbedPrefs>("mapEmbedPrefs", DEFAULT_PREFS);
+	const [prefs] = useLocalStorage(MAP_EMBED_PREFS);
 	const [surface, setSurface] = useState<{
 		host: MapHost;
 		div: HTMLDivElement;
@@ -75,7 +76,7 @@ export function FullscreenMiniMap() {
 
 	useEffect(() => {
 		let cancelled = false;
-		ensureMinimapHost(prefs, lat, lng).then((s) => {
+		void ensureMinimapHost(prefs, lat, lng).then((s) => {
 			if (!cancelled) setSurface(s);
 		});
 		return () => {
@@ -124,17 +125,9 @@ export function FullscreenMiniMap() {
 		});
 	}, [prefs, surface]);
 
-	const setScale = (next: number) => {
-		const clamped = clamp(next, MINIMAP_SCALE);
-		setSetting("fullscreenMinimapScale", Math.round(clamped * 100) / 100);
-	};
-
-	const sizeVar = (base: number) =>
-		`max(${Math.round(base * scale)}px, ${((base / BASELINE_SHORT_EDGE) * scale * 100).toFixed(2)}vmin)`;
-
 	const sizeVars = {
-		"--fs-minimap-w": sizeVar(MINIMAP_BASE_W),
-		"--fs-minimap-h": sizeVar(MINIMAP_BASE_H),
+		"--fs-minimap-w": panelSize(MINIMAP_BASE_W, scale),
+		"--fs-minimap-h": panelSize(MINIMAP_BASE_H, scale),
 	} as React.CSSProperties;
 
 	return (
@@ -145,26 +138,12 @@ export function FullscreenMiniMap() {
 			{...hoverProps}
 		>
 			<div ref={containerRef} className="fullscreen-minimap__map" />
-			<div className="fullscreen-minimap__size">
-				<button
-					type="button"
-					className="fullscreen-minimap__size-btn"
-					aria-label={t("Smaller minimap")}
-					disabled={scale <= MINIMAP_SCALE.min}
-					onClick={() => setScale(scale - MINIMAP_SCALE_STEP)}
-				>
-					<Icon path={mdiMinus} size={16} />
-				</button>
-				<button
-					type="button"
-					className="fullscreen-minimap__size-btn"
-					aria-label={t("Larger minimap")}
-					disabled={scale >= MINIMAP_SCALE.max}
-					onClick={() => setScale(scale + MINIMAP_SCALE_STEP)}
-				>
-					<Icon path={mdiPlus} size={16} />
-				</button>
-			</div>
+			<ScaleStepper
+				setting="fullscreenMinimapScale"
+				range={MINIMAP_SCALE}
+				step={MINIMAP_SCALE_STEP}
+				labels={{ smaller: t("Smaller minimap"), larger: t("Larger minimap") }}
+			/>
 		</div>
 	);
 }

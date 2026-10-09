@@ -13,7 +13,7 @@ const BUTTON_ICON: Record<TagPillButtonVariant, string> = {
 	edit: mdiPencil,
 };
 
-/** The leading affordance inside a TagPill: remove, apply, or open the editor. */
+/** The leading affordance inside a TagPill: remove, apply, or open the editor. @unstable */
 export function TagPillButton({
 	variant,
 	className,
@@ -43,8 +43,7 @@ type TagPillProps<E extends ElementType> = TagPillOwnProps & {
 	as?: E;
 } & Omit<ComponentPropsWithRef<E>, keyof TagPillOwnProps | "as">;
 
-/** The one tag pill. Owns the tag color's rendering: every surface that shows a tag
- *  goes through here, so the look changes in one place. */
+/** A tag shown as a pill in its color. @unstable */
 export function TagPill<E extends ElementType = "span">({
 	as,
 	color,

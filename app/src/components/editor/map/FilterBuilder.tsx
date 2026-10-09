@@ -1,25 +1,34 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useEffect, useMemo } from "react";
-import type { Selection, FilterOp, ExtraFieldDef } from "@/bindings.gen";
-import { cmd } from "@/lib/commands";
+import type { Selection, FilterOp, FieldDef } from "@/bindings.gen";
+import { addSelection, filterIsLocalTime, type FilterOpKind, OP_LABELS } from "@/store/selections";
 import { NSelect } from "@/components/primitives/NSelect";
-import { fieldLabel, getAllFieldDefs, isListableField } from "@/lib/data/fieldDefRegistry";
+import {
+	fieldLabel,
+	fieldValueLabel,
+	getAllFieldDefs,
+	getFieldDef,
+	getFieldKeys,
+	getKnownFieldKeys,
+	declaredValues,
+} from "@/lib/data/fieldDefRegistry";
 import { useEvent } from "@/lib/events";
-import { pickPeriodEnd, hasTimeOfDay, dateParts, partsToEpoch } from "@/lib/data/fieldOps";
-import { useMapState, addSelections } from "@/store/useMapStore";
+import { pickPeriodEnd, hasTimeOfDay, dateParts, partsToEpoch } from "@/lib/util/date";
+import { applySelectionUpdate, query, useMapState } from "@/store/useMapStore";
+import { countMissingTimezone, missingTimezoneMessage } from "@/lib/util/timezone";
+import { toast } from "@/lib/util/toast";
 import { useSetting } from "@/store/settings";
-import { OP_LABELS } from "@/store/selections";
-import { DatePicker } from "@/components/primitives/DatePicker";
+import { DatePicker, type DateFlagProps } from "@/components/primitives/DatePicker";
 import { Icon } from "@/components/primitives/Icon";
 import { Button } from "@/components/primitives/Button";
 import { TextInput } from "@/components/primitives/TextInput";
 import { mdiArrowRight, mdiArrowLeft } from "@mdi/js";
 import { t, msg } from "@/lib/i18n";
 
-const ALL_OPS: FilterOp[] = ["eq", "neq", "gt", "lt", "gte", "lte", "between", "has", "nothas"];
-const EQUALITY_OPS: FilterOp[] = ["eq", "neq", "has", "nothas"];
-const DATE_OPS: FilterOp[] = ["between", "gt", "lt", "gte", "lte", "has", "nothas"];
-const ARRAY_OPS: FilterOp[] = [
+const ALL_OPS: FilterOpKind[] = ["eq", "neq", "gt", "lt", "gte", "lte", "between", "has", "nothas"];
+const EQUALITY_OPS: FilterOpKind[] = ["eq", "neq", "has", "nothas"];
+const DATE_OPS: FilterOpKind[] = ["between", "gt", "lt", "gte", "lte", "has", "nothas"];
+const ARRAY_OPS: FilterOpKind[] = [
 	"contains",
 	"notcontains",
 	"eq",
@@ -32,7 +41,7 @@ const ARRAY_OPS: FilterOp[] = [
 	"has",
 	"nothas",
 ];
-const ARRAY_OP_LABELS: Partial<Record<FilterOp, string>> = {
+const ARRAY_OP_LABELS: Partial<Record<FilterOpKind, string>> = {
 	eq: msg("length ="),
 	neq: msg("length !="),
 	gt: msg("length >"),
@@ -45,7 +54,7 @@ const filterBuilderState = new Map<
 	string,
 	{
 		field: string;
-		op: FilterOp;
+		op: FilterOpKind;
 		value: string;
 		value2: string;
 		anyYear?: boolean;
@@ -54,8 +63,8 @@ const filterBuilderState = new Map<
 	}
 >();
 
-function opsForType(type: string | undefined): FilterOp[] {
-	if (type === "enum") return EQUALITY_OPS;
+function opsForType(type: string | undefined): FilterOpKind[] {
+	if (type === "enum" || type === "boolean") return EQUALITY_OPS;
 	if (type === "date") return DATE_OPS;
 	if (type === "array") return ARRAY_OPS;
 	return ALL_OPS;
@@ -64,40 +73,56 @@ function opsForType(type: string | undefined): FilterOp[] {
 export interface FieldEntry {
 	key: string;
 	label: string;
-	def: ExtraFieldDef;
+	def: FieldDef;
 }
 
 export function useExtraFieldKeys(): FieldEntry[] {
-	const keys = useMapState((s) => s.knownFieldKeys);
-	const defsVersion = useEvent("fields:changed");
+	const userDefs = useMapState((s) => s.fieldDefs);
+	const pluginVersion = useEvent("fields:changed");
 	return useMemo(() => {
 		const allDefs = getAllFieldDefs();
-		const seen = new Set<string>();
-		const entries: FieldEntry[] = [];
-		for (const key of keys) {
-			seen.add(key);
-			entries.push({ key, label: fieldLabel(key), def: allDefs[key] ?? { type: "string" } });
-		}
-		for (const [key, def] of Object.entries(allDefs)) {
-			if (!seen.has(key) && isListableField(key))
-				entries.push({ key, label: fieldLabel(key), def });
-		}
-		entries.sort((a, b) => a.label.localeCompare(b.label));
-		return entries;
-	}, [keys, defsVersion]);
+		return getFieldKeys()
+			.map((key) => ({ key, label: fieldLabel(key), def: allDefs[key] ?? { type: "string" } }))
+			.sort((a, b) => a.label.localeCompare(b.label));
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- the two change signals
+	}, [userDefs, pluginVersion]);
+}
+
+/** {@link useExtraFieldKeys} without this map's own fields that no location holds. */
+export function usePickableFields(): FieldEntry[] {
+	const all = useExtraFieldKeys();
+	const changed = useEvent("store:changed");
+	const [held, setHeld] = useState<ReadonlySet<string> | null>(null);
+	useEffect(() => {
+		let live = true;
+		void query({ type: "Everything" })
+			.coverage()
+			.then((counts) => {
+				if (live) setHeld(new Set(counts.map(([key]) => key)));
+			});
+		return () => {
+			live = false;
+		};
+	}, [changed]);
+	return useMemo(() => {
+		if (!held) return all;
+		const defined = getKnownFieldKeys();
+		return all.filter((f) => !defined.has(f.key) || held.has(f.key));
+	}, [all, held]);
 }
 
 const TIMEZONE_VALUES = Intl.supportedValuesOf("timeZone");
 
-function useEnumValues(fieldKey: string | undefined, def: ExtraFieldDef | undefined): string[] {
+function useEnumValues(fieldKey: string | undefined, def: FieldDef | undefined): string[] {
 	const [values, setValues] = useState<string[]>([]);
 	useEffect(() => {
 		if (def?.type !== "enum") {
 			setValues([]);
 			return;
 		}
-		if (def.values) {
-			setValues(def.values);
+		const declared = declaredValues(def);
+		if (declared) {
+			setValues(declared);
 			return;
 		}
 		if (fieldKey === "timezone") {
@@ -108,7 +133,7 @@ function useEnumValues(fieldKey: string | undefined, def: ExtraFieldDef | undefi
 			setValues([]);
 			return;
 		}
-		cmd.storeExtraFieldValues(fieldKey).then(setValues);
+		void query({ type: "Everything" }).values(fieldKey).then(setValues);
 	}, [fieldKey, def]);
 	return values;
 }
@@ -119,33 +144,14 @@ function FilterValueInput({
 	value,
 	onChange,
 	placeholder,
-	anyYear,
-	onAnyYearToggle,
-	showAnyYear,
-	anyTime,
-	onAnyTimeToggle,
-	showAnyTime,
-	tzLocal,
-	onTzLocalToggle,
-	showTzLocal,
-	onYearSelect,
+	...dateFlags
 }: {
 	fieldEntry: FieldEntry | undefined;
-	op?: FilterOp;
+	op?: FilterOpKind;
 	value: string;
 	onChange: (v: string) => void;
 	placeholder?: string;
-	anyYear?: boolean;
-	onAnyYearToggle?: (v: boolean) => void;
-	showAnyYear?: boolean;
-	anyTime?: boolean;
-	onAnyTimeToggle?: (v: boolean) => void;
-	showAnyTime?: boolean;
-	tzLocal?: boolean;
-	onTzLocalToggle?: (v: boolean) => void;
-	showTzLocal?: boolean;
-	onYearSelect?: (year: number) => void;
-}) {
+} & DateFlagProps) {
 	const type = fieldEntry?.def.type;
 	const def = fieldEntry?.def;
 	const enumValues = useEnumValues(fieldEntry?.key, def);
@@ -157,9 +163,19 @@ function FilterValueInput({
 				<option value="">--</option>
 				{enumValues.map((v) => (
 					<option key={v} value={v}>
-						{def?.labels?.[v] ? t(def.labels[v]) : v}
+						{fieldValueLabel(def, v)}
 					</option>
 				))}
+			</NSelect>
+		);
+	}
+
+	if (type === "boolean") {
+		return (
+			<NSelect value={value} onChange={(e) => onChange(e.target.value)}>
+				<option value="">--</option>
+				<option value="true">{t("True")}</option>
+				<option value="false">{t("False")}</option>
 			</NSelect>
 		);
 	}
@@ -167,21 +183,12 @@ function FilterValueInput({
 	if (type === "date" || type === "month") {
 		return (
 			<DatePicker
+				{...dateFlags}
 				mode={type}
 				value={value}
 				onChange={onChange}
-				anyYear={anyYear}
-				onAnyYearToggle={onAnyYearToggle}
-				showAnyYear={showAnyYear}
 				showTime={type === "date" && exactDateFormat === "datetime"}
-				anyTime={anyTime}
-				onAnyTimeToggle={onAnyTimeToggle}
-				showAnyTime={showAnyTime}
-				tzLocal={tzLocal}
-				onTzLocalToggle={onTzLocalToggle}
-				showTzLocal={showTzLocal}
-				wallClock={tzLocal}
-				onYearSelect={onYearSelect}
+				wallClock={dateFlags.tzLocal}
 			/>
 		);
 	}
@@ -218,7 +225,7 @@ function FilterValueInput({
 
 type FilterFormSeed = {
 	field: string;
-	op: FilterOp;
+	op: FilterOpKind;
 	value: string;
 	value2: string;
 	anyYear?: boolean;
@@ -226,11 +233,41 @@ type FilterFormSeed = {
 	tzLocal?: boolean;
 };
 
-/** Reverse of FilterForm.handleAdd: turn a stored Filter selection back into editable form state. */
+/** The predicate the form's flat pieces spell: the kind, its operand(s), the clock frame. */
+export function filterTest(
+	op: FilterOpKind,
+	value: string | number | boolean | null,
+	value2: string | number | undefined,
+	tzLocal: boolean,
+): FilterOp {
+	switch (op) {
+		case "has":
+		case "nothas":
+			return { op };
+		case "eq":
+		case "neq":
+		case "contains":
+		case "notcontains":
+			return { op, value };
+		case "gt":
+		case "lt":
+		case "gte":
+		case "lte":
+			return { op, value, tzLocal };
+		case "between":
+			return { op, lo: value, hi: value2, tzLocal };
+		case "between_anyyear":
+		case "between_anytime":
+			return { op, lo: String(value), hi: String(value2), tzLocal };
+	}
+}
+
+/** Reverse of filterTest: turn a stored Filter selection back into editable form state. */
 export function filterPropsToSeed(
-	p: Extract<Selection["props"], { type: "Filter" }>,
+	p: Extract<Selection["selector"], { type: "Filter" }>,
 ): FilterFormSeed {
-	let op = p.op as FilterOp;
+	const test = p.test;
+	let op: FilterOpKind = test.op;
 	let anyYear = false;
 	let anyTime = false;
 	if (op === "between_anyyear") {
@@ -240,14 +277,15 @@ export function filterPropsToSeed(
 		op = "between";
 		anyTime = true;
 	}
+	const [value, value2] = "lo" in test ? [test.lo, test.hi] : "value" in test ? [test.value] : [];
 	return {
 		field: p.field,
 		op,
-		value: p.value == null ? "" : String(p.value),
-		value2: p.value2 == null ? "" : String(p.value2),
+		value: value == null ? "" : String(value),
+		value2: value2 == null ? "" : String(value2),
 		anyYear,
 		anyTime,
-		tzLocal: p.tzLocal ?? false,
+		tzLocal: filterIsLocalTime(test),
 	};
 }
 
@@ -263,19 +301,13 @@ export function FilterForm({
 	initial?: FilterFormSeed;
 	persistKey?: string;
 	submitLabel: string;
-	onSubmit: (
-		field: string,
-		op: FilterOp,
-		value: string | number | null,
-		value2: string | number | undefined,
-		tzLocal: boolean,
-	) => void;
+	onSubmit: (field: string, test: FilterOp) => void;
 	onClose?: () => void;
 }) {
-	const fields = useExtraFieldKeys();
+	const fields = usePickableFields();
 	const saved = initial ?? (persistKey ? filterBuilderState.get(persistKey) : undefined);
 	const [field, setField] = useState(() => saved?.field || fields[0]?.key || "");
-	const [op, setOp] = useState<FilterOp>(() => {
+	const [op, setOp] = useState<FilterOpKind>(() => {
 		const initial = saved?.op ?? "eq";
 		const ops = opsForType(
 			fields.find((f) => f.key === (saved?.field || fields[0]?.key))?.def.type,
@@ -294,6 +326,7 @@ export function FilterForm({
 		fieldEntry?.def.type === "number" ||
 		fieldEntry?.def.type === "date" ||
 		(fieldEntry?.def.type === "array" && !isArrayContains);
+	const isBool = fieldEntry?.def.type === "boolean";
 	const isDateLike = fieldEntry?.def.type === "date" || fieldEntry?.def.type === "month";
 	const isExactDate = fieldEntry?.def.type === "date";
 	const availableOps = opsForType(fieldEntry?.def.type);
@@ -319,7 +352,7 @@ export function FilterForm({
 
 	// tzLocal is an independent toggle: it survives op changes (the values' encoding
 	// frame never silently flips) and composes with anyYear/anyTime.
-	const handleOpChange = (newOp: FilterOp) => {
+	const handleOpChange = (newOp: FilterOpKind) => {
 		setOp(newOp);
 		if (newOp !== "between") {
 			setAnyYear(false);
@@ -421,7 +454,12 @@ export function FilterForm({
 	const handleAdd = () => {
 		if (!field) return;
 		if (needsValue && !value) return;
-		let finalOp: FilterOp = op;
+		if (isBool) {
+			onSubmit(field, filterTest(op, needsValue ? value === "true" : null, undefined, false));
+			onClose?.();
+			return;
+		}
+		let finalOp: FilterOpKind = op;
 		if (isBetween && anyYear) finalOp = "between_anyyear";
 		if (isBetween && anyTime) finalOp = "between_anytime";
 		let parsed: string | number | null;
@@ -457,7 +495,7 @@ export function FilterForm({
 				parsed = pickPeriodEnd(parsed, grain(parsed), tzLocal);
 			}
 		}
-		onSubmit(field, finalOp, parsed, parsed2, isExactDate && tzLocal);
+		onSubmit(field, filterTest(finalOp, parsed, parsed2, isExactDate && tzLocal));
 		onClose?.();
 	};
 
@@ -486,11 +524,11 @@ export function FilterForm({
 				{fields.length === 0 && <option value="">{t("No metadata yet")}</option>}
 				{fields.map((f) => (
 					<option key={f.key} value={f.key}>
-						{t(f.label)}
+						{f.label}
 					</option>
 				))}
 			</NSelect>
-			<NSelect value={op} onChange={(e) => handleOpChange(e.target.value as FilterOp)}>
+			<NSelect value={op} onChange={(e) => handleOpChange(e.target.value as FilterOpKind)}>
 				{availableOps.map((o) => (
 					<option key={o} value={o}>
 						{t((fieldEntry?.def.type === "array" && ARRAY_OP_LABELS[o]) || OP_LABELS[o])}
@@ -558,9 +596,19 @@ export function FilterBuilder({ mapId }: { mapId: string }) {
 		<FilterForm
 			persistKey={mapId}
 			submitLabel={t("Add filter")}
-			onSubmit={(field, op, value, value2, tzLocal) =>
-				addSelections([{ type: "Filter", field, op, value, value2, tzLocal }])
-			}
+			onSubmit={(field, test) => {
+				void applySelectionUpdate(addSelection({ type: "Filter", field, test }));
+				const type = getFieldDef(field)?.type;
+				if (type)
+					void countMissingTimezone(
+						{ type: "Everything" },
+						field,
+						type,
+						filterIsLocalTime(test),
+					).then((n) => {
+						if (n > 0) toast(missingTimezoneMessage(n), 6000);
+					});
+			}}
 		/>
 	);
 }

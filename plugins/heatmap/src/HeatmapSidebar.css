@@ -1,0 +1,46 @@
+.heatmap-sidebar__gradients {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+}
+.heatmap-sidebar__gradient {
+  background: none; border: 2px solid transparent; border-radius: var(--radius-1);
+  padding: 2px; cursor: pointer; width: 100%;
+}
+.heatmap-sidebar__gradient:hover { border-color: var(--border-strong); }
+.heatmap-sidebar__gradient--active,
+.heatmap-sidebar__gradient--active:hover { border-color: var(--accent); }
+.heatmap-sidebar__gradient-bar { height: 14px; border-radius: 2px; }
+.heatmap-sidebar__gradient-new {
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-1);
+  background: none; color: var(--text-2); cursor: pointer;
+  font-size: 0.75rem; padding: 3px 2px;
+}
+.heatmap-sidebar__gradient-new:hover { color: var(--text-1); background: var(--hover); }
+.heatmap-sidebar__editor {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-1);
+  padding: 8px; margin-top: 6px; display: flex; flex-direction: column; gap: 8px;
+}
+.heatmap-sidebar__track { position: relative; height: 34px; touch-action: none; }
+.heatmap-sidebar__track-bar {
+  height: 18px; border-radius: 3px; cursor: copy;
+  border: 1px solid var(--border-subtle);
+}
+.heatmap-sidebar__handle {
+  position: absolute; top: 14px; transform: translateX(-50%);
+  width: 12px; height: 12px; padding: 0; cursor: grab;
+  border: 2px solid var(--surface-1); border-radius: 3px;
+  box-shadow: 0 0 0 1px #0000008c;
+}
+.heatmap-sidebar__handle:before {
+  content: ""; position: absolute; left: 50%; top: -6px;
+  width: 1px; height: 6px; background: var(--text-2);
+}
+.heatmap-sidebar__handle--selected { border-color: var(--accent); z-index: 1; }
+.heatmap-sidebar__handle:active { cursor: grabbing; }
+.heatmap-sidebar__stop-row { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; }
+.heatmap-sidebar__stop-row input[type="color"] {
+  width: 28px; height: 24px; padding: 0; cursor: pointer;
+  background: none; border: 1px solid var(--border-strong); border-radius: 3px;
+}
+.heatmap-sidebar__stop-pos { width: 4rem; }
+.heatmap-sidebar__hint { font-size: 0.6875rem; color: var(--text-3); margin: 0; }
+.heatmap-sidebar__editor-actions { display: flex; gap: 4px; align-items: center; margin-top: 4px; }

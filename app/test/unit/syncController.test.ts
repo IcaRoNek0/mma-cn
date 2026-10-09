@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import type { SyncReconcileResult } from "@/bindings.gen";
+import type { SyncLogEntry, SyncReconcileResult } from "@/bindings.gen";
 import { createSyncController } from "@/lib/sync/controller";
+import { setPluginEnabled } from "@/plugins/pluginHost";
+import { getMapBadges } from "@/store/mapList";
+import { subscribe } from "@/lib/events";
 import type { SyncProvider } from "@/lib/sync/provider";
 import type { RemoteMappingRow } from "@/lib/sync/syncStore";
 
@@ -30,19 +33,22 @@ function makeMma() {
 	let mapId: string | null = "map-a";
 	let gate: Promise<void> | null = null;
 	let release: (() => void) | null = null;
+	let failWith: string | null = null;
+	const history: { provider: string; mapId: string; entry: SyncLogEntry }[] = [];
 
 	const kv = {
 		get: <T>(k: string, fallback?: T): T =>
 			storage.has(k) ? (storage.get(k) as T) : (fallback as T),
 		set: (k: string, v: unknown) => void storage.set(k, v),
 		remove: (k: string) => void storage.delete(k),
+		keys: () => [...storage.keys()],
 	};
 
 	const api = {
 		storage: () => kv,
 		getMapState: () => ({
 			mapId,
-			map: mapId ? { meta: { id: mapId, locationCount: 0, tags: {} } } : null,
+			map: mapId ? { id: mapId, locationCount: 0, tags: {} } : null,
 			locationCount: 0,
 		}),
 		createLocation: (p: unknown) => p,
@@ -50,12 +56,22 @@ function makeMma() {
 		updateLocations: async () => {},
 		removeLocations: async () => {},
 		createTags: async () => [],
+		getTags: () => ({}),
 		on: () => () => {},
 		cmd: {
 			syncReconcile: async (): Promise<SyncReconcileResult> => {
 				if (gate) await gate;
+				if (failWith) throw new Error(failWith);
 				return EMPTY_RESULT;
 			},
+			syncLogAppend: async (provider: string, id: string, entry: SyncLogEntry) => {
+				history.push({ provider, mapId: id, entry });
+			},
+			syncLogList: async (provider: string, id: string) =>
+				history
+					.filter((h) => h.provider === provider && h.mapId === id)
+					.map((h) => h.entry)
+					.reverse(),
 			remoteMappingGet: async (provider: string, id: string) =>
 				(mapping.get(`${provider}:${id}`) ?? []).map((r) => ({ ...r })),
 			remoteMappingUpsert: async (provider: string, id: string, rows: RemoteMappingRow[]) => {
@@ -80,6 +96,10 @@ function makeMma() {
 	return {
 		storage,
 		mapping,
+		history,
+		fail: (message: string | null) => {
+			failWith = message;
+		},
 		install: () => {
 			(window as unknown as { MMA: unknown }).MMA = api;
 		},
@@ -97,10 +117,10 @@ function makeMma() {
 
 function makeProvider(): SyncProvider {
 	return {
-		id: "fake",
+		id: "geoguessr",
 		label: "Fake",
+		icon: "M0 0",
 		remoteMapUrl: (id) => `https://fake.test/maps/${id}`,
-		listMaps: async () => [],
 	};
 }
 
@@ -166,5 +186,149 @@ describe("createSyncController", () => {
 		expect(controller.livePref()).toBe(false); // a different map has its own pref
 
 		controller.pauseLive(); // clear the poll interval
+	});
+
+	it("allLinks spans every map of its own provider, and drops a map on unlink", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		const other = createSyncController({ ...makeProvider(), id: "map-making.app" }, PLUGIN);
+
+		await controller.link(REMOTE, null);
+		mma.setMapId("map-b");
+		await controller.link({ ...REMOTE, id: "r2" }, null);
+		await other.link({ ...REMOTE, id: "r3" }, null);
+
+		const pairs = (c: typeof controller) =>
+			c
+				.allLinks()
+				.map((l) => [l.localMapId, l.remoteMapId])
+				.sort();
+		expect(pairs(controller)).toEqual([
+			["map-a", "r1"],
+			["map-b", "r2"],
+		]);
+		expect(pairs(other)).toEqual([["map-b", "r3"]]);
+
+		await controller.unlink();
+		expect(pairs(controller)).toEqual([["map-a", "r1"]]);
+	});
+
+	it("link and unlink announce the change", async () => {
+		makeMma().install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		let announced = 0;
+		const off = subscribe("sync-links:changed", () => announced++);
+
+		await controller.link(REMOTE, null);
+		expect(announced).toBe(1);
+		await controller.unlink();
+		expect(announced).toBe(2);
+		off();
+	});
+
+	it("a linked map carries its provider's badge only while the plugin is enabled", async () => {
+		makeMma().install();
+		const controller = createSyncController(
+			{ ...makeProvider(), id: "map-making.app" },
+			"badge-plugin",
+		);
+		const badgeKeys = () => (getMapBadges().get("map-a") ?? []).map((b) => b.key);
+
+		await controller.link(REMOTE, null);
+		expect(badgeKeys()).not.toContain("sync:map-making.app");
+
+		setPluginEnabled("badge-plugin", true);
+		expect(badgeKeys()).toContain("sync:map-making.app");
+
+		await controller.unlink();
+		expect(badgeKeys()).not.toContain("sync:map-making.app");
+		setPluginEnabled("badge-plugin", false);
+	});
+});
+
+describe("sync history", () => {
+	const nextRecord = (controller: ReturnType<typeof createSyncController>) =>
+		new Promise<void>((resolve) => {
+			const off = controller.onHistory(() => {
+				off();
+				resolve();
+			});
+		});
+
+	it("records each pass with what started it and what it changed, newest first", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		let recorded = nextRecord(controller);
+		await controller.firstSync("merge");
+		await recorded;
+		recorded = nextRecord(controller);
+		await controller.syncNow();
+		await recorded;
+
+		const entries = await controller.history();
+		expect(entries.map((e) => e.trigger)).toEqual(["manual", "link"]);
+		expect(entries[0].result).toEqual({
+			kind: "ok",
+			pushed: EMPTY_RESULT.pushed,
+			pulled: EMPTY_RESULT.pulled,
+			adopted: 0,
+			conflicts: 0,
+		});
+		expect(entries[0].startedAt).toBeGreaterThanOrEqual(entries[1].startedAt);
+	});
+
+	it("records a failed pass with its error", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		mma.fail("auth: session expired");
+		const recorded = nextRecord(controller);
+		await expect(controller.syncNow()).rejects.toThrow();
+		await recorded;
+
+		expect((await controller.history())[0].result).toEqual({
+			kind: "error",
+			message: "auth: session expired",
+		});
+	});
+
+	it("records a pass once when a second request joins it", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		mma.block();
+		const first = controller.syncNow();
+		const joined = controller.syncNow();
+		const recorded = nextRecord(controller);
+		mma.release();
+		await Promise.all([first, joined]);
+		await recorded;
+
+		expect(mma.history).toHaveLength(1);
+	});
+
+	it("does not record a pass cut short by an unlink", async () => {
+		const mma = makeMma();
+		mma.install();
+		const controller = createSyncController(makeProvider(), PLUGIN);
+		await controller.link(REMOTE, null);
+
+		mma.block();
+		const syncing = controller.syncNow();
+		await Promise.resolve();
+		const unlinking = controller.unlink();
+		mma.release();
+		await Promise.all([syncing.catch(() => undefined), unlinking]);
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(mma.history).toHaveLength(0);
 	});
 });

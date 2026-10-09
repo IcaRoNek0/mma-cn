@@ -1,9 +1,14 @@
 import { useState, useCallback } from "react";
-import { Dialog, DialogContent, type DialogProps } from "@/components/primitives/Dialog";
-import { Button } from "@/components/primitives/Button";
+import {
+	Dialog,
+	DialogActions,
+	DialogContent,
+	type DialogProps,
+} from "@/components/primitives/Dialog";
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { previewDuplicateGroups, mergeDuplicates } from "@/store/useMapStore";
 import { toast } from "@/lib/util/toast";
-import { fmt } from "@/lib/util/format";
+import { fmt, formatDistance } from "@/lib/util/format";
 import { log } from "@/lib/util/log";
 import { useAsync } from "@/lib/hooks/useAsync";
 import { t } from "@/lib/i18n";
@@ -52,27 +57,27 @@ export function MergeDuplicatesModal({ open, onOpenChange, distance }: Props) {
 		}
 	}, [distance, preview, onOpenChange]);
 
-	const nothing = !loading && preview != null && preview.groups === 0;
+	const nothing = preview != null && preview.groups === 0;
+
+	if (loading) return null;
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent title={t("Merge duplicates")} className="merge-duplicates">
-				{loading && (
-					<div className="merge-duplicates__loading">
-						<div className="merge-duplicates__spinner" />
-					</div>
-				)}
+			<DialogContent title={t("Merge duplicates")}>
 				{nothing && (
-					<p className="merge-duplicates__status">
-						{t("No duplicate groups within {distance}m.", { distance })}
-					</p>
-				)}
-				{!loading && preview != null && preview.groups > 0 && (
 					<>
-						<p className="merge-duplicates__status">
+						<EmptyState>
+							{t("No duplicate groups within {distance}.", { distance: formatDistance(distance) })}
+						</EmptyState>
+						<DialogActions cancel={{ label: t("Close") }} />
+					</>
+				)}
+				{preview != null && preview.groups > 0 && (
+					<>
+						<p className="modal__message">
 							{t(
-								{ one: "{n} group within {distance}m.", other: "{n} groups within {distance}m." },
-								{ n: preview.groups, distance },
+								{ one: "{n} group within {distance}.", other: "{n} groups within {distance}." },
+								{ n: preview.groups, distance: formatDistance(distance) },
 							)}{" "}
 							{t(
 								{
@@ -84,12 +89,14 @@ export function MergeDuplicatesModal({ open, onOpenChange, distance }: Props) {
 							)}{" "}
 							{t("Largest group: {n}.", { n: preview.largest })}
 						</p>
-						<div className="merge-duplicates__actions">
-							<Button onClick={() => onOpenChange(false)}>{t("Cancel")}</Button>
-							<Button variant="primary" onClick={handleMerge} disabled={merging}>
-								{merging ? t("Merging...") : t("Merge")}
-							</Button>
-						</div>
+						<DialogActions
+							cancel
+							primary={{
+								label: merging ? t("Merging...") : t("Merge"),
+								disabled: merging,
+								onClick: () => void handleMerge(),
+							}}
+						/>
 					</>
 				)}
 			</DialogContent>

@@ -9,27 +9,13 @@
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	border-bottom: 1px solid var(--pu-divider);
+	border-bottom: 1px solid var(--border-subtle);
 	flex-shrink: 0;
 }
 
 .pivot-sidebar__opt-builtin {
 	color: var(--accent);
 	font-style: italic;
-}
-
-.pivot-sidebar__check {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	font-size: 12px;
-	cursor: pointer;
-	user-select: none;
-}
-
-.pivot-sidebar__check input[type="checkbox"] {
-	margin: 0;
-	cursor: pointer;
 }
 
 .pivot-sidebar__body {
@@ -43,7 +29,7 @@
 .pivot-sidebar__table-wrap {
 	overflow: auto;
 	flex: 1;
-	transition: opacity 0.15s;
+	transition: opacity var(--dur) var(--ease-standard);
 }
 
 .pivot-sidebar__table-wrap--stale {
@@ -53,6 +39,10 @@
 
 .pivot-sidebar__th-selected {
 	box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.pivot-sidebar__row-label--selected {
+	box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .pivot-sidebar__table {
@@ -114,15 +104,8 @@
 	max-width: 120px;
 }
 
-.pivot-sidebar__swatch {
-	width: 8px;
-	height: 8px;
-	border-radius: 2px;
-	flex-shrink: 0;
-}
-
 .pivot-sidebar__cell--zero {
-	opacity: 0.25;
+	color: var(--text-3);
 }
 
 .pivot-sidebar__cell--total {

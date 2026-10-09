@@ -1,0 +1,465 @@
+//! Grouping a set by field: key projection, date parts, numeric binning, count-by.
+
+use super::*;
+use crate::store::maps::FieldType;
+use crate::types::wire_str_enum;
+use crate::util::tz_offset_seconds;
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+
+/// How a field value becomes a group key, for `storeGroupBy` and `storeCountBy`.
+#[derive(Clone, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum KeySpec {
+    /// String value of the field (enum/string/month "YYYY-MM"/number).
+    Value,
+    /// Equal-width numeric bins.
+    NumericBin { binning: NumericBinning },
+    /// Calendar component of a date (epoch seconds) or month ("YYYY-MM") field.
+    DatePart {
+        part: DatePart,
+        #[serde(rename = "tzLocal")]
+        tz_local: bool,
+    },
+}
+
+/// Equal-width bin sizing. `count` derives the width from the data range; `width` fixes it.
+#[derive(Clone, Deserialize, specta::Type)]
+#[serde(tag = "by", rename_all = "camelCase")]
+pub enum NumericBinning {
+    Count { n: u32 },
+    Width { w: f64 },
+}
+
+wire_str_enum! {
+    /// A calendar component to group dates by.
+    derive(Clone, Copy, Deserialize, specta::Type)
+    pub enum DatePart {
+        /// The calendar year.
+        Year = "year",
+        /// The year and month.
+        YearMonth = "yearMonth",
+        /// The calendar date.
+        Day = "day",
+        /// The month, the same in every year.
+        MonthOfYear = "monthOfYear",
+        /// The hour of the day.
+        HourOfDay = "hourOfDay",
+    }
+}
+
+/// One grouping projection a field type may be partitioned by: `"value"` or a `DatePart`
+/// by its wire name. Exported to TS as a specta constant so the dropdowns derive from
+/// here rather than restating the list.
+#[derive(Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Projection {
+    pub id: &'static str,
+    pub applies_to: &'static [FieldType],
+    /// Date projections read in the location's own timezone when asked to.
+    pub needs_tz: bool,
+}
+
+pub const PROJECTIONS: &[Projection] = {
+    use crate::store::maps::FieldType::*;
+    &[
+        Projection {
+            id: "value",
+            applies_to: &[String, Enum, Boolean, Number, Month, Array],
+            needs_tz: false,
+        },
+        Projection {
+            id: "year",
+            applies_to: &[Date, Month],
+            needs_tz: true,
+        },
+        Projection {
+            id: "yearMonth",
+            applies_to: &[Date],
+            needs_tz: true,
+        },
+        Projection {
+            id: "day",
+            applies_to: &[Date],
+            needs_tz: true,
+        },
+        Projection {
+            id: "monthOfYear",
+            applies_to: &[Date, Month],
+            needs_tz: true,
+        },
+        Projection {
+            id: "hourOfDay",
+            applies_to: &[Date],
+            needs_tz: true,
+        },
+    ]
+};
+
+/// One partition group: a stable key, the ids it holds, and (numeric bins only) the
+/// `[lo, hi]` bounds so JS can rebuild a live Filter for whole-map gradients.
+#[derive(Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionBucket {
+    pub key: String,
+    pub ids: Vec<u32>,
+    pub bin: Option<[f64; 2]>,
+}
+
+impl Scope<'_, '_> {
+    /// The rows in scope grouped by `field`, in a deterministic but unsorted order
+    /// (numeric: bin order; projection: first-seen) - the JS caller sorts for display.
+    pub fn partition(&self, field: &str, spec: &KeySpec) -> Vec<PartitionBucket> {
+        match spec {
+            KeySpec::NumericBin { binning } => partition_numeric(self, field, binning),
+            _ => partition_keyed(self, field, spec),
+        }
+    }
+
+    /// Group counts without the member ids, one per field, in the order `partition`
+    /// reports its groups. Keyed specs count every field in one pass over the rows.
+    pub fn count_by(&self, fields: &[String], spec: &KeySpec) -> Vec<CountBy> {
+        if let KeySpec::NumericBin { binning } = spec {
+            return fields
+                .iter()
+                .map(|field| {
+                    let counts: Vec<(String, u32)> = partition_numeric(self, field, binning)
+                        .into_iter()
+                        .map(|g| (g.key, g.ids.len() as u32))
+                        .collect();
+                    CountBy {
+                        covered: counts.iter().map(|(_, n)| n).sum(),
+                        counts,
+                    }
+                })
+                .collect();
+        }
+        let mut tallies: Vec<(HashMap<String, usize>, CountBy)> = fields
+            .iter()
+            .map(|_| {
+                let tally = CountBy {
+                    counts: Vec::new(),
+                    covered: 0,
+                };
+                (HashMap::new(), tally)
+            })
+            .collect();
+        for row in self.rows() {
+            for (field, (index, tally)) in fields.iter().zip(&mut tallies) {
+                let keys = row_keys(&row, field, spec);
+                if !keys.is_empty() {
+                    tally.covered += 1;
+                }
+                for k in keys {
+                    match index.get(&k) {
+                        Some(&i) => tally.counts[i].1 += 1,
+                        None => {
+                            index.insert(k.clone(), tally.counts.len());
+                            tally.counts.push((k, 1));
+                        }
+                    }
+                }
+            }
+        }
+        tallies.into_iter().map(|(_, tally)| tally).collect()
+    }
+}
+
+pub(super) const MAX_BINS_WITH_EMPTIES: usize = 100;
+
+pub(super) fn partition_numeric(
+    scope: &Scope,
+    field: &str,
+    binning: &NumericBinning,
+) -> Vec<PartitionBucket> {
+    let mut vals: Vec<(u32, f64)> = Vec::new();
+    for row in scope.rows() {
+        if let Some(n) = row.resolve_field(field).as_ref().and_then(as_f64) {
+            vals.push((row.id(), n));
+        }
+    }
+    let nums: Vec<f64> = vals.iter().map(|(_, n)| *n).collect();
+    let Some(buckets) = bin_numeric(&nums, binning) else {
+        return Vec::new();
+    };
+    let mut groups: Vec<PartitionBucket> = buckets
+        .bounds
+        .iter()
+        .map(|&(lo, hi)| PartitionBucket {
+            key: bound_label(lo, hi),
+            ids: Vec::new(),
+            bin: Some([lo, hi]),
+        })
+        .collect();
+    for (id, n) in vals {
+        groups[buckets.index_of(n)].ids.push(id);
+    }
+    if groups.len() > MAX_BINS_WITH_EMPTIES {
+        groups.retain(|g| !g.ids.is_empty());
+    }
+    groups
+}
+
+/// The group keys one row contributes: one per member of a list value, else at most one.
+fn row_keys(row: &RowRef<'_, '_>, field: &str, spec: &KeySpec) -> Vec<String> {
+    let keys = match spec {
+        KeySpec::Value => match row.resolve_field(field) {
+            Some(serde_json::Value::Array(members)) => {
+                members.iter().filter_map(value_key).collect()
+            }
+            v => v.as_ref().and_then(value_key).into_iter().collect(),
+        },
+        KeySpec::DatePart { part, tz_local } => {
+            let key = if *tz_local {
+                let (fv, tz) = row.resolve_field_and_tz(field);
+                date_part_key(fv.as_ref(), *part, true, tz.as_deref())
+            } else {
+                date_part_key(row.resolve_field(field).as_ref(), *part, false, None)
+            };
+            key.into_iter().collect()
+        }
+        KeySpec::NumericBin { .. } => Vec::new(),
+    };
+    let mut keys: Vec<String> = keys;
+    let mut seen = HashSet::new();
+    keys.retain(|k| !k.is_empty() && seen.insert(k.clone()));
+    keys
+}
+
+pub(super) fn partition_keyed(scope: &Scope, field: &str, spec: &KeySpec) -> Vec<PartitionBucket> {
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<PartitionBucket> = Vec::new();
+    for row in scope.rows() {
+        let id = row.id();
+        for k in row_keys(&row, field, spec) {
+            match index.get(&k) {
+                Some(&i) => groups[i].ids.push(id),
+                None => {
+                    index.insert(k.clone(), groups.len());
+                    groups.push(PartitionBucket {
+                        key: k,
+                        ids: vec![id],
+                        bin: None,
+                    });
+                }
+            }
+        }
+    }
+    groups
+}
+
+/// Group counts. A list field puts one row in several groups, so the counts do not sum to
+/// the rows grouped.
+#[derive(Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CountBy {
+    pub counts: Vec<(String, u32)>,
+    /// Rows held by at least one group.
+    pub covered: u32,
+}
+
+/// The group key for a field value, printed the way JS `String()` does: strings verbatim
+/// (empty -> skip), numbers without a trailing ".0", bools as "true"/"false".
+/// Null/other -> skip.
+pub(super) fn value_key(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        }
+        serde_json::Value::Number(n) => Some(
+            n.as_i64()
+                .map(|i| i.to_string())
+                .or_else(|| n.as_f64().map(js_number_string))
+                .unwrap_or_else(|| n.to_string()),
+        ),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Calendar component of a date/month field value. Month strings ("YYYY-MM") read y/mo with
+/// day=1, hour=0; everything else is epoch seconds, read in the pano's timezone (`tz_local`)
+/// or UTC.
+pub(super) fn date_part_key(
+    v: Option<&serde_json::Value>,
+    part: DatePart,
+    tz_local: bool,
+    tz: Option<&str>,
+) -> Option<String> {
+    let v = v?;
+    if let Some(s) = v.as_str() {
+        if let Some((y, mo)) = parse_year_month(s) {
+            return Some(parts_to_key(y, mo, 1, 0, part));
+        }
+    }
+    let ts = as_f64(v)?;
+    let (y, mo, d, h) = if tz_local {
+        let off = tz_offset_seconds(tz?, ts)?;
+        utc_parts(ts + off as f64)
+    } else {
+        utc_parts(ts)
+    };
+    Some(parts_to_key(y, mo, d, h, part))
+}
+
+pub(super) fn parts_to_key(y: i32, mo: u32, d: u32, h: u32, part: DatePart) -> String {
+    match part {
+        DatePart::Year => format!("{y}"),
+        DatePart::YearMonth => format!("{y}-{mo:02}"),
+        DatePart::Day => format!("{y}-{mo:02}-{d:02}"),
+        DatePart::MonthOfYear => format!("{:02}", mo.clamp(1, 12)),
+        DatePart::HourOfDay => format!("{h:02}:00"),
+    }
+}
+
+/// Parse a strict "YYYY-MM" string into (year, month). `None` for any other shape (e.g. a
+/// numeric date string), which the caller then treats as epoch seconds.
+pub(super) fn parse_year_month(s: &str) -> Option<(i32, u32)> {
+    let b = s.as_bytes();
+    if b.len() != 7 || b[4] != b'-' || !b[..4].iter().chain(&b[5..]).all(u8::is_ascii_digit) {
+        return None;
+    }
+    let month = s[5..7]
+        .parse::<u32>()
+        .ok()
+        .filter(|m| (1..=12).contains(m))?;
+    Some((s[0..4].parse().ok()?, month))
+}
+
+pub(super) fn utc_parts(ts: f64) -> (i32, u32, u32, u32) {
+    let dt = DateTime::<Utc>::from_timestamp(ts as i64, 0).unwrap_or_default();
+    (dt.year(), dt.month(), dt.day(), dt.hour())
+}
+
+/// A number printed the way JS `String()` does: integer-valued floats lose the decimal.
+pub(super) fn js_number_string(f: f64) -> String {
+    if f.is_finite() && f.fract() == 0.0 {
+        format!("{}", f as i64)
+    } else {
+        format!("{f}")
+    }
+}
+
+/// Equal-width numeric bins.
+pub(super) struct NumBuckets {
+    pub(super) bounds: Vec<(f64, f64)>,
+    pub(super) mode: BinMode,
+}
+
+pub(super) enum BinMode {
+    Count {
+        min: f64,
+        max: f64,
+        step: f64,
+        count: usize,
+    },
+    Width {
+        lo0: f64,
+        w: f64,
+        count: usize,
+    },
+}
+
+impl NumBuckets {
+    fn index_of(&self, v: f64) -> usize {
+        match self.mode {
+            BinMode::Count {
+                min,
+                max,
+                step,
+                count,
+            } => {
+                if v <= min {
+                    return 0;
+                }
+                if v >= max {
+                    return count - 1;
+                }
+                (((v - min) / step).floor() as isize).clamp(0, count as isize - 1) as usize
+            }
+            BinMode::Width { lo0, w, count } => {
+                (((v - lo0) / w).floor() as isize).clamp(0, count as isize - 1) as usize
+            }
+        }
+    }
+}
+
+pub(super) fn bin_numeric(values: &[f64], binning: &NumericBinning) -> Option<NumBuckets> {
+    let (mut min, mut max, mut any) = (f64::INFINITY, f64::NEG_INFINITY, false);
+    for &n in values {
+        if n.is_finite() {
+            any = true;
+            if n < min {
+                min = n;
+            }
+            if n > max {
+                max = n;
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+
+    match *binning {
+        NumericBinning::Count { n } => {
+            let count = n as usize;
+            if count < 1 || min == max {
+                return None;
+            }
+            let step = (max - min) / count as f64;
+            let bounds = (0..count)
+                .map(|i| {
+                    let lo = min + step * i as f64;
+                    let hi = if i == count - 1 {
+                        max
+                    } else {
+                        min + step * (i + 1) as f64
+                    };
+                    (lo, hi)
+                })
+                .collect();
+            Some(NumBuckets {
+                bounds,
+                mode: BinMode::Count {
+                    min,
+                    max,
+                    step,
+                    count,
+                },
+            })
+        }
+        NumericBinning::Width { w } => {
+            if w.is_nan() || w <= 0.0 {
+                return None;
+            }
+            let lo0 = (min / w).floor() * w;
+            let count = (((max - lo0) / w).floor() as usize + 1).max(1);
+            let bounds = (0..count)
+                .map(|i| (lo0 + w * i as f64, lo0 + w * (i + 1) as f64))
+                .collect();
+            Some(NumBuckets {
+                bounds,
+                mode: BinMode::Width { lo0, w, count },
+            })
+        }
+    }
+}
+
+/// Numeric bin label: "lo–hi", integers without decimals.
+pub(super) fn bound_label(lo: f64, hi: f64) -> String {
+    format!("{}–{}", fmt_bound(lo), fmt_bound(hi))
+}
+
+pub(super) fn fmt_bound(n: f64) -> String {
+    if n.fract() == 0.0 {
+        format!("{}", n as i64)
+    } else {
+        format!("{}", (n * 100.0).round() / 100.0)
+    }
+}

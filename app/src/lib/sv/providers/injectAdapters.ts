@@ -87,7 +87,7 @@ function metadataPayload(meta: PanoramaMetadata, prefix: string): unknown[] {
 	}
 	for (const link of meta.links) {
 		const i = index.get(link.panoId);
-		if (i != null) links.push([i, [, , , link.heading ?? 0]]);
+		if (i != null) links.push([i, [undefined, undefined, undefined, link.heading ?? 0]]);
 	}
 	for (const version of meta.timeline) {
 		const i = panoramas.length;

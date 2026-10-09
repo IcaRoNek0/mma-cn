@@ -51,10 +51,10 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
-				scope: null,
-				mapName: map.meta.name,
-				tagsJson: JSON.stringify(api.getMapState().tags),
+				shape: "local",
+				selector: { type: "Everything" },
+				mapName: map.name,
+				tagsJson: JSON.stringify(api.getTags()),
 				extraFieldsJson: null,
 			});
 			const res = await fetch(api.mmaBufUrl(path));
@@ -99,10 +99,10 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
-				scope: null,
-				mapName: map.meta.name,
-				tagsJson: JSON.stringify(api.getMapState().tags),
+				shape: "local",
+				selector: { type: "Everything" },
+				mapName: map.name,
+				tagsJson: JSON.stringify(api.getTags()),
 				extraFieldsJson: null,
 			});
 			const res = await fetch(api.mmaBufUrl(path));
@@ -127,10 +127,10 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: false,
 				exportUnpanned: true,
-				exportExtras: true,
-				scope: null,
-				mapName: map.meta.name,
-				tagsJson: JSON.stringify(api.getMapState().tags),
+				shape: "local",
+				selector: { type: "Everything" },
+				mapName: map.name,
+				tagsJson: JSON.stringify(api.getTags()),
 				extraFieldsJson: null,
 			});
 			const res = await fetch(api.mmaBufUrl(path));
@@ -152,10 +152,10 @@ describe("JSON import/export round-trip", () => {
 			const path = await api.cmd.storeExportJson({
 				exportZoom: true,
 				exportUnpanned: true,
-				exportExtras: true,
-				scope: null,
-				mapName: map.meta.name,
-				tagsJson: JSON.stringify(api.getMapState().tags),
+				shape: "local",
+				selector: { type: "Everything" },
+				mapName: map.name,
+				tagsJson: JSON.stringify(api.getTags()),
 				extraFieldsJson: null,
 			});
 			const res = await fetch(api.mmaBufUrl(path));
@@ -196,7 +196,7 @@ describe("CSV import/export", () => {
 		]);
 
 		const result = await withApi(async (api) => {
-			const path = await api.cmd.storeExportCsv(null);
+			const path = await api.cmd.storeExportCsv({ type: "Everything" });
 			const res = await fetch(api.mmaBufUrl(path));
 			const csv = await res.text();
 			const lines = csv.trim().split("\n");
@@ -209,7 +209,7 @@ describe("CSV import/export", () => {
 
 	it("CSV round-trip preserves coordinates", async () => {
 		const result = await withApi(async (api) => {
-			const path = await api.cmd.storeExportCsv(null);
+			const path = await api.cmd.storeExportCsv({ type: "Everything" });
 			const res = await fetch(api.mmaBufUrl(path));
 			const csv = await res.text();
 			const lines = csv.trim().split("\n").slice(1);
@@ -240,7 +240,10 @@ describe("GeoJSON export", () => {
 	});
 	it("GeoJSON export produces valid FeatureCollection", async () => {
 		const result = await withApi(async (api) => {
-			const path = await api.cmd.storeExportGeojson(null, JSON.stringify(api.getMapState().tags));
+			const path = await api.cmd.storeExportGeojson(
+				{ type: "Everything" },
+				JSON.stringify(api.getTags()),
+			);
 			const res = await fetch(api.mmaBufUrl(path));
 			const geojson = await res.text();
 			const parsed = JSON.parse(geojson);

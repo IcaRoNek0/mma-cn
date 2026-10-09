@@ -1,7 +1,7 @@
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
-import { errText } from "@/lib/util/util";
+import { errText } from "@/lib/util/format";
 
 /** A call routed in from the local REST transport (see src-tauri/remote_api.rs). */
 interface RemoteCall {
@@ -39,17 +39,22 @@ function toJson(value: unknown): string {
 	return s;
 }
 
-/** Listen for remote API calls targeted at this window. Installed once at startup. */
+async function handleRemoteCall({ id, path, args }: RemoteCall): Promise<void> {
+	try {
+		const result = await executeMmaPath(path, args ?? []);
+		await cmd.remoteApiRespond(id, true, toJson(result));
+	} catch (e) {
+		const msg = errText(e);
+		log.warn(`[remote-api] ${path} failed: ${msg}`);
+		await cmd.remoteApiRespond(id, false, JSON.stringify(msg));
+	}
+}
+
+/** Listen for remote API calls targeted at this window. Installed once at startup.
+ *  Window-scoped listen: a global `listen` receives `emit_to` events in every window,
+ *  so all windows would execute the call and race to respond. */
 export function initRemoteHost(): void {
-	void listen<RemoteCall>("mma-remote:call", async (ev) => {
-		const { id, path, args } = ev.payload;
-		try {
-			const result = await executeMmaPath(path, args ?? []);
-			await cmd.remoteApiRespond(id, true, toJson(result));
-		} catch (e) {
-			const msg = errText(e);
-			log.warn(`[remote-api] ${path} failed: ${msg}`);
-			await cmd.remoteApiRespond(id, false, JSON.stringify(msg));
-		}
+	void getCurrentWebviewWindow().listen<RemoteCall>("mma-remote:call", (ev) => {
+		void handleRemoteCall(ev.payload);
 	});
 }

@@ -9,6 +9,7 @@ import {
 	withTagKeyBinding,
 	getMapCopyBindingKey,
 	withMapCopyBinding,
+	mergedKeyBindings,
 } from "@/lib/map/mapKeyBindings";
 import { isEditableElement } from "@/lib/hooks/useHotkey";
 import type { MapKeyBinding } from "@/bindings.gen";
@@ -53,7 +54,11 @@ describe("action handler registry", () => {
 
 	it("executes a registered handler and reports consumption", () => {
 		const seen: number[] = [];
-		cleanups.push(registerMapKeyActionHandler("applyTag", (a) => seen.push(a.tagId)));
+		cleanups.push(
+			registerMapKeyActionHandler("applyTag", (a) => {
+				seen.push(a.tagId);
+			}),
+		);
 		expect(executeMapKeyAction(applyTag(7))).toBe(true);
 		expect(seen).toEqual([7]);
 	});
@@ -103,7 +108,9 @@ describe("tag binding helpers", () => {
 	it("a tag holds one key: reassigning drops its previous key", () => {
 		const next = withTagKeyBinding(base, 1, "z");
 		expect(getTagBindingKey(next, 1)).toBe("z");
-		expect(next.filter((b) => b.action.tagId === 1)).toHaveLength(1);
+		expect(next.filter((b) => b.action.type === "applyTag" && b.action.tagId === 1)).toHaveLength(
+			1,
+		);
 	});
 
 	it("empty key clears the tag's binding", () => {
@@ -157,6 +164,17 @@ describe("handleMapKeyEvent", () => {
 		expect(e.defaultPrevented).toBe(false);
 	});
 
+	it("yields while a plugin overlay owns input", () => {
+		cleanups.push(registerMapKeyActionHandler("applyTag", () => {}));
+		const overlay = document.createElement("div");
+		overlay.setAttribute("data-plugin-overlay", "");
+		document.body.appendChild(overlay);
+		cleanups.push(() => overlay.remove());
+		const e = keyEvent("m");
+		expect(handleMapKeyEvent(e, bindings)).toBe(false);
+		expect(e.defaultPrevented).toBe(false);
+	});
+
 	it("ignores repeats and already-handled events", () => {
 		cleanups.push(registerMapKeyActionHandler("applyTag", () => {}));
 		expect(handleMapKeyEvent(keyEvent("m", { repeat: true }), bindings)).toBe(false);
@@ -190,7 +208,9 @@ describe("precedence over global hotkey layer", () => {
 		};
 		// Register the global (document, capture) handler FIRST to prove order independence.
 		document.addEventListener("keydown", globalHandler, true);
-		const unregister = registerMapKeyActionHandler("applyTag", () => order.push("map"));
+		const unregister = registerMapKeyActionHandler("applyTag", () => {
+			order.push("map");
+		});
 		const mapHandler = (e: KeyboardEvent) => {
 			handleMapKeyEvent(e, [{ key: "m", action: applyTag(1) }]);
 		};
@@ -204,5 +224,39 @@ describe("precedence over global hotkey layer", () => {
 		window.removeEventListener("keydown", mapHandler, true);
 		unregister();
 		expect(order).toEqual(["map"]);
+	});
+});
+
+describe("mergedKeyBindings", () => {
+	const copyTo = (key: string, mapId: string): MapKeyBinding => ({
+		key,
+		action: { type: "copyToMap", mapId },
+	});
+
+	it("appends global copy bindings after the map's own", () => {
+		const merged = mergedKeyBindings(
+			[{ key: "q", action: applyTag(1) }],
+			[copyTo("w", "other")],
+			"current",
+		);
+		expect(merged.map((b) => b.key)).toEqual(["q", "w"]);
+	});
+
+	it("drops a global binding targeting the open map itself", () => {
+		expect(mergedKeyBindings([], [copyTo("w", "current")], "current")).toEqual([]);
+	});
+
+	it("a map binding shadows a same-key global at match time", () => {
+		const merged = mergedKeyBindings(
+			[{ key: "w", action: applyTag(7) }],
+			[copyTo("w", "other")],
+			"current",
+		);
+		expect(matchMapKeyBinding(keyEvent("w"), merged)?.action).toEqual(applyTag(7));
+	});
+
+	it("returns the map bindings untouched when no global applies", () => {
+		const mapBindings = [{ key: "q", action: applyTag(1) }];
+		expect(mergedKeyBindings(mapBindings, [copyTo("w", "current")], "current")).toBe(mapBindings);
 	});
 });

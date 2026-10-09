@@ -1,22 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { Field } from "@/components/primitives/Sidebar";
-import { mapMakingApp } from "@/components/primitives/Icon";
+import { TextInput } from "@/components/primitives/TextInput";
 import { ConnectionUser, SyncSidebar as SharedSyncSidebar } from "@/lib/sync/ui/SyncSidebar";
-import type { Remote } from "./map-making-web-api";
+import type { MmUser } from "@/bindings.gen";
 import * as auth from "./controller";
 import { controller } from "./controller";
-import { errText } from "@/lib/util/util";
+import { errText } from "@/lib/util/format";
 import { t } from "@/lib/i18n";
+import { Button } from "@/components/primitives/Button";
+import { Notice } from "@/components/primitives/Hint";
 
 /** The shared sync sidebar, with map-making.app's API-key auth plugged into it. */
 export function SyncSidebar({ onClose }: { onClose: () => void }) {
-	const [keyDraft, setKeyDraft] = useState(auth.getApiKey());
-	const [user, setUser] = useState<Remote.User | null>(auth.getCachedUser());
+	const [keyDraft, setKeyDraft] = useState("");
+	const [user, setUser] = useState<MmUser | null>(auth.getCachedUser());
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	// True only while the mount-time validation below is in flight. With no key there is nothing
-	// to check, so the key form shows immediately rather than flashing through a "checking" state.
-	const [checking, setChecking] = useState(() => !!auth.getApiKey() && !auth.getCachedUser());
+	// True only while the mount-time check below is in flight. With no key there is nothing to
+	// check, so the key form shows immediately rather than flashing through a "checking" state.
+	const [checking, setChecking] = useState(() => auth.hasKey() && !auth.getCachedUser());
 
 	const validate = useCallback(async () => {
 		setBusy(true);
@@ -24,21 +26,27 @@ export function SyncSidebar({ onClose }: { onClose: () => void }) {
 		try {
 			// Validate before persisting: a typo'd key must not replace a working one.
 			const user = await auth.validate(keyDraft);
-			auth.setApiKey(keyDraft);
+			await auth.setKey(keyDraft);
 			setUser(user);
 		} catch (e) {
+			// Validate may have cached the identity before the store failed; a failed
+			// submit must leave nothing signed in.
+			auth.forgetAuth();
 			setError(errText(e));
 			setUser(null);
 		} finally {
 			setBusy(false);
-			setChecking(false);
 		}
 	}, [keyDraft]);
 
-	// Validate once when a key exists but nothing is cached yet; cached opens are instant.
+	// Check the stored key once when nothing is cached yet; cached opens are instant.
 	useEffect(() => {
-		if (auth.getApiKey() && !auth.getCachedUser()) void validate();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
+		if (!auth.hasKey() || auth.getCachedUser()) return;
+		auth
+			.me()
+			.then(setUser)
+			.catch((e: unknown) => setError(errText(e)))
+			.finally(() => setChecking(false));
 	}, []);
 
 	const authUi = user ? (
@@ -47,15 +55,14 @@ export function SyncSidebar({ onClose }: { onClose: () => void }) {
 		<ConnectionUser
 			name={user.username}
 			action={
-				<button
-					className="button"
+				<Button
 					onClick={() => {
 						auth.forgetAuth();
 						setUser(null);
 					}}
 				>
 					{t("Change key")}
-				</button>
+				</Button>
 			}
 		/>
 	) : (
@@ -75,8 +82,7 @@ export function SyncSidebar({ onClose }: { onClose: () => void }) {
 				style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
 			/>
 			<Field label={t("API key")} hint={t("Get one at map-making.app/keys")}>
-				<input
-					className="input"
+				<TextInput
 					type="password"
 					autoComplete="current-password"
 					value={keyDraft}
@@ -84,14 +90,10 @@ export function SyncSidebar({ onClose }: { onClose: () => void }) {
 					placeholder={t("paste API key")}
 				/>
 			</Field>
-			<button className="button button--primary" type="submit" disabled={busy || !keyDraft}>
+			<Button variant="primary" type="submit" disabled={busy || !keyDraft}>
 				{busy ? t("Validating...") : t("Validate")}
-			</button>
-			{error && (
-				<p className="mma-input__help" style={{ color: "var(--red-9, #e5484d)" }}>
-					{error}
-				</p>
-			)}
+			</Button>
+			{error && <Notice tone="error">{error}</Notice>}
 		</form>
 	);
 
@@ -101,8 +103,7 @@ export function SyncSidebar({ onClose }: { onClose: () => void }) {
 			controller={controller}
 			auth={authUi}
 			identity={checking ? undefined : user ? { id: String(user.id) } : null}
-			listMaps={auth.listMaps}
-			brand={{ path: mapMakingApp, color: "#CC2F2D" }}
+			source={{ kind: "list", listMaps: auth.listMaps, createMap: auth.createMap }}
 		/>
 	);
 }

@@ -26,7 +26,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/sv/panoCapture", () => ({
-	snapshotPanoView: mocks.snapshot,
 	renderPanoView: mocks.render,
 	canvasToBlob: mocks.toBlob,
 }));
@@ -36,11 +35,17 @@ vi.mock("@/lib/util/util", () => ({
 	schemeBase: () => "",
 }));
 vi.mock("@/lib/util/toast", () => ({ toast: mocks.toast }));
-vi.mock("@/lib/util/log", () => ({ log: { warn: vi.fn() } }));
-vi.mock("@/store/settings", () => ({ useSettings: () => mocks.settings }));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
+vi.mock("@/store/settings", () => ({
+	useSettings: () => mocks.settings,
+	getSettings: () => ({ units: "metric" }),
+}));
 vi.mock("@/lib/util/hotkeys", () => ({ useBinding: () => "f" }));
 vi.mock("@/lib/hooks/useHotkey", () => ({ useHotkeyRef: () => ({ current: null }) }));
-vi.mock("@/lib/hooks/usePanoEvent", () => ({ usePanoEvent: vi.fn() }));
+vi.mock("@/lib/hooks/usePano", () => {
+	const viewer = { snapshot: mocks.snapshot, jumpAhead: async () => false };
+	return { usePano: () => viewer, usePanoEvent: vi.fn() };
+});
 vi.mock("@/lib/sv/opensv", () => ({ google: { maps: {} } }));
 vi.mock("@/components/primitives/Tooltip", () => ({
 	Tooltip: ({ children }: { children: React.ReactNode }) => children,
@@ -48,21 +53,13 @@ vi.mock("@/components/primitives/Tooltip", () => ({
 
 import { PanoControls } from "@/components/editor/location/PanoControls";
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
-const panorama = {} as google.maps.StreetViewPanorama;
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
 function renderControls() {
 	act(() =>
 		root.render(
-			<PanoControls
-				panorama={panorama}
-				isFullscreen={false}
-				onFullscreen={vi.fn()}
-				onReturnToSpawn={vi.fn()}
-			/>,
+			<PanoControls isFullscreen={false} onFullscreen={vi.fn()} onReturnToSpawn={vi.fn()} />,
 		),
 	);
 }
@@ -126,7 +123,7 @@ describe("PanoControls screenshot button", () => {
 		expect(mocks.download).not.toHaveBeenCalled();
 		expect(mocks.toast).toHaveBeenCalledWith("Screenshot copied");
 
-		act(() => vi.advanceTimersByTime(500));
+		await act(() => vi.advanceTimersByTime(500));
 		expect(button.disabled).toBe(false);
 	});
 
@@ -170,5 +167,20 @@ describe("PanoControls screenshot button", () => {
 		expect(mocks.toast).toHaveBeenCalledWith("Screenshot failed");
 		expect(mocks.download).not.toHaveBeenCalled();
 		expect(button.disabled).toBe(false);
+	});
+});
+
+describe("PanoControls jump buttons", () => {
+	it("follow their visibility setting", () => {
+		const jumps = () =>
+			[...container.querySelectorAll("button")].filter((b) =>
+				/^Jump (forward|backward)/.test(b.getAttribute("aria-label") ?? ""),
+			);
+		renderControls();
+		expect(jumps()).toHaveLength(0);
+		mocks.settings.showJumpButtons = true;
+		renderControls();
+		expect(jumps()).toHaveLength(2);
+		mocks.settings.showJumpButtons = false;
 	});
 });

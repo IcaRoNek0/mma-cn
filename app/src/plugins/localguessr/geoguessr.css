@@ -17,6 +17,7 @@
 	--gg-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 	--gg-font: "Segoe UI", system-ui, -apple-system, sans-serif;
 	--gg-hud-btn-size: 2.5rem;
+	--gg-accent-rgb: 0, 200, 255;
 }
 
 /* ---- Full-screen overlay ---- */
@@ -236,7 +237,7 @@
 	color: #fff;
 	text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
 }
-urgent .gg-timer--embedded.gg-timer--urgent {
+.gg-timer--embedded.gg-timer--urgent {
 	background: transparent;
 	animation: gg-pulse 0.8s ease infinite;
 	color: #ffb4a2;
@@ -1165,7 +1166,7 @@ urgent .gg-timer--embedded.gg-timer--urgent {
 	white-space: nowrap;
 }
 .gg-add-tag-dialog__chip:hover:not(:disabled) {
-	background: var(--surface-4, rgba(255, 255, 255, 0.1));
+	background: var(--surface-3);
 }
 .gg-add-tag-dialog__chip:disabled {
 	opacity: 0.5;

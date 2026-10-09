@@ -1,12 +1,12 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
 	"productName": "MMA-CN",
-	"version": "0.8.3",
+	"version": "0.11.6",
 	"identifier": "fun.tuxun.mmacn",
 	"build": {
 		"frontendDist": "../dist",
 		"devUrl": "http://localhost:5173",
-		"beforeDevCommand": "npm run gen:plugin-types && npm run dev",
+		"beforeDevCommand": "npm run gen:plugin-types && npm run build:procedures && npm run dev",
 		"beforeBuildCommand": "npm run build"
 	},
 	"app": {
@@ -17,29 +17,23 @@
 				"height": 900,
 				"resizable": true,
 				"fullscreen": false,
-				"visible": true,
+				"visible": false,
 				"zoomHotkeysEnabled": true,
 				"backgroundColor": "#252521"
 			}
 		],
 		"security": {
-			"csp": null
+			"csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://maps.googleapis.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src * data: blob: asset: mma-buf: mma-plugin: svtile: pano: gmaps: ggapi: gdoc: googl:; media-src * data: blob: asset: mma-buf: svtile:; connect-src mma-tencent-archive: * data: blob: ipc: asset: mma-buf: mma-plugin: svtile: pano: gmaps: ggapi: gdoc: googl: http://ipc.localhost; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
 		}
 	},
 	"bundle": {
 		"active": true,
-		"targets": ["nsis"],
-		"createUpdaterArtifacts": false,
+		"targets": "all",
 		"resources": {
+			"procedures/*.js": "procedures/",
 			"resources/tencent-lines.pmtiles": "tencent-lines.pmtiles"
 		},
-		"windows": {
-			"nsis": {
-				"installMode": "currentUser",
-				"languages": ["SimpChinese", "English"],
-				"compression": "lzma"
-			}
-		},
+		"createUpdaterArtifacts": false,
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",

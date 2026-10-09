@@ -10,3 +10,85 @@
 	height: 100%;
 	border: none;
 }
+
+.vali-sidebar__download {
+	position: relative;
+}
+
+.vali-sidebar__badge {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--action);
+	pointer-events: none;
+}
+
+.vali-download__stale {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 16px;
+	padding: 10px 12px;
+	border-radius: var(--radius-2);
+	background: color-mix(in srgb, var(--action) 12%, transparent);
+	font-size: 13px;
+	line-height: 1.4;
+}
+
+.vali-download__stale > .button {
+	flex-shrink: 0;
+}
+
+.vali-download__picker {
+	margin-bottom: 14px;
+}
+
+.vali-download__picker .text-input {
+	width: 100%;
+}
+
+.vali-download__label {
+	margin-bottom: 6px;
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.vali-download__option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.vali-download__option-spacer {
+	width: 20px;
+	flex-shrink: 0;
+}
+
+.vali-download__switch {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 4px 0;
+	cursor: pointer;
+}
+
+.vali-download__progress {
+	margin-top: 12px;
+}
+
+.vali-download__result {
+	margin-top: 12px;
+	font-size: 13px;
+	color: var(--text-2);
+}
+
+.vali-download__error {
+	margin-top: 12px;
+	font-size: 13px;
+	color: var(--destructive-text);
+	word-break: break-word;
+}

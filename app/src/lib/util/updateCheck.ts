@@ -2,7 +2,103 @@ import { emit, useEventValue } from "@/lib/events";
 import { log } from "@/lib/util/log";
 import { getSettings } from "@/store/settings";
 import { saveSession } from "@/store/session";
-import { openMapWindowIds } from "@/lib/window";
+import { openWindows } from "@/lib/window";
+import { cmpVersion, isPrereleaseVersion } from "@/lib/util/util";
+import { getLocal, setLocal, persisted } from "@/lib/hooks/useLocalStorage";
+import { msg, t } from "@/lib/i18n";
+
+const REPO = "IcaRoNek0/mma-cn";
+const RELEASES_API = `https://api.github.com/repos/${REPO}/releases?per_page=30`;
+/** A published GitHub release. The release, not CHANGELOG.md, is what the app reads: nothing
+ *  exists until it is published, and pre-release is a fact of the release rather than of a
+ *  file on master. */
+export interface Release {
+	tag: string;
+	version: string;
+	body: string;
+	prerelease: boolean;
+	publishedAt: string;
+	/** This release's own `latest.json`, which the updater is pointed at. */
+	manifestUrl: string | null;
+}
+
+/** A release the updater can actually be pointed at. */
+type Installable = Release & { manifestUrl: string };
+
+export interface ApiRelease {
+	tag_name: string;
+	body: string | null;
+	draft: boolean;
+	prerelease: boolean;
+	published_at: string | null;
+	assets: { name: string; browser_download_url: string }[];
+}
+
+let releasesPromise: Promise<Release[] | null> | null = null;
+
+/** Unauthenticated GitHub allows 60 calls an hour per IP, and every window checks on launch.
+ *  Caching across windows keeps a session of opening maps well clear of that. */
+const CACHE_TTL_MS = 30 * 60 * 1000;
+const releaseCache = persisted<{ at: number; list: Release[] } | null>("mma-releases", null);
+
+/** Published app releases, newest first. The update check and the map list's "what's new"
+ *  panel share the one fetch. `force` is for the manual check button, which has to be able to
+ *  see a release cut in the last half hour. */
+export function fetchReleases(force = false): Promise<Release[] | null> {
+	const cached = getLocal(releaseCache);
+	if (!force && cached && Date.now() - cached.at <= CACHE_TTL_MS)
+		return Promise.resolve(cached.list);
+	if (force) releasesPromise = null;
+	releasesPromise ??= fetchReleasesUncached();
+	return releasesPromise;
+}
+
+async function fetchReleasesUncached(): Promise<Release[] | null> {
+	try {
+		const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const raw = (await res.json()) as ApiRelease[];
+		const list = raw.filter((r) => !r.draft && /^v\d/.test(r.tag_name)).map(toRelease);
+		list.sort((a, b) => cmpVersion(b.version, a.version));
+		if (!list.length) return null;
+		setLocal(releaseCache, { at: Date.now(), list });
+		return list;
+	} catch (e) {
+		log.warn("[updater] release list unavailable:", e);
+		return null;
+	}
+}
+
+/** The one place a GitHub release becomes a [`Release`], including what counts as a
+ *  pre-release: the repo's own flag, or a semver pre-release tag on the version. */
+export function toRelease(r: ApiRelease): Release {
+	const version = r.tag_name.replace(/^v/, "");
+	return {
+		tag: r.tag_name,
+		version,
+		body: r.body ?? "",
+		prerelease: r.prerelease || isPrereleaseVersion(version),
+		publishedAt: r.published_at ?? "",
+		manifestUrl: r.assets.find((a) => a.name === "latest.json")?.browser_download_url ?? null,
+	};
+}
+
+/** The newest release worth offering to someone on `current`, or null if they are up to date.
+ *  Never returns something older than `current`: turning pre-releases off leaves you where you
+ *  are until stable catches up, it does not roll you back. */
+export function pickRelease(
+	releases: readonly Release[],
+	current: string,
+	includePrerelease: boolean,
+): Installable | null {
+	const eligible = releases.filter(
+		(r): r is Installable =>
+			r.manifestUrl !== null &&
+			(includePrerelease || !r.prerelease) &&
+			cmpVersion(r.version, current) > 0,
+	);
+	return eligible[0] ?? null;
+}
 
 type Phase = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "error";
 
@@ -10,6 +106,8 @@ interface UpdateState {
 	phase: Phase;
 	version: string | null;
 	notes: string;
+	/** Whether the offered version is a pre-release. */
+	prerelease: boolean;
 	percent: number;
 	error: string | null;
 	dismissed: boolean;
@@ -19,6 +117,7 @@ let state: UpdateState = {
 	phase: "idle",
 	version: null,
 	notes: "",
+	prerelease: false,
 	percent: 0,
 	error: null,
 	dismissed: false,
@@ -29,18 +128,19 @@ function set(patch: Partial<UpdateState>) {
 	emit("update:changed");
 }
 
-const DISMISS_KEY = "mma-update-dismissed-version";
+const dismissedVersion = persisted<string | null>("mma-update-dismissed-version", null);
 
-export async function checkForUpdate() {
-	// MMA-CN releases are distributed directly and must not consume upstream MMA updates.
-	set({ phase: "up-to-date", version: null, error: null });
+export async function checkForUpdate(_force = false) {
+	set({ phase: "up-to-date", version: null, prerelease: false });
 }
 
-// Relaunches bypass the normal close flow, so persist the current session first.
+// Updating never fires onCloseRequested (the installer kills the app
+// inside downloadAndInstall), so snapshot the session here or the post-update
+// restore reopens the stale list from the last normal quit.
 async function snapshotSessionForRestart() {
 	if (!getSettings().restoreSession) return;
 	try {
-		const ids = await openMapWindowIds();
+		const ids = (await openWindows("editor")).map((w) => w.mapId);
 		saveSession(ids);
 		log.info(`[session] saved ${ids.length} open map(s) before restart: ${ids.join(", ")}`);
 	} catch (e) {
@@ -48,8 +148,8 @@ async function snapshotSessionForRestart() {
 	}
 }
 
-export function installUpdate() {
-	// No updater endpoint is configured for direct MMA-CN distributions.
+export async function installUpdate() {
+	// Direct MMA-CN distributions do not have an updater feed.
 }
 
 export async function relaunchApp() {
@@ -60,8 +160,52 @@ export async function relaunchApp() {
 
 export function dismissUpdate() {
 	if (!state.version) return;
-	localStorage.setItem(DISMISS_KEY, state.version);
+	setLocal(dismissedVersion, state.version);
 	set({ dismissed: true });
+}
+
+const PHASES: Record<
+	Phase,
+	{ status: string; action?: { label: string; run: () => Promise<void> }; pending?: true }
+> = {
+	idle: { status: msg("Updates haven't been checked yet.") },
+	checking: { status: msg("Checking for updates...") },
+	"up-to-date": { status: msg("You're on the latest version.") },
+	available: {
+		status: msg("Version {version} is available."),
+		action: { label: msg("Download and install"), run: installUpdate },
+		pending: true,
+	},
+	downloading: { status: msg("Downloading update..."), pending: true },
+	ready: {
+		status: msg("Update installed. Restart to apply."),
+		action: { label: msg("Restart now"), run: relaunchApp },
+		pending: true,
+	},
+	error: {
+		status: msg("Update check failed."),
+		action: { label: msg("Retry"), run: installUpdate },
+	},
+};
+
+export interface UpdateView {
+	status: string;
+	action: { label: string; run: () => Promise<void> } | null;
+	/** An update is waiting on the user. */
+	pending: boolean;
+}
+
+/** What an update state says and offers, read by both the corner pill and the settings block. */
+export function describeUpdate(s: UpdateState): UpdateView {
+	const phase = PHASES[s.phase];
+	const offerable = s.phase !== "error" || s.version !== null;
+	return {
+		status:
+			s.phase === "error" && s.error ? s.error : t(phase.status, { version: s.version ?? "" }),
+		action:
+			phase.action && offerable ? { label: t(phase.action.label), run: phase.action.run } : null,
+		pending: phase.pending ?? false,
+	};
 }
 
 export function useUpdateState(): UpdateState {

@@ -1,15 +1,11 @@
 import { bridgeAcrossWindows, emit as emitEvent, useEventValue } from "@/lib/events";
-import { getLocal, setLocal, reloadLocal } from "@/lib/hooks/useLocalStorage";
+import { getLocal, setLocal, reloadLocal, persisted } from "@/lib/hooks/useLocalStorage";
 import { msg } from "@/lib/i18n";
-import type { SavedSelection } from "./savedSelections";
 import type { TagSortMode } from "@/types";
 import type { PinnedEntry } from "./commandDefs";
 import type { RGB } from "@/lib/util/color";
 
-/** Language names stay in their own language, the way every language picker does it -- a reader
- *  looking for their own has to recognise it without already reading English.
- *  `en-XA` is the generated pseudolocale: accented and ~40% longer, so unextracted strings and
- *  layout overflow are visible without a translator. Offered in dev builds only. */
+/** Supported languages, labeled in their own script. `en-XA` is a dev-only pseudolocale. */
 export const LANGUAGES = {
 	en: "English",
 	de: "Deutsch",
@@ -60,6 +56,12 @@ export const GEOCODE_PROVIDER_LABELS: Record<keyof typeof GEOCODE_PROVIDERS, str
 	nominatim: msg("OpenStreetMap (Nominatim)"),
 	google: msg("Google Street View"),
 };
+/** Distance units. `auto` reads the system locale's region, so a US/UK machine gets miles. */
+export const UNIT_SYSTEMS = {
+	auto: msg("Automatic"),
+	metric: msg("Metric (m / km)"),
+	imperial: msg("Imperial (ft / mi)"),
+} as const;
 export const TAG_VIEW_MODES = {
 	flat: msg("Flat"),
 	tree: msg("Tree"),
@@ -78,8 +80,14 @@ export const POLYGON_COLOR_MODES = {
 } as const;
 export const BORDER_DETAILS = {
 	light: msg("Standard (bundled)"),
-	medium: msg("High (~10MB)"),
-	heavy: msg("Ultra (~46MB)"),
+	medium: msg("High ({size})"),
+	heavy: msg("Ultra ({size})"),
+} as const;
+/** Download size of each border detail level, in bytes. */
+export const BORDER_ARCHIVE_BYTES = {
+	medium: 7_460_312,
+	heavy: 21_514_464,
+	adm1: 56_891_952,
 } as const;
 export const SUBDIVISION_DETAILS = {
 	off: msg("Off"),
@@ -115,6 +123,7 @@ export type SeenResolution = keyof typeof SEEN_RESOLUTIONS;
 export type MapListField = keyof typeof MAP_LIST_FIELDS;
 export type DiscordPresenceMode = keyof typeof DISCORD_PRESENCE_MODES;
 export type GeocodeProvider = keyof typeof GEOCODE_PROVIDERS;
+export type UnitSystem = keyof typeof UNIT_SYSTEMS;
 export type TagViewMode = keyof typeof TAG_VIEW_MODES;
 export type TagFolderColorMode = keyof typeof TAG_FOLDER_COLOR_MODES;
 export type OpacityToggleMode = keyof typeof OPACITY_TOGGLE_MODES;
@@ -123,7 +132,8 @@ export type BorderDetail = keyof typeof BORDER_DETAILS;
 export type SubdivisionDetail = keyof typeof SUBDIVISION_DETAILS;
 export type PreviewAspectRatio = keyof typeof PREVIEW_ASPECT_RATIOS;
 
-const DEFAULTS = {
+/** Default values for every app setting. */
+export const DEFAULTS = {
 	showCameraBadges: true,
 	showLinksControl: true,
 	clickToGo: true,
@@ -157,8 +167,6 @@ const DEFAULTS = {
 	/** Milliseconds the fullscreen minimap stays expanded after the pointer leaves it. */
 	fullscreenMinimapCloseDelay: 250,
 	showFullscreenTagbar: true,
-	/** Tag bar dropped down to a thin strip. Toggled from the bar itself, not Settings. */
-	fullscreenTagbarCollapsed: false,
 	showFullscreenDatePicker: true,
 	showFullscreenReviewBar: true,
 	showFullscreenGeocode: true,
@@ -173,10 +181,16 @@ const DEFAULTS = {
 	slowModifier: 4,
 	showFps: false,
 	mapListFields: ["locationCount"] as MapListField[],
+	/** Ids of map-row badge sources that are hidden. */
+	hiddenMapBadges: ["pending"] as string[],
 	/** Read once at boot; changing it relaunches the app rather than re-rendering. */
 	language: "en" as Language,
+	/** Every distance the UI shows or accepts; stored values stay metric. */
+	units: "metric" as UnitSystem,
 	/** Reopen the maps that were open when the session last ended (main window closed). */
 	restoreSession: true,
+	/** Offer pre-release builds to the updater as well as full releases. */
+	prereleaseUpdates: false,
 	/** Discord Rich Presence: off, generic (no map name), or full (map name + count). */
 	discordPresence: "off" as DiscordPresenceMode,
 	/** Per-label color overrides (hex), keyed by lowercased label name. Shared across all maps. */
@@ -184,20 +198,23 @@ const DEFAULTS = {
 	geocodeProvider: "local" as GeocodeProvider,
 	nominatimApiKey: "",
 	panToImported: true,
-	/** Min half-extent (degrees) a single pasted/imported point is padded to before fitBounds */
+	/** With no location open, Enter shows a center crosshair and opens the location under it. */
+	enterOpensCenter: true,
+	/** Smallest half-width, in degrees, the map frames around a single pasted or imported point. */
 	pastePadding: 0.003 as number,
 	followActiveInReview: true,
-	markerColor: { r: 42, g: 42, b: 42 } as RGB,
-	activeLocationColor: { r: 200, g: 0, b: 0 } as RGB,
-	importPreviewColor: { r: 217, g: 70, b: 239 } as RGB,
-	panoDotColor: { r: 255, g: 0, b: 0 } as RGB,
-	/** Color a newly drawn polygon selection starts with. `random` hashes it from the polygon's
-	 *  key; `fixed` uses polygonColor. Either way it's only the initial value -- recoloring a
-	 *  polygon by hand still wins. */
+	markerColor: [42, 42, 42] as RGB,
+	activeLocationColor: [200, 0, 0] as RGB,
+	importPreviewColor: [217, 70, 239] as RGB,
+	svTrail: true,
+	svTrailColor: [255, 0, 0] as RGB,
+	svTrailPosition: true,
+	panoDotColor: [255, 0, 0] as RGB,
 	/** What the layer opacity hotkeys restore a layer to when toggling it back on. */
 	opacityToggleMode: "previous" as OpacityToggleMode,
+	/** Initial color mode for newly drawn polygon selections. Recoloring by hand overrides either mode. */
 	polygonColorMode: "random" as PolygonColorMode,
-	polygonColor: { r: 0, g: 140, b: 255 } as RGB,
+	polygonColor: [0, 140, 255] as RGB,
 	panoDotScaled: false,
 	tagViewMode: "flat" as TagViewMode,
 	/** Tree view only: render each tag as the shortest path suffix that's still unique. */
@@ -206,7 +223,7 @@ const DEFAULTS = {
 	 *  `firstChild` inherits the first own-colored descendant in display order,
 	 *  with tagFolderColor as the fallback for colorless subtrees. */
 	tagFolderColorMode: "direct" as TagFolderColorMode,
-	tagFolderColor: { r: 136, g: 136, b: 136 } as RGB,
+	tagFolderColor: [136, 136, 136] as RGB,
 	tagSortMode: "default" as TagSortMode,
 	/** Gap between tag pills (px), shared by flat and tree views via `--tag-gap`. */
 	tagGap: 6 as number,
@@ -215,7 +232,6 @@ const DEFAULTS = {
 	subdivisionDetail: "off" as SubdivisionDetail,
 	previewAspectRatio: "16 / 9" as PreviewAspectRatio,
 	tagSuggestionLimit: 0 as number,
-	savedSelections: [] as SavedSelection[],
 	/** Local REST transport for window.MMA (Settings > Advanced). */
 	remoteApi: false,
 	remoteApiKey: "",
@@ -233,25 +249,31 @@ const DEFAULTS = {
 		"---",
 		"bulk-enrich",
 	] as PinnedEntry[],
-	hasSeenWelcome: false,
 };
 export type AppSettings = typeof DEFAULTS;
 
-/** App settings mirrored to CSS custom properties on `:root`. Add an entry to expose a
- *  setting to CSS; `useCssVarSettings` (App.tsx) keeps them in sync reactively. */
+/** Settings holding private information that should not be exfiltrated. */
+export const PRIVATE_SETTINGS: ReadonlySet<keyof AppSettings> = new Set([
+	"nominatimApiKey",
+	"remoteApiKey",
+]);
+
+/** App settings exposed as CSS custom properties on `:root`. */
 export const CSS_VAR_SETTINGS: ReadonlyArray<
 	readonly [cssVar: string, value: (s: AppSettings) => string]
 > = [["--tag-gap", (s) => `${s.tagGap}px`]];
 
-const STORAGE_KEY = "appSettings";
+/** localStorage descriptor for the persisted settings object. */
+export const APP_SETTINGS = persisted("appSettings", DEFAULTS);
 
-let settings: AppSettings = { ...getLocal(STORAGE_KEY, DEFAULTS) };
+let settings: AppSettings = { ...getLocal(APP_SETTINGS) };
 
 // Another window changed settings: reread the shared localStorage before re-emitting.
 bridgeAcrossWindows("settings:changed", () => {
-	settings = { ...reloadLocal(STORAGE_KEY, DEFAULTS) };
+	settings = { ...reloadLocal(APP_SETTINGS) };
 });
 
+/** The current app settings snapshot. */
 export function getSettings(): AppSettings {
 	return settings;
 }
@@ -261,8 +283,7 @@ export function navHiddenWithUI(s: AppSettings): boolean {
 	return s.hidePanoUI && s.hideNavWithUI;
 }
 
-/** Effective StreetViewPanorama options: how the movement mode, per-control toggles,
- *  and the hide-UI toggle compose. Sole authority for both pano creation and updates. */
+/** Effective StreetViewPanorama display options derived from the current settings. */
 export function panoDisplayOptions(s: AppSettings) {
 	const noMove = s.defaultMovementMode !== "moving";
 	return {
@@ -273,16 +294,26 @@ export function panoDisplayOptions(s: AppSettings) {
 	};
 }
 
+/** Update one setting and persist. Emits `settings:changed`. */
 export function setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
 	settings = { ...settings, [key]: value };
-	setLocal(STORAGE_KEY, settings);
+	setLocal(APP_SETTINGS, settings);
 	emitEvent("settings:changed");
 }
 
+/** Reset all settings to defaults. */
+export function resetSettings(): void {
+	settings = { ...DEFAULTS };
+	setLocal(APP_SETTINGS, settings);
+	emitEvent("settings:changed");
+}
+
+/** React hook: all settings, re-rendering on any change. */
 export function useSettings(): AppSettings {
 	return useEventValue("settings:changed", getSettings);
 }
 
+/** React hook: one setting value, re-rendering only when that key changes. */
 export function useSetting<K extends keyof AppSettings>(key: K): AppSettings[K] {
 	return useEventValue("settings:changed", () => getSettings()[key]);
 }

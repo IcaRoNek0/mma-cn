@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { fetchAllLocations, getMapState } from "@/store/useMapStore";
+import { query, getMapState } from "@/store/useMapStore";
 import { toast } from "@/lib/util/toast";
 import { useT } from "@/lib/i18n";
 import {
@@ -52,7 +52,7 @@ export function useGameController(storedConfig?: Partial<GameConfig>) {
 			toast(t("Open a map to play"));
 			return;
 		}
-		const all = await fetchAllLocations();
+		const all = await query({ type: "Everything" }).locations();
 		if (all.length === 0) {
 			toast(t("This map has no locations"));
 			return;
@@ -67,13 +67,13 @@ export function useGameController(storedConfig?: Partial<GameConfig>) {
 			state.config.maxDistance != null && state.config.maxDistance > 0
 				? state.config.maxDistance
 				: resolveMapMaxError(
-						map.meta.scoreBounds,
+						map.scoreBounds,
 						locations.map((l) => ({ lat: l.lat, lng: l.lng })),
 					);
 
 		const active = createActiveGame({
-			mapId: map.meta.id,
-			mapName: map.meta.name,
+			mapId: map.id,
+			mapName: map.name,
 			config: state.config,
 			maxErrorDistance,
 			locations,
@@ -104,7 +104,7 @@ export function useGameController(storedConfig?: Partial<GameConfig>) {
 			nextIndex >= state.active.locations.length
 		) {
 			void (async () => {
-				const all = await fetchAllLocations();
+				const all = await query({ type: "Everything" }).locations();
 				const more = pickRandomLocations(all, INFINITE_BATCH);
 				dispatch({ type: "EXTEND_LOCATIONS", locations: more });
 				dispatch({
@@ -195,7 +195,7 @@ export function GameOverlay({ controller }: { controller: ReturnType<typeof useG
 
 	if (state.phase === "config") return null;
 
-	const mapId = getMapState().map?.meta.id ?? null;
+	const mapId = getMapState().map?.id ?? null;
 
 	const content =
 		state.phase === "playing" || state.phase === "result" ? (

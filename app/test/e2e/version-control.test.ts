@@ -6,6 +6,7 @@ import {
 	createTag,
 	getAllLocs,
 	getLocCount,
+	openMap,
 	withApi,
 	useMap,
 } from "./helpers";
@@ -111,7 +112,7 @@ describe("Version control - checkout", () => {
 	it("checkout result survives save/load", async () => {
 		await flushAndWait();
 		await closeMap();
-		await withApi(async (api, id) => api._test.openMap(id), map.id);
+		await openMap(map.id);
 
 		const count = await getLocCount();
 		expect(count).toBe(2);
@@ -135,7 +136,7 @@ describe("Version control - checkout revives soft-deleted tags", () => {
 		await withApi(async (api, id) => api.removeLocations(new Set([id])), locId);
 		await withApi(async (api) => api.commitMap("v2: loc deleted"));
 
-		const tag = await withApi(async (api, tid) => api.getMapState().tags[tid], tagId);
+		const tag = await withApi(async (api, tid) => api.getTags()[tid], tagId);
 		expect(tag?.visible).toBe(false);
 	});
 
@@ -143,30 +144,51 @@ describe("Version control - checkout revives soft-deleted tags", () => {
 		await withApi(async (api, cid) => api.checkoutCommit(cid), taggedCommitId);
 
 		const { visible, count } = await withApi(async (api, tid) => {
-			const s = api.getMapState();
-			return { visible: s.tags[tid]?.visible, count: s.tagCounts[tid] ?? 0 };
+			return { visible: api.getTags()[tid]?.visible, count: api.getTagCounts()[tid] ?? 0 };
 		}, tagId);
 		expect(visible).toBe(true);
 		expect(count).toBe(1);
 	});
 });
 
-// Commit dialog: the Commit button opens a dialog whose typed message must land
-// on the commit; the dialog closes after committing.
+// Commit dialog: shift+click opens a dialog whose typed message must land on the
+// commit; a plain click commits silently.
 describe("Version control - commit message dialog", () => {
 	const map = useMap("E2E VCS Message UI");
 
-	it("typed message lands on the commit", async () => {
+	/** Shift+click the Commit button. The handler reads `shiftKey` off the click event,
+	 *  which a dispatched MouseEvent carries without holding a modifier across commands. */
+	async function shiftClickCommit() {
+		await browser.$("button=Commit").waitForEnabled();
+		await browser.execute(() => {
+			const btn = [...document.querySelectorAll("button")].find((b) => b.textContent === "Commit");
+			if (!btn) throw new Error("Commit button missing");
+			btn.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+		});
+	}
+
+	it("a shift+click types a message onto the commit", async () => {
 		await addLocs([createLocation({ lat: 5, lng: 5, heading: 0, panoId: null, flags: 0 })]);
-		await browser.$("button=Commit").click();
-		const input = await browser.$(".commit-dialog__message");
+		await shiftClickCommit();
+		const input = await browser.$('[data-qa="commit-dialog"] input');
 		await input.waitForExist();
 		await input.setValue("from the commit dialog");
-		await browser.$(".commit-dialog").$("button=Commit").click();
+		await browser.$('[data-qa="commit-dialog"]').$("button=Commit").click();
 		await browser.waitUntil(async () => {
 			const commits = await withApi(async (api, id) => api.cmd.storeListCommits(id), map.id);
 			return commits.length >= 1 && commits[0].message === "from the commit dialog";
 		});
 		await input.waitForExist({ reverse: true });
+	});
+
+	it("a plain click commits with no dialog", async () => {
+		await addLocs([createLocation({ lat: 6, lng: 6, heading: 0, panoId: null, flags: 0 })]);
+		const before = await withApi(async (api, id) => api.cmd.storeListCommits(id), map.id);
+		await browser.$("button=Commit").click();
+		await browser.waitUntil(async () => {
+			const commits = await withApi(async (api, id) => api.cmd.storeListCommits(id), map.id);
+			return commits.length > before.length;
+		});
+		expect(await browser.$('[data-qa="commit-dialog"]').isExisting()).toBe(false);
 	});
 });

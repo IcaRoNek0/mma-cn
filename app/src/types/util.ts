@@ -95,10 +95,16 @@ export function clamp(val: number, a: Range | number, b?: number): number {
 
 /** Step `step` places through a non-empty list from `current`, wrapping at both ends.
  *  A `current` that isn't in the list behaves as if it sat just before the first item. */
-export function cycle<T>(items: readonly T[], current: T | null | undefined, step = 1): T {
+export function cycle<T>(items: readonly T[], current: T | null, step = 1): T {
 	const n = items.length;
 	return items[(((items.indexOf(current as T) + step) % n) + n) % n];
 }
+
+/** A switch: `off` when `isOn` already holds, else `on`. */
+export const toggle =
+	<S>(isOn: (state: S) => boolean, on: (state: S) => S, off: (state: S) => S) =>
+	(state: S): S =>
+		isOn(state) ? off(state) : on(state);
 
 export type RequireNonNull<T> = { [P in keyof T]-?: NonNullable<T[P]> };
 export type Nullable<T> = { [K in keyof T]: T[K] | null };
@@ -132,3 +138,6 @@ export const unionTuple =
 		tuple: U & ([T] extends [U[number]] ? unknown : { readonly __missing: Exclude<T, U[number]> }),
 	): U =>
 		tuple;
+
+/** The value union of a `const` object. */
+export type EnumOf<T> = T[keyof T];

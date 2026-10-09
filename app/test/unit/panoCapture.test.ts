@@ -1,36 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { coverCrop, frameFingerprint, snapshotPanoView } from "@/lib/sv/panoCapture";
+import { coverCrop, frameFingerprint } from "@/lib/sv/panoCapture";
 import { getSettings } from "@/store/settings";
 
 describe("pano capture", () => {
-	it("copies click-time camera state instead of retaining the live POV object", () => {
-		const pov = { heading: 123.5, pitch: -7.25 };
-		const panorama = {
-			getPano: () => "pano-id",
-			getPov: () => pov,
-			getZoom: () => 2.5,
-		} as unknown as google.maps.StreetViewPanorama;
-
-		const snapshot = snapshotPanoView(panorama);
-		pov.heading = 250;
-
-		expect(snapshot).toEqual({
-			panoId: "pano-id",
-			pov: { heading: 123.5, pitch: -7.25 },
-			zoom: 2.5,
-		});
-	});
-
-	it("rejects a viewer without a ready pano or finite camera", () => {
-		const panorama = {
-			getPano: () => "",
-			getPov: () => ({ heading: 0, pitch: 0 }),
-			getZoom: () => Number.NaN,
-		} as unknown as google.maps.StreetViewPanorama;
-		expect(() => snapshotPanoView(panorama)).toThrow("Street View is not ready");
-	});
-
 	it("cover-crops to the target aspect, centered and within bounds", () => {
 		// Wider than 16:9 source: crop the sides.
 		expect(coverCrop(2560, 1080, 1920, 1080)).toEqual({ sx: 320, sy: 0, sw: 1920, sh: 1080 });

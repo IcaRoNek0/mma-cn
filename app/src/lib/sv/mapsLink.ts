@@ -1,17 +1,10 @@
 import { schemeBase } from "@/lib/util/util";
+import type { Tag } from "@/types";
 import { isOfficialPano } from "@/lib/sv/panoId";
-import { hasLoadAsPanoId } from "@/types";
-import type { Location, Tag } from "@/bindings.gen";
-
-/** Camera the link should open at. `fov` is derived from pano zoom by `fovForZoom`. */
-export interface MapsPanoView {
-	lat: number;
-	lng: number;
-	heading: number;
-	pitch: number;
-	fov: number;
-	panoId: string;
-}
+import { isPinned, type PanoView } from "@/types";
+import type { Location } from "@/bindings.gen";
+/** View the link should open at. */
+export type MapsPanoView = PanoView & Pick<Location, "lat" | "lng">;
 
 export function fovForZoom(zoom: number): number {
 	return (360 / Math.PI) * Math.atan(0.75 * Math.pow(2, 1 - zoom));
@@ -20,7 +13,8 @@ export function fovForZoom(zoom: number): number {
 /** A google.com/maps Street View link aimed at `view`. Official panos embed a thumbnail
  *  (`!6s`) so the link unfurls with a preview; unofficial ones have none to point at. */
 export function mapsPanoUrl(view: MapsPanoView): URL {
-	const { lat, lng, heading, pitch, fov, panoId } = view;
+	const { lat, lng, heading, pitch, panoId } = view;
+	const fov = fovForZoom(view.zoom);
 
 	let data: string;
 	if (isOfficialPano(panoId)) {
@@ -52,12 +46,28 @@ export function appendLinkTags(url: URL, loc: Location, tagsById: Record<number,
 		const name = tagsById[id]?.name;
 		if (name) url.searchParams.append("extra[tags]", name);
 	}
-	if (!hasLoadAsPanoId(loc)) url.searchParams.set("extra[loadMode]", "latLng");
+	if (!isPinned(loc)) url.searchParams.set("extra[loadMode]", "latLng");
 }
 
 // Routed through the Tauri `gmaps` URI-scheme handler (server-side proxy to
 // www.google.com), so it works in dev and release.
 const BATCH_URL = `${schemeBase("gmaps")}maps/_/MapsWizUi/data/batchexecute`;
+
+export async function copyMapsLink(
+	url: URL,
+	{ long = false }: { long?: boolean } = {},
+): Promise<void> {
+	const longStr = url.toString();
+	if (long) {
+		await navigator.clipboard.writeText(longStr).catch(() => {});
+		return;
+	}
+	try {
+		await navigator.clipboard.writeText(await shortenMapsUrl(longStr));
+	} catch {
+		await navigator.clipboard.writeText(longStr).catch(() => {});
+	}
+}
 
 export async function shortenMapsUrl(longUrl: string): Promise<string> {
 	const innerPayload = JSON.stringify([

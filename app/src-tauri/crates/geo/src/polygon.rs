@@ -3,11 +3,16 @@
 
 use std::borrow::Cow;
 
-/// Shortest signed longitude delta from `from` to `to`, in [-180, 180].
+use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::core::solver::Solver;
+use i_overlay::float::overlay::{FloatOverlay, OverlayOptions};
+
+/// Shortest signed longitude delta from `from` to `to`, in [-180, 180).
 #[inline]
 pub fn lng_delta(from: f64, to: f64) -> f64 {
     let d = (to - from) % 360.0;
-    if d > 180.0 {
+    if d >= 180.0 {
         d - 360.0
     } else if d < -180.0 {
         d + 360.0
@@ -68,15 +73,26 @@ fn ring_test_raw(lng: f64, lat: f64, ring: &[[f64; 2]]) -> bool {
     inside
 }
 
-/// One ring preprocessed for repeated point tests: the unwrap pass and the bbox are
-/// paid once here instead of once per tested point, so the crossing-number loop runs
-/// branch-free over longitudes already in the ring's own frame.
+/// One ring preprocessed for repeated point tests: the unwrap pass, the bbox and a
+/// latitude-band edge index are paid once here instead of once per tested point. A
+/// point then runs the crossing-number test over the edges spanning its own latitude
+/// band, not the whole ring, so a country at full fidelity costs a few dozen edges per
+/// point rather than tens of thousands.
 pub struct PreparedRing<'a> {
     ring: Cow<'a, [[f64; 2]]>,
     /// `[min_lng, min_lat, max_lng, max_lat]` in the unwrapped ring's frame, so
     /// `min_lng` may sit below -180 and `max_lng` above it.
     bb: [f64; 4],
+    /// Edge index `i` (the edge from vertex `i - 1`, wrapping, to vertex `i`) listed under
+    /// every band its latitude span touches; CSR layout, `band_start[b]..band_start[b + 1]`.
+    band_start: Vec<u32>,
+    band_edges: Vec<u32>,
+    band_height: f64,
 }
+
+/// Edges per band the index aims for; the build is one pass, so bands are cheap.
+const EDGES_PER_BAND: usize = 4;
+const MAX_BANDS: usize = 1 << 14;
 
 impl<'a> PreparedRing<'a> {
     pub fn new(ring: &'a [[f64; 2]]) -> Self {
@@ -84,17 +100,139 @@ impl<'a> PreparedRing<'a> {
         let mut bb = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
         let mut any = false;
         extend_bbox_with_ring(&mut bb, &mut any, &ring);
-        Self { ring, bb }
+
+        let n = ring.len();
+        let bands = (n / EDGES_PER_BAND).clamp(1, MAX_BANDS);
+        let span = bb[3] - bb[1];
+        let band_height = if any && span > 0.0 {
+            span / bands as f64
+        } else {
+            f64::INFINITY
+        };
+        let band_of = |lat: f64| -> usize {
+            if band_height.is_infinite() {
+                0
+            } else {
+                (((lat - bb[1]) / band_height) as usize).min(bands - 1)
+            }
+        };
+        let edge_bands = |i: usize| -> (usize, usize) {
+            let j = if i == 0 { n - 1 } else { i - 1 };
+            let (lo, hi) = (ring[i][1].min(ring[j][1]), ring[i][1].max(ring[j][1]));
+            (band_of(lo), band_of(hi))
+        };
+        let mut band_start = vec![0u32; bands + 1];
+        for i in 0..n {
+            let (lo, hi) = edge_bands(i);
+            for b in lo..=hi {
+                band_start[b + 1] += 1;
+            }
+        }
+        for b in 0..bands {
+            band_start[b + 1] += band_start[b];
+        }
+        let mut fill = band_start.clone();
+        let mut band_edges = vec![0u32; band_start[bands] as usize];
+        for i in 0..n {
+            let (lo, hi) = edge_bands(i);
+            for b in lo..=hi {
+                band_edges[fill[b] as usize] = i as u32;
+                fill[b] += 1;
+            }
+        }
+        Self {
+            ring,
+            bb,
+            band_start,
+            band_edges,
+            band_height,
+        }
     }
 
-    /// Bbox reject, then the raw crossing test. Equivalent to `point_in_ring`.
+    /// Bbox reject, then the crossing test over the edges spanning this latitude band.
+    /// Equivalent to `point_in_ring`: an edge outside the band cannot cross the ray.
     #[inline]
     pub fn contains(&self, lng: f64, lat: f64) -> bool {
         let lng = fold_lng(lng, self.bb[0]);
-        lng <= self.bb[2]
-            && lat >= self.bb[1]
-            && lat <= self.bb[3]
-            && ring_test_raw(lng, lat, &self.ring)
+        if lng > self.bb[2] || lat < self.bb[1] || lat > self.bb[3] {
+            return false;
+        }
+        self.crossings(lat).filter(|&x| lng < x).count() % 2 == 1
+    }
+
+    /// `[min_lng, min_lat, max_lng, max_lat]` in the unwrapped ring's frame.
+    pub fn bbox(&self) -> [f64; 4] {
+        self.bb
+    }
+
+    /// Longitudes, in the unwrapped ring's frame, where the parallel at `lat` crosses the
+    /// ring, by the same half-open rule `contains` counts.
+    #[inline]
+    pub fn crossings(&self, lat: f64) -> impl Iterator<Item = f64> + '_ {
+        let band = if self.band_height.is_infinite() {
+            0
+        } else {
+            (((lat - self.bb[1]) / self.band_height) as usize).min(self.band_start.len() - 2)
+        };
+        let ring = &self.ring;
+        let n = ring.len();
+        self.band_edges[self.band_start[band] as usize..self.band_start[band + 1] as usize]
+            .iter()
+            .filter_map(move |&i| {
+                let i = i as usize;
+                let j = if i == 0 { n - 1 } else { i - 1 };
+                let [xi, yi] = ring[i];
+                let [xj, yj] = ring[j];
+                ((yi > lat) != (yj > lat)).then(|| (xj - xi) * (lat - yi) / (yj - yi) + xi)
+            })
+    }
+}
+
+/// A set of polygons (each an outer ring then its holes) preprocessed for repeated
+/// point tests, with the whole set's bbox. The prepared form of `polygon_contains`
+/// over many polygons: each ring pays its unwrap, bbox and band index once.
+pub struct PreparedPolygons<'a> {
+    polys: Vec<Vec<PreparedRing<'a>>>,
+    bb: Option<[f64; 4]>,
+}
+
+impl<'a> PreparedPolygons<'a> {
+    pub fn new(polygons: impl IntoIterator<Item = &'a [Vec<[f64; 2]>]>) -> Self {
+        let mut bb = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        let mut any = false;
+        let polys: Vec<Vec<PreparedRing<'a>>> = polygons
+            .into_iter()
+            .map(|rings| {
+                for ring in rings {
+                    extend_bbox_with_ring(&mut bb, &mut any, ring);
+                }
+                rings.iter().map(|r| PreparedRing::new(r)).collect()
+            })
+            .collect();
+        if any {
+            anchor_bbox(&mut bb);
+        }
+        Self {
+            polys,
+            bb: any.then_some(bb),
+        }
+    }
+
+    /// Equivalent to `polygon_contains` over any of the polygons.
+    #[inline]
+    pub fn contains(&self, lng: f64, lat: f64) -> bool {
+        self.polys.iter().any(|rings| match rings.split_first() {
+            Some((outer, holes)) => {
+                outer.contains(lng, lat) && !holes.iter().any(|h| h.contains(lng, lat))
+            }
+            None => false,
+        })
+    }
+
+    /// `[min_lng, min_lat, max_lng, max_lat]` over every ring, `min_lng` anchored in
+    /// [-180, 180) with `max_lng` possibly past it. `None` when there are no vertices.
+    pub fn bbox(&self) -> Option<[f64; 4]> {
+        self.bb
     }
 }
 
@@ -118,6 +256,54 @@ pub fn polygon_contains<'a>(
         }
     }
     true
+}
+
+/// Redraw a polygon (outer ring then holes) as polygons whose edges never cross, covering
+/// exactly the points `polygon_contains` accepts, so a renderer that fills rings as
+/// simple shapes fills what the polygon contains. Rings come back closed, in the outer
+/// ring's unwrapped frame; an empty result means the polygon encloses no area.
+pub fn untangle_polygon(rings: &[Vec<[f64; 2]>]) -> Vec<Vec<Vec<[f64; 2]>>> {
+    let Some((outer, holes)) = rings.split_first() else {
+        return Vec::new();
+    };
+    let Some(&[anchor, _]) = outer.first() else {
+        return Vec::new();
+    };
+    let even_odd = |ring: &[[f64; 2]]| {
+        let shift = ((anchor - ring.first().map_or(anchor, |v| v[0])) / 360.0).round() * 360.0;
+        let ring: Vec<[f64; 2]> = unwrap_ring(ring)
+            .iter()
+            .map(|&[lng, lat]| [lng + shift, lat])
+            .collect();
+        FloatOverlay::with_subj_custom(&ring, collinear_kept(), Solver::default())
+            .overlay(OverlayRule::Subject, FillRule::EvenOdd)
+    };
+    let mut shapes = even_odd(outer);
+    if !holes.is_empty() {
+        let cut: Vec<Vec<[f64; 2]>> = holes.iter().flat_map(|h| even_odd(h)).flatten().collect();
+        shapes = FloatOverlay::with_subj_and_clip_custom(
+            &shapes,
+            &cut,
+            collinear_kept(),
+            Solver::default(),
+        )
+        .overlay(OverlayRule::Difference, FillRule::NonZero);
+    }
+    for contour in shapes.iter_mut().flatten() {
+        if let Some(&first) = contour.first() {
+            contour.push(first);
+        }
+    }
+    shapes
+}
+
+/// Vertices along a straight edge survive, so an edge split to stay under 180 degrees of
+/// longitude stays split.
+fn collinear_kept() -> OverlayOptions<f64> {
+    let mut options = OverlayOptions::default();
+    options.preserve_input_collinear = true;
+    options.preserve_output_collinear = true;
+    options
 }
 
 /// Grow a running `[min_lng, min_lat, max_lng, max_lat]` to cover one ring, unwrapped

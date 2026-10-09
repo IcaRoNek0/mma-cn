@@ -2,6 +2,13 @@ name: Bug report
 description: Something doesn't work right
 labels: [bug]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **Reporting from inside MMA is easier and more useful.** Open the map list and click
+        "Report bugs here", or go to Settings → Feedback. It attaches your version, system
+        details, active plugins and recent log for you, which is most of what we'd otherwise
+        have to ask for.
   - type: textarea
     id: description
     attributes:
@@ -27,7 +34,7 @@ body:
     id: version
     attributes:
       label: App version
-      placeholder: e.g. 0.4.2
+      placeholder: e.g. 0.11.2
   - type: textarea
     id: log
     attributes:

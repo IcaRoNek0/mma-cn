@@ -1,25 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import type { LatLng, Bounds } from "@/types";
+import type { ScoreBounds } from "@/bindings.gen";
 import { isWorldBounds, scoreTupleToBounds } from "@/types";
-import { useMapState } from "@/store/useMapStore";
-import { cmd } from "@/lib/commands";
+import { query, useMapState } from "@/store/useMapStore";
 import { subscribeMany, LOCATION_DATA_EVENTS } from "@/lib/events";
 import { distMeters } from "@/lib/geo/geo";
 import { boundsOfCoords } from "@/lib/map/host";
-import { localeFormat } from "@/lib/util/format";
-
-// --- Formatting utilities ---
-
-const kmFmt = localeFormat<number>(
-	(l) => new Intl.NumberFormat(l, { style: "unit", unit: "kilometer", maximumFractionDigits: 2 }),
-);
-const mFmt = localeFormat<number>(
-	(l) => new Intl.NumberFormat(l, { style: "unit", unit: "meter", maximumFractionDigits: 0 }),
-);
-
-export function formatDistance(meters: number): string {
-	return meters > 1000 ? kmFmt.format(meters / 1000) : mFmt.format(meters);
-}
 
 const SCORE_BASE = 0.99866017;
 const DEFAULT_MAX_ERROR = 185.34781;
@@ -93,16 +79,17 @@ export function resolveScoreMaxErrorFromBounds(
  * In `"auto"` mode it tracks the locations' bounding box via the cheap
  * `store_bounds` command and refreshes on location mutations. This is the single
  * value that drives both the Scoring editor display and the measurement score.
+ * `override` resolves against an unsaved value instead of the map's committed one.
  */
-export function useScoreMaxError(): number {
+export function useScoreMaxError(override?: ScoreBounds): number {
 	const map = useMapState((s) => s.map);
-	const raw = map?.meta.scoreBounds ?? "auto";
+	const raw = override ?? map?.scoreBounds ?? "auto";
 	const bounds: "auto" | Bounds = typeof raw === "string" ? "auto" : scoreTupleToBounds(raw);
 	const isAuto = bounds === "auto";
 	const [autoBbox, setAutoBbox] = useState<Bbox | null>(null);
 
 	const refresh = useCallback(async () => {
-		const res = await cmd.storeBounds(false);
+		const res = await query({ type: "Everything" }).bounds();
 		setAutoBbox(res ?? null);
 	}, []);
 

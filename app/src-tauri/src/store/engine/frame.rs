@@ -1,0 +1,184 @@
+//! Render frames: the one binary message that carries every marker change to a window.
+
+use crate::types::{wire_enum, wire_names, TsConst};
+use specta::datatype::DataType;
+use std::collections::HashMap;
+use tauri::ipc::{Channel, InvokeResponseBody, IpcResponse};
+
+wire_enum! {
+    /// What a render frame does to the scene.
+    FrameKind: u32 {
+        /// Clears the scene, then adds every row the frame carries.
+        REPLACE = 0,
+        /// Changes the scene in place.
+        PATCH = 1,
+    }
+}
+
+/// The selection index of a row no selection paints.
+pub const NO_SEL: u32 = u32::MAX;
+
+/// Rows of one cell, column by column. `key` is the location id for an add and the row's
+/// index within its cell for a patch.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct Rows {
+    pub key: Vec<u32>,
+    /// `lng, lat` pairs.
+    pub pos: Vec<f32>,
+    pub angle: Vec<f32>,
+    /// Index into the frame's palette, or [`NO_SEL`].
+    pub sel: Vec<u32>,
+}
+
+impl Rows {
+    pub(crate) fn push(&mut self, key: u32, lng: f64, lat: f64, angle: f32, sel: u32) {
+        self.key.push(key);
+        self.pos.push(lng as f32);
+        self.pos.push(lat as f32);
+        self.angle.push(angle);
+        self.sel.push(sel);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.key.len()
+    }
+
+    fn encode_into(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(bytemuck::cast_slice(&self.key));
+        buf.extend_from_slice(bytemuck::cast_slice(&self.pos));
+        buf.extend_from_slice(bytemuck::cast_slice(&self.angle));
+        buf.extend_from_slice(bytemuck::cast_slice(&self.sel));
+    }
+}
+
+/// One cell's changes, applied in field order: each removal is a swap-remove at that
+/// index, then the adds are appended, then the patches restate rows by their index after both.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct CellFrame {
+    pub cell: u8,
+    pub remove: Vec<u32>,
+    pub add: Rows,
+    pub patch: Rows,
+}
+
+impl CellFrame {
+    fn is_empty(&self) -> bool {
+        self.remove.is_empty() && self.add.len() == 0 && self.patch.len() == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Frame {
+    pub kind: u32,
+    /// The store version the scene is at once this frame is applied.
+    pub version: u64,
+    /// The colour of every live selection, in `SelectionState::live` order.
+    pub palette: Vec<[u8; 3]>,
+    /// Ascending by cell, empty cells left out.
+    pub cells: Vec<CellFrame>,
+    /// Every cell's selection membership restated, in `build_selection_buf`'s layout.
+    pub selection: Option<Vec<u8>>,
+}
+
+impl Frame {
+    /// Keep the cells that carry a change, in cell order.
+    pub(crate) fn cells_of(cells: impl IntoIterator<Item = CellFrame>) -> Vec<CellFrame> {
+        cells.into_iter().filter(|c| !c.is_empty()).collect()
+    }
+
+    /// The wire form. Little-endian, and every `u32`/`f32` array starts 4-byte aligned so
+    /// the page can view it in place.
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let rows = |r: &Rows| r.len() * 20;
+        let cap = 20
+            + (self.palette.len() * 3).next_multiple_of(4)
+            + self
+                .cells
+                .iter()
+                .map(|c| 16 + c.remove.len() * 4 + rows(&c.add) + rows(&c.patch))
+                .sum::<usize>()
+            + self.selection.as_ref().map_or(0, |s| s.len() + 3);
+        let mut buf = Vec::with_capacity(cap);
+        let put = |buf: &mut Vec<u8>, v: u32| buf.extend_from_slice(&v.to_le_bytes());
+        put(&mut buf, self.kind);
+        put(&mut buf, self.version as u32);
+        put(&mut buf, (self.version >> 32) as u32);
+        put(&mut buf, self.palette.len() as u32);
+        for rgb in &self.palette {
+            buf.extend_from_slice(rgb);
+        }
+        pad4(&mut buf);
+        put(&mut buf, self.cells.len() as u32);
+        for c in &self.cells {
+            put(&mut buf, u32::from(c.cell));
+            put(&mut buf, c.remove.len() as u32);
+            put(&mut buf, c.add.len() as u32);
+            put(&mut buf, c.patch.len() as u32);
+            buf.extend_from_slice(bytemuck::cast_slice(&c.remove));
+            c.add.encode_into(&mut buf);
+            c.patch.encode_into(&mut buf);
+        }
+        match &self.selection {
+            Some(s) => {
+                put(&mut buf, s.len() as u32);
+                buf.extend_from_slice(s);
+                pad4(&mut buf);
+            }
+            None => put(&mut buf, 0),
+        }
+        buf
+    }
+}
+
+fn pad4(buf: &mut Vec<u8>) {
+    buf.resize(buf.len().next_multiple_of(4), 0);
+}
+
+/// An encoded render frame.
+pub struct FrameBytes(pub Vec<u8>);
+
+impl IpcResponse for FrameBytes {
+    fn body(self) -> tauri::Result<InvokeResponseBody> {
+        Ok(InvokeResponseBody::Raw(self.0))
+    }
+}
+
+impl specta::Type for FrameBytes {
+    fn definition(_: &mut specta::Types) -> DataType {
+        DataType::Reference(specta_typescript::define("ArrayBuffer"))
+    }
+}
+
+/// The windows watching one store, keyed by window label.
+#[derive(Default)]
+pub(crate) struct FrameSinks(HashMap<String, Channel<FrameBytes>>);
+
+impl FrameSinks {
+    pub(crate) fn insert(&mut self, label: String, sink: Channel<FrameBytes>) {
+        self.0.insert(label, sink);
+    }
+
+    pub(crate) fn remove(&mut self, label: &str) {
+        self.0.remove(label);
+    }
+
+    /// Encode once and hand the bytes to every window. A window that cannot take them is gone.
+    pub(crate) fn send(&mut self, frame: &Frame) {
+        if self.0.is_empty() {
+            return;
+        }
+        let bytes = frame.encode();
+        self.0
+            .retain(|label, sink| match sink.send(FrameBytes(bytes.clone())) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("[frames] dropping sink for '{label}': {e}");
+                    false
+                }
+            });
+    }
+}
+
+#[cfg(test)]
+#[path = "frame.test.rs"]
+pub(crate) mod tests;

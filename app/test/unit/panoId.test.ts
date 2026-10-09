@@ -1,5 +1,15 @@
+import { mirrorCases } from "./fixtures/mirrorCases";
 import { describe, it, expect } from "vitest";
-import { isOfficialPano, newestOfficialPano } from "@/lib/sv/panoId";
+import {
+	allUnofficial,
+	capturedAfter,
+	isOfficialPano,
+	isUnofficial,
+	mergeTimelines,
+	pickCapture,
+} from "@/lib/sv/panoId";
+import type { Pano } from "@/bindings.gen";
+import { CapturePick } from "@/bindings.consts";
 
 describe("isOfficialPano", () => {
 	it("recognizes F: prefix as unofficial", () => {
@@ -27,31 +37,141 @@ describe("isOfficialPano", () => {
 		expect(isOfficialPano("some-random-pano-id")).toBe(false);
 	});
 
+	it("a bare CIHM contributor key is not official, even at 22 chars ending in a key bit", () => {
+		expect(isOfficialPano("CIHM0ogKEICAgICTzu7WYg")).toBe(false);
+	});
+
 	it("handles empty string as unofficial", () => {
 		expect(isOfficialPano("")).toBe(false);
 	});
 });
 
-describe("newestOfficialPano", () => {
+describe("pickCapture", () => {
 	const off1 = "KQ2dSFpRKZZMxJEBc4FhcA";
 	const off2 = "KQ2dSFpRKZZMxJEBc4Fhcw";
 	const ugc = "F:CAoSLEFGMVFpcE";
 
 	it("returns null for an empty or all-unofficial timeline", () => {
-		expect(newestOfficialPano([])).toBeNull();
-		expect(newestOfficialPano([{ pano: ugc }, { pano: "junk" }])).toBeNull();
+		for (const pick of [CapturePick.Newest, CapturePick.Oldest]) {
+			expect(pickCapture([], pick)).toBeNull();
+			expect(pickCapture([{ panoId: ugc }, { panoId: "junk" }], pick)).toBeNull();
+		}
 	});
 
-	// Timelines arrive sorted ascending, so the newest official entry is the LAST one —
-	// not the first match, and not the last entry when that entry is unofficial.
-	it("takes the last official entry, skipping trailing unofficial ones", () => {
-		expect(newestOfficialPano([{ pano: off1 }, { pano: off2 }])?.pano).toBe(off2);
-		expect(newestOfficialPano([{ pano: off1 }, { pano: off2 }, { pano: ugc }])?.pano).toBe(off2);
-		expect(newestOfficialPano([{ pano: ugc }, { pano: off1 }])?.pano).toBe(off1);
+	// Timelines arrive sorted ascending, so the newest official entry is the LAST one,
+	// not the last entry when that entry is unofficial.
+	it("newest takes the last official entry, skipping trailing unofficial ones", () => {
+		const newest = (time: { panoId: string }[]) => pickCapture(time, CapturePick.Newest)?.panoId;
+		expect(newest([{ panoId: off1 }, { panoId: off2 }])).toBe(off2);
+		expect(newest([{ panoId: off1 }, { panoId: off2 }, { panoId: ugc }])).toBe(off2);
+		expect(newest([{ panoId: ugc }, { panoId: off1 }])).toBe(off1);
+	});
+
+	it("oldest takes the first official entry, skipping leading unofficial ones", () => {
+		const oldest = (time: { panoId: string }[]) => pickCapture(time, CapturePick.Oldest)?.panoId;
+		expect(oldest([{ panoId: off1 }, { panoId: off2 }])).toBe(off1);
+		expect(oldest([{ panoId: ugc }, { panoId: off2 }, { panoId: off1 }])).toBe(off2);
 	});
 
 	it("preserves the entry object, not just the id", () => {
-		const entry = { pano: off1, date: new Date(2019, 5) };
-		expect(newestOfficialPano([entry])).toBe(entry);
+		const entry = { panoId: off1, date: new Date(2019, 5) };
+		expect(pickCapture([entry], CapturePick.Newest)).toBe(entry);
+	});
+});
+
+describe("isUnofficial", () => {
+	const pano = (
+		id: string,
+		attribution: Partial<Pick<Pano, "shortDescription" | "copyright">> = {},
+	) => ({ id, shortDescription: "", copyright: "", ...attribution }) as Pano;
+
+	it("long pano ID is unofficial", () => {
+		expect(isUnofficial(pano("A".repeat(30)))).toBe(true);
+	});
+
+	it("22-char pano ID is official", () => {
+		expect(isUnofficial(pano("A".repeat(22)))).toBe(false);
+	});
+
+	it("no pano ID is not unofficial", () => {
+		expect(isUnofficial(pano(""))).toBe(false);
+	});
+
+	it("attribution naming a photographer or a user upload is unofficial", () => {
+		expect(isUnofficial(pano("A".repeat(22), { copyright: "Photo by John" }))).toBe(true);
+		expect(isUnofficial(pano("A".repeat(22), { shortDescription: "User-uploaded image" }))).toBe(
+			true,
+		);
+	});
+
+	it("a described user photo is still unofficial", () => {
+		expect(
+			isUnofficial(
+				pano("A".repeat(22), { shortDescription: "Main Street", copyright: "Photo by John" }),
+			),
+		).toBe(true);
+	});
+});
+
+describe("capturedAfter", () => {
+	const dated = (imageDate: string) => ({ imageDate }) as Pano;
+
+	it("a later month is after", () => {
+		expect(capturedAfter(dated("2026-02"), dated("2023-05"))).toBe(true);
+	});
+
+	it("an earlier or equal month is not", () => {
+		expect(capturedAfter(dated("2023-05"), dated("2026-02"))).toBe(false);
+		expect(capturedAfter(dated("2023-05"), dated("2023-05"))).toBe(false);
+	});
+
+	it("undated coverage never counts as newer, but always loses to a date", () => {
+		expect(capturedAfter(dated(""), dated("2023-05"))).toBe(false);
+		expect(capturedAfter(dated("2023-05"), dated(""))).toBe(true);
+	});
+});
+
+describe("mergeTimelines", () => {
+	const pano = (over: Partial<Pano> = {}): Pano => ({ id: "p", time: [], ...over }) as Pano;
+
+	// The date picker merges an all-unofficial stack with nearby official coverage,
+	// which carries the multi-year history. Later sources win.
+	it("merges timelines with later sources winning, ascending by date", () => {
+		const a = pano({ time: [{ panoId: "x", date: "2011-01-01" }] });
+		const b = pano({
+			time: [
+				{ panoId: "x", date: "2022-06-01" },
+				{ panoId: "y", date: "2019-05-01" },
+			],
+		});
+		expect(mergeTimelines([a, b])).toEqual([
+			{ panoId: "y", date: "2019-05-01" },
+			{ panoId: "x", date: "2022-06-01" },
+		]);
+	});
+
+	it("skips absent sources rather than failing", () => {
+		expect(mergeTimelines([null, null])).toEqual([]);
+		expect(
+			mergeTimelines([null, pano({ time: [{ panoId: "x", date: "2020-01-01" }] })]),
+		).toHaveLength(1);
+	});
+});
+
+describe("allUnofficial", () => {
+	it("flags a timeline with no official coverage, which is what triggers the wider search", () => {
+		expect(allUnofficial([{ panoId: "F:abc", date: "2020-01-01" }])).toBe(true);
+		expect(allUnofficial([{ panoId: "-zrYsLR4Fh-cfJG_EMZ1-A", date: "2020-01-01" }])).toBe(false);
+	});
+
+	it("counts an empty stack as all-unofficial, since unofficial panos often carry none", () => {
+		expect(allUnofficial([])).toBe(true);
+	});
+});
+
+describe("isOfficialPano shared mirror cases", () => {
+	it("agrees with the store on every case", () => {
+		for (const id of mirrorCases.officialPano.official) expect(isOfficialPano(id)).toBe(true);
+		for (const id of mirrorCases.officialPano.unofficial) expect(isOfficialPano(id)).toBe(false);
 	});
 });

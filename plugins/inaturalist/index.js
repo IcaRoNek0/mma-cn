@@ -47,6 +47,7 @@ var require_jsx_runtime = __commonJS({
 
 // inaturalist/src/inat.ts
 var import_layers = __toESM(require_layers());
+var { createLocation, addLocations, getMapHost } = MMA;
 var TILE_TTL = 5 * 60 * 1e3;
 var MAX_TILES = 300;
 var MAX_RENDER = 5e4;
@@ -112,13 +113,13 @@ function importToMap() {
   const obs = getObservations();
   if (obs.length === 0) return 0;
   const locs = obs.map(
-    (o) => MMA.createLocation({ lat: o.lat, lng: o.lng, extra: { tags: [o.name] } })
+    (o) => createLocation({ lat: o.lat, lng: o.lng, extra: { tags: [o.name] } })
   );
-  MMA.addLocations(locs);
+  addLocations(locs);
   return locs.length;
 }
-async function init() {
-  const host = MMA.getMapHost();
+function init() {
+  const host = getMapHost();
   if (!host) throw new Error("No map instance");
   overlay = host.createDeckOverlay();
   const throttled = throttle(() => loadViewport(), 400);
@@ -195,7 +196,7 @@ async function fetchTile(taxonId, bbox) {
 }
 async function loadViewport() {
   if (!currentTaxonId || !visible) return;
-  const host = MMA.getMapHost();
+  const host = getMapHost();
   if (!host) return;
   const bounds = host.getBounds();
   if (!bounds) return;
@@ -263,6 +264,7 @@ var import_react2 = __toESM(require_react());
 var import_react = __toESM(require_react());
 
 // inaturalist/src/taxonomy.ts
+var { storage, getVisibleTags, updateTags } = MMA;
 var API_DELAY = 350;
 var delay = (ms) => new Promise((r) => setTimeout(r, ms));
 var DEEP_RANKS = [
@@ -385,13 +387,13 @@ function buildFolderSegment(taxon, useCommon, seenCommons) {
   return `${rankCap} ${taxon.name}`;
 }
 async function sortTagsByTaxonomy(opts, onProgress, signal) {
-  const storage = MMA.storage("inaturalist");
-  const tags = MMA.getVisibleTags();
+  const store = storage("inaturalist");
+  const tags = getVisibleTags();
   if (tags.length === 0) return { sorted: 0, skipped: 0, created: 0 };
   const ancestorCacheKey = "taxo_ancestors";
   const detailCacheKey = `taxo_details_${opts.lang}`;
-  const ancestorCache = storage.get(ancestorCacheKey, {});
-  const detailCache = storage.get(detailCacheKey, {});
+  const ancestorCache = store.get(ancestorCacheKey, {});
+  const detailCache = store.get(detailCacheKey, {});
   const ranksToUse = new Set(opts.deep ? DEEP_RANKS : FLAT_RANKS);
   const allNeededIds = /* @__PURE__ */ new Set();
   const tagAncestors = /* @__PURE__ */ new Map();
@@ -431,7 +433,7 @@ async function sortTagsByTaxonomy(opts, onProgress, signal) {
       onProgress?.({ phase: "Scanning", current: i + 1, total: tags.length, detail: `Not found: ${leafName}` });
     }
   }
-  storage.set(ancestorCacheKey, ancestorCache);
+  store.set(ancestorCacheKey, ancestorCache);
   const missingDetailIds = [...allNeededIds].filter((id) => !detailCache[String(id)]);
   if (missingDetailIds.length > 0) {
     onProgress?.({ phase: "Fetching taxonomy details", current: 0, total: missingDetailIds.length });
@@ -439,7 +441,7 @@ async function sortTagsByTaxonomy(opts, onProgress, signal) {
     for (const [id, info] of details) {
       detailCache[String(id)] = info;
     }
-    storage.set(detailCacheKey, detailCache);
+    store.set(detailCacheKey, detailCache);
   }
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   const renames = [];
@@ -468,14 +470,14 @@ async function sortTagsByTaxonomy(opts, onProgress, signal) {
   }
   if (renames.length > 0) {
     onProgress?.({ phase: "Renaming tags", current: 0, total: renames.length });
-    await MMA.updateTags(renames.map((r) => ({ id: r.id, patch: { name: r.name } })));
+    await updateTags(renames.map((r) => ({ id: r.id, patch: { name: r.name } })));
   }
   return { sorted: renames.length, skipped, created: 0 };
 }
 function clearTaxonomyCache() {
-  const storage = MMA.storage("inaturalist");
-  for (const key of storage.keys()) {
-    if (key.startsWith("taxo_")) storage.remove(key);
+  const store = storage("inaturalist");
+  for (const key of store.keys()) {
+    if (key.startsWith("taxo_")) store.remove(key);
   }
 }
 
@@ -490,71 +492,40 @@ var LANGUAGES = [
 ];
 var INFO_PATH = "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z";
 function Label({ children, info }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: 4 }, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "inat-sidebar__info", children: [
     children,
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-      "svg",
-      {
-        width: 13,
-        height: 13,
-        viewBox: "0 0 24 24",
-        fill: "currentColor",
-        style: { opacity: 0.35, cursor: "help", flexShrink: 0 },
-        "aria-label": info,
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("title", { children: info }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: INFO_PATH })
-        ]
-      }
-    )
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "currentColor", "aria-label": info, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("title", { children: info }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: INFO_PATH })
+    ] })
   ] });
 }
-var { Section, Field, SegmentedControl } = MMA.ui;
+var {
+  ui: { Section, Field, SegmentedControl, Button, Checkbox, ProgressRow },
+  storage: storage2,
+  useJob,
+  toast
+} = MMA;
 function TaxonomySorter() {
-  const storage = MMA.storage("inaturalist");
-  const [lang, setLang] = (0, import_react.useState)(() => storage.get("taxo_lang", "en"));
+  const store = storage2("inaturalist");
+  const [lang, setLang] = (0, import_react.useState)(() => store.get("taxo_lang", "en"));
   const [deep, setDeep] = (0, import_react.useState)(true);
   const [commonNames, setCommonNames] = (0, import_react.useState)(true);
-  const [running, setRunning] = (0, import_react.useState)(false);
-  const [progress, setProgress] = (0, import_react.useState)(null);
-  const [result, setResult] = (0, import_react.useState)(null);
-  const [abortCtl, setAbortCtl] = (0, import_react.useState)(null);
   const handleLangChange = (0, import_react.useCallback)((code) => {
     setLang(code);
-    storage.set("taxo_lang", code);
-  }, [storage]);
-  const handleSort = (0, import_react.useCallback)(async () => {
-    setRunning(true);
-    setResult(null);
-    setProgress(null);
-    const ctl = new AbortController();
-    setAbortCtl(ctl);
-    try {
-      const opts = { lang, deep, commonNames };
-      const r = await sortTagsByTaxonomy(opts, setProgress, ctl.signal);
-      setResult(r);
-      if (r.sorted > 0) {
-        MMA.toast(`Sorted ${r.sorted} tag${r.sorted === 1 ? "" : "s"} into taxonomy folders`);
-      } else {
-        MMA.toast("No tags needed sorting");
-      }
-    } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") {
-        MMA.toast("Taxonomy sort cancelled");
-      } else {
-        MMA.toast("Taxonomy sort failed");
-      }
-    }
-    setRunning(false);
-    setAbortCtl(null);
-    setProgress(null);
-  }, [lang, deep, commonNames]);
-  const handleCancel = (0, import_react.useCallback)(() => {
-    abortCtl?.abort();
-  }, [abortCtl]);
+    store.set("taxo_lang", code);
+  }, [store]);
+  const job = useJob(async ({ signal, report }) => {
+    const opts = { lang, deep, commonNames };
+    const r = await sortTagsByTaxonomy(opts, report, signal);
+    toast(
+      r.sorted > 0 ? `Sorted ${r.sorted} tag${r.sorted === 1 ? "" : "s"} into taxonomy folders` : "No tags needed sorting"
+    );
+    return r;
+  });
   const handleClearCache = (0, import_react.useCallback)(() => {
     clearTaxonomyCache();
-    MMA.toast("Taxonomy cache cleared");
+    toast("Taxonomy cache cleared");
   }, []);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Section, { title: "Taxonomy Sorter", defaultOpen: false, children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: "Language", row: true, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -576,94 +547,51 @@ function TaxonomySorter() {
         onChange: (v) => setDeep(v === "deep")
       }
     ) }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Label, { info: "Include translated common names from iNaturalist", children: "Common names" }), row: true, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      "input",
-      {
-        type: "checkbox",
-        checked: commonNames,
-        onChange: (e) => setCommonNames(e.target.checked)
-      }
-    ) }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "flex", gap: 6, marginTop: 4 }, children: [
-      running ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "button button--danger", onClick: handleCancel, style: { flex: 1 }, children: "Cancel" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "button button--primary", onClick: handleSort, style: { flex: 1 }, children: "Sort Tags" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Label, { info: "Include translated common names from iNaturalist", children: "Common names" }), row: true, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Checkbox, { checked: commonNames, onChange: (e) => setCommonNames(e.target.checked) }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "inat-sidebar__run", children: [
+      job.running ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { variant: "destructive", onClick: job.cancel, children: "Cancel" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { variant: "primary", onClick: job.run, children: "Sort Tags" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "button",
+        Button,
         {
-          className: "button",
           onClick: handleClearCache,
-          disabled: running,
-          title: "Clear cached API results",
+          disabled: job.running,
+          title: "Forget saved iNaturalist taxonomy results",
           children: "Clear Cache"
         }
       )
     ] }),
-    progress && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { fontSize: 11, color: "var(--text-secondary, #999)", marginTop: 6 }, children: [
-      progress.phase,
-      " (",
-      progress.current,
-      "/",
-      progress.total,
-      ")",
-      progress.detail && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { opacity: 0.7 }, children: progress.detail })
-    ] }),
-    result && !running && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { fontSize: 11, color: "var(--text-secondary, #999)", marginTop: 6 }, children: [
-      result.sorted,
+    job.progress && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      ProgressRow,
+      {
+        className: "inat-sidebar__status",
+        label: job.progress.phase,
+        count: `${job.progress.current}/${job.progress.total}`,
+        value: job.progress.total > 0 ? job.progress.current / job.progress.total : 0,
+        children: job.progress.detail && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "inat-sidebar__detail", children: job.progress.detail })
+      }
+    ),
+    job.error && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "inat-sidebar__error", children: job.error }),
+    job.result && !job.running && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "inat-sidebar__status", children: [
+      job.result.sorted,
       " sorted, ",
-      result.skipped,
+      job.result.skipped,
       " skipped"
     ] })
   ] });
 }
 
+// inaturalist/src/INatSidebar.css
+var style = [...document.head.querySelectorAll("style[data-mma-plugin-css]")].find((s) => s.dataset.mmaPluginCss === "inaturalist/src/INatSidebar.css");
+if (!style) {
+  style = document.createElement("style");
+  style.dataset.mmaPluginCss = "inaturalist/src/INatSidebar.css";
+  document.head.appendChild(style);
+}
+style.textContent = ".inat-sidebar__search { display: flex; gap: 6px; }\n.inat-sidebar__results {\n  max-height: 300px; overflow-y: auto;\n  border: 1px solid var(--border-subtle); border-radius: var(--radius-1);\n  margin-top: 8px;\n}\n.inat-sidebar__taxon {\n  display: flex; align-items: center; gap: 8px; padding: 6px 8px;\n  cursor: pointer; border-bottom: 1px solid var(--border-subtle);\n  font-size: 0.8125rem;\n}\n.inat-sidebar__taxon:last-child { border-bottom: none; }\n.inat-sidebar__taxon:hover { background: var(--hover); }\n.inat-sidebar__taxon-photo {\n  width: 32px; height: 32px; border-radius: var(--radius-1); object-fit: cover;\n  background: var(--surface-3); flex-shrink: 0;\n}\n.inat-sidebar__taxon-info { flex: 1; min-width: 0; }\n.inat-sidebar__taxon-name {\n  font-weight: 600; font-style: italic; overflow: hidden;\n  text-overflow: ellipsis; white-space: nowrap;\n}\n.inat-sidebar__taxon-meta { font-size: 0.6875rem; color: var(--text-2); }\n.inat-sidebar__active {\n  --inat-observation: #ff7800;\n  margin-top: 8px; padding: 8px; border-radius: var(--radius-1);\n  background: color-mix(in srgb, var(--inat-observation) 10%, transparent);\n  border: 1px solid color-mix(in srgb, var(--inat-observation) 30%, transparent);\n}\n.inat-sidebar__active-name { font-weight: 600; font-size: 0.8125rem; color: var(--inat-observation); }\n.inat-sidebar__active-count { font-size: 0.75rem; color: var(--text-2); margin-top: 2px; }\n.inat-sidebar__actions { display: flex; gap: 6px; margin-top: 8px; }\n.inat-sidebar__hint { font-size: 0.75rem; color: var(--text-2); margin-top: 4px; }\n.inat-sidebar__info { display: inline-flex; align-items: center; gap: 4px; }\n.inat-sidebar__info svg { color: var(--text-3); cursor: help; flex-shrink: 0; }\n.inat-sidebar__run { display: flex; gap: 6px; margin-top: 4px; }\n.inat-sidebar__run > .button:first-child { flex: 1; }\n.inat-sidebar__status { font-size: 0.6875rem; color: var(--text-2); margin-top: 6px; }\n.inat-sidebar__detail { color: var(--text-3); }\n.inat-sidebar__error { font-size: 0.6875rem; color: var(--destructive-text); margin-top: 6px; }\n";
+
 // inaturalist/src/INatSidebar.tsx
 var import_jsx_runtime2 = __toESM(require_jsx_runtime());
-var CSS = `
-.inat-sidebar__search { display: flex; gap: 6px; }
-.inat-sidebar__results {
-  max-height: 300px; overflow-y: auto;
-  border: 1px solid var(--color-divider, #333); border-radius: 4px;
-  margin-top: 8px;
-}
-.inat-sidebar__taxon {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
-  cursor: pointer; border-bottom: 1px solid var(--color-divider, #333);
-  font-size: 13px;
-}
-.inat-sidebar__taxon:last-child { border-bottom: none; }
-.inat-sidebar__taxon:hover { background: rgba(255,255,255,0.05); }
-.inat-sidebar__taxon-photo {
-  width: 32px; height: 32px; border-radius: 4px; object-fit: cover;
-  background: #333; flex-shrink: 0;
-}
-.inat-sidebar__taxon-info { flex: 1; min-width: 0; }
-.inat-sidebar__taxon-name {
-  font-weight: 600; font-style: italic; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.inat-sidebar__taxon-meta { font-size: 11px; color: var(--text-secondary, #999); }
-.inat-sidebar__active {
-  margin-top: 8px; padding: 8px; border-radius: 4px;
-  background: rgba(255, 120, 0, 0.1); border: 1px solid rgba(255, 120, 0, 0.3);
-}
-.inat-sidebar__active-name { font-weight: 600; font-size: 13px; color: #ff7800; }
-.inat-sidebar__active-count { font-size: 12px; color: var(--text-secondary, #999); margin-top: 2px; }
-.inat-sidebar__actions { display: flex; gap: 6px; margin-top: 8px; }
-.inat-sidebar__hint { font-size: 12px; color: var(--text-secondary, #999); margin-top: 4px; }
-`;
-var styleEl = null;
-function injectCSS() {
-  if (styleEl) return;
-  styleEl = document.createElement("style");
-  styleEl.textContent = CSS;
-  document.head.appendChild(styleEl);
-}
-function removeCSS() {
-  if (styleEl) {
-    styleEl.remove();
-    styleEl = null;
-  }
-}
-var { Sidebar, Section: Section2 } = MMA.ui;
+var { ui: { Sidebar, Section: Section2, TextInput, Button: Button2 }, toast: toast2 } = MMA;
 function INatSidebar({ onClose }) {
   const [query, setQuery] = (0, import_react2.useState)("");
   const [results, setResults] = (0, import_react2.useState)([]);
@@ -671,11 +599,9 @@ function INatSidebar({ onClose }) {
   const [, bump] = (0, import_react2.useState)(0);
   const refresh = (0, import_react2.useCallback)(() => bump((n) => n + 1), []);
   (0, import_react2.useEffect)(() => {
-    injectCSS();
     setOnUpdate(refresh);
     return () => {
       setOnUpdate(null);
-      removeCSS();
     };
   }, [refresh]);
   const doSearch = async () => {
@@ -685,7 +611,7 @@ function INatSidebar({ onClose }) {
     try {
       setResults(await searchTaxa(q));
     } catch {
-      MMA.toast("Failed to search iNaturalist");
+      toast2("Failed to search iNaturalist");
     }
     setSearching(false);
   };
@@ -696,8 +622,8 @@ function INatSidebar({ onClose }) {
   };
   const handleImport = () => {
     const n = importToMap();
-    if (n > 0) MMA.toast(`Imported ${n} observations as locations`);
-    else MMA.toast("No observations to import");
+    if (n > 0) toast2(`Imported ${n} observations as locations`);
+    else toast2("No observations to import");
   };
   const taxon = getCurrentTaxon();
   const count = getObservations().length;
@@ -706,9 +632,8 @@ function INatSidebar({ onClose }) {
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Section2, { title: "Observations", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "inat-sidebar__search", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
-          "input",
+          TextInput,
           {
-            className: "input",
             placeholder: "Search species...",
             value: query,
             onChange: (e) => setQuery(e.target.value),
@@ -719,7 +644,7 @@ function INatSidebar({ onClose }) {
             style: { flex: 1 }
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { className: "button", onClick: doSearch, disabled: searching || !query.trim(), children: searching ? "..." : "Search" })
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Button2, { onClick: doSearch, disabled: searching || !query.trim(), children: searching ? "..." : "Search" })
       ] }),
       results.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "inat-sidebar__results", children: results.map((t) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "inat-sidebar__taxon", onClick: () => handleSelect(t), children: [
         t.photoUrl && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("img", { className: "inat-sidebar__taxon-photo", src: t.photoUrl }),
@@ -742,12 +667,12 @@ function INatSidebar({ onClose }) {
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "inat-sidebar__actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { className: "button", onClick: toggleVisibility, disabled: !taxon, children: vis ? "Hide" : "Show" }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { className: "button button--primary", onClick: handleImport, disabled: count === 0, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Button2, { onClick: toggleVisibility, disabled: !taxon, children: vis ? "Hide" : "Show" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Button2, { variant: "primary", onClick: handleImport, disabled: count === 0, children: [
           "Import",
           count > 0 ? ` (${count})` : ""
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { className: "button button--danger", onClick: clearData, disabled: !taxon, children: "Clear" })
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Button2, { variant: "destructive", onClick: clearData, disabled: !taxon, children: "Clear" })
       ] }),
       !taxon && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "inat-sidebar__hint", children: "Search for a species to visualize observations on the map." })
     ] }),
@@ -756,18 +681,8 @@ function INatSidebar({ onClose }) {
 }
 
 // inaturalist/src/index.tsx
-MMA.registerPlugin({
-  activate() {
-    let cancelled = false;
-    let teardown = null;
-    (async () => {
-      if (cancelled) return;
-      teardown = await init();
-    })();
-    return () => {
-      cancelled = true;
-      teardown?.();
-    };
-  },
+var { registerPlugin } = MMA;
+registerPlugin({
+  activate: init,
   sidebar: INatSidebar
 });

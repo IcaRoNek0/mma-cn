@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
 	textColorFor,
+	hexToRgb,
 	hexToHsl,
 	hslToHex,
 	hslToRgb,
@@ -64,23 +65,23 @@ describe("hexToHsl", () => {
 
 describe("hslToHex", () => {
 	it("pure red", () => {
-		expect(hslToHex(0, 100, 50)).toBe("#ff0000");
+		expect(hslToHex({ h: 0, s: 100, l: 50 })).toBe("#ff0000");
 	});
 
 	it("pure green", () => {
-		expect(hslToHex(120, 100, 50)).toBe("#00ff00");
+		expect(hslToHex({ h: 120, s: 100, l: 50 })).toBe("#00ff00");
 	});
 
 	it("pure blue", () => {
-		expect(hslToHex(240, 100, 50)).toBe("#0000ff");
+		expect(hslToHex({ h: 240, s: 100, l: 50 })).toBe("#0000ff");
 	});
 
 	it("white", () => {
-		expect(hslToHex(0, 0, 100)).toBe("#ffffff");
+		expect(hslToHex({ h: 0, s: 0, l: 100 })).toBe("#ffffff");
 	});
 
 	it("black", () => {
-		expect(hslToHex(0, 0, 0)).toBe("#000000");
+		expect(hslToHex({ h: 0, s: 0, l: 0 })).toBe("#000000");
 	});
 });
 
@@ -90,7 +91,7 @@ describe("hexToHsl -> hslToHex round-trip", () => {
 	for (const hex of colors) {
 		it(`round-trips ${hex}`, () => {
 			const { h, s, l } = hexToHsl(hex);
-			const result = hslToHex(h, s, l);
+			const result = hslToHex({ h, s, l });
 			expect(result).toBe(hex);
 		});
 	}
@@ -112,10 +113,40 @@ describe("rgbCss", () => {
 	});
 });
 
+describe("hexToRgb", () => {
+	it("parses six hex digits, with or without the hash", () => {
+		expect(hexToRgb("#ff8000")).toEqual([255, 128, 0]);
+		expect(hexToRgb("0a0B0c")).toEqual([10, 11, 12]);
+	});
+
+	it("expands three-digit shorthand the way CSS does", () => {
+		expect(hexToRgb("#abc")).toEqual([0xaa, 0xbb, 0xcc]);
+		expect(hexToRgb("#fff")).toEqual([255, 255, 255]);
+	});
+
+	it("ignores an alpha byte", () => {
+		expect(hexToRgb("#11223380")).toEqual([0x11, 0x22, 0x33]);
+	});
+
+	it("falls back to black for anything that is not a hex color", () => {
+		for (const bad of ["", "#12", "#abcd", "red", "#gggggg", "#12345"]) {
+			expect(hexToRgb(bad)).toEqual([0, 0, 0]);
+		}
+	});
+});
+
 describe("rgbToHex", () => {
-	it("formats an RGB object as a hex string", () => {
-		expect(rgbToHex({ r: 255, g: 128, b: 0 })).toBe("#ff8000");
-		expect(rgbToHex({ r: 0, g: 0, b: 0 })).toBe("#000000");
+	it("rounds fractional channels", () => {
+		expect(rgbToHex([254.6, 0.4, 16])).toBe("#ff0010");
+	});
+
+	it("formats an rgb tuple as a hex string", () => {
+		expect(rgbToHex([255, 128, 0])).toBe("#ff8000");
+		expect(rgbToHex([0, 0, 0])).toBe("#000000");
+	});
+
+	it("round-trips through hexToRgb", () => {
+		expect(hexToRgb(rgbToHex([17, 34, 51]))).toEqual([17, 34, 51]);
 	});
 });
 

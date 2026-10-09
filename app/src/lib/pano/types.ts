@@ -62,12 +62,12 @@ export interface PanoramaProvider {
 }
 
 export class PanoramaProviderError extends Error {
-	constructor(
-		message: string,
-		readonly provider: PanoSource,
-		readonly cause?: unknown,
-	) {
+	readonly provider: PanoSource;
+	readonly cause?: unknown;
+	constructor(message: string, provider: PanoSource, cause?: unknown) {
 		super(message);
+		this.provider = provider;
+		this.cause = cause;
 		this.name = "PanoramaProviderError";
 	}
 }

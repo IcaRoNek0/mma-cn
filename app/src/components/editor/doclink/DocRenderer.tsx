@@ -1,5 +1,6 @@
 import { createElement, useCallback } from "react";
-import { openDocHref, type DocBlock, type InlineMarks, type InlineSpan } from "@/lib/doclink";
+import type { DocBlock, InlineMarks, InlineSpan } from "@/lib/doclink";
+import { openHref } from "@/lib/map/mapClick";
 import { clamp } from "@/types/util";
 import { t } from "@/lib/i18n";
 
@@ -92,7 +93,7 @@ export function DocRenderer({ blocks }: { blocks: DocBlock[] }) {
 		const a = (e.target as Element).closest("a");
 		if (!a?.href) return;
 		e.preventDefault();
-		void openDocHref(a.href);
+		void openHref(a.href);
 	}, []);
 
 	return (

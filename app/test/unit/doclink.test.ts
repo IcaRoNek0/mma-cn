@@ -1,30 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { parseDoclink, doclinkedTags, openDocHref } from "@/lib/doclink";
+import { describe, it, expect } from "vitest";
+import type { Tag } from "@/types";
+import { parseDoclink, doclinkedTags, matchTagsToHeadings } from "@/lib/doclink";
 import { gdocProvider } from "@/lib/doclink/gdoc";
-import type { Tag } from "@/bindings.gen";
-
-vi.mock("@tauri-apps/plugin-shell", async (orig) => ({
-	...(await orig()),
-	open: vi.fn(),
-}));
-vi.mock("@/lib/commands", async (orig) => ({
-	...(await orig()),
-	cmd: { storeFindNearby: vi.fn() },
-}));
-vi.mock("@/store/useMapStore", async (orig) => ({
-	...(await orig()),
-	setActiveLocation: vi.fn(),
-}));
-vi.mock("@/lib/map/mapClick", async (orig) => ({
-	...(await orig()),
-	addParsedLocations: vi.fn(),
-}));
-vi.mock("@/lib/data/importExport", async (orig) => ({
-	...(await orig()),
-	parseMapsUrl: vi.fn(),
-}));
-
 const DOC_ID = "1wsa06GGiq1LEGwhkiPP0FKIZJqdAiue";
 
 describe("parseDoclink (gdoc)", () => {
@@ -263,13 +241,12 @@ describe("gdoc IR conversion", () => {
 });
 
 describe("doclinkedTags", () => {
-	const tag = (id: number, doclinks?: string[]): Tag => ({
+	const tag = (id: number, doclinks: string[] = []): Tag => ({
 		id,
 		name: `t${id}`,
 		color: "#fff",
 		visible: true,
 		order: null,
-		count: 0,
 		doclinks,
 	});
 
@@ -283,57 +260,45 @@ describe("doclinkedTags", () => {
 	});
 });
 
-describe("openDocHref", () => {
-	const HREF = "https://www.google.com/maps/@1,2,3z";
-	const parsed = { lat: 10, lng: 20, panoId: "PANO_A", heading: 0, pitch: 0, zoom: 0 };
-	const loc = (id: number, panoId: string) => ({ id, lat: 10, lng: 20, panoId });
+describe("matchTagsToHeadings", () => {
+	const tag = (id: number, name: string, doclinks: string[] = []): Tag => ({
+		id,
+		name,
+		color: "#fff",
+		visible: true,
+		order: null,
+		doclinks,
+	});
+	const h = (anchor: string, text: string) => ({ anchor, text, level: 2 });
+	const pairs = (tags: Tag[], headings: { anchor: string; text: string; level: number }[]) =>
+		matchTagsToHeadings(tags, headings, "d1").map((m) => `${m.tag.name}->${m.heading.anchor}`);
 
-	let openExternal: ReturnType<typeof vi.fn>;
-	let findNearby: ReturnType<typeof vi.fn>;
-	let setActive: ReturnType<typeof vi.fn>;
-	let addParsed: ReturnType<typeof vi.fn>;
-	let parseUrl: ReturnType<typeof vi.fn>;
-
-	beforeEach(async () => {
-		vi.clearAllMocks();
-		openExternal = vi.mocked((await import("@tauri-apps/plugin-shell")).open);
-		findNearby = vi.mocked((await import("@/lib/commands")).cmd.storeFindNearby) as never;
-		setActive = vi.mocked((await import("@/store/useMapStore")).setActiveLocation);
-		addParsed = vi.mocked((await import("@/lib/map/mapClick")).addParsedLocations);
-		parseUrl = vi.mocked((await import("@/lib/data/importExport")).parseMapsUrl);
-		parseUrl.mockResolvedValue(parsed);
+	it("proposes exact name matches, normalized for case, spacing, and diacritics", () => {
+		const tags = [tag(1, "A-type antennas"), tag(2, "Śląsk"), tag(3, "Unrelated")];
+		const headings = [h("h.a", "  a-type  ANTENNAS "), h("h.b", "Slask"), h("h.c", "Nothing")];
+		expect(pairs(tags, headings)).toEqual(["A-type antennas->h.a", "Śląsk->h.b"]);
 	});
 
-	it("opens non-location hrefs externally", async () => {
-		parseUrl.mockResolvedValue(null);
-		await openDocHref("https://example.com/page");
-		expect(openExternal).toHaveBeenCalledWith("https://example.com/page");
-		expect(findNearby).not.toHaveBeenCalled();
-		expect(addParsed).not.toHaveBeenCalled();
+	it("matches the leaf segment of hierarchical tag names", () => {
+		expect(pairs([tag(1, "Poland/Bollard")], [h("h.a", "Bollard")])).toEqual([
+			"Poland/Bollard->h.a",
+		]);
 	});
 
-	it("prefers the same-pano location over a nearer one", async () => {
-		const nearest = loc(1, "OTHER");
-		const samePano = loc(2, "PANO_A");
-		findNearby.mockResolvedValue([nearest, samePano]);
-		await openDocHref(HREF);
-		expect(setActive).toHaveBeenCalledWith(samePano);
-		expect(addParsed).not.toHaveBeenCalled();
+	it("skips ambiguous leaves and prefers a full-name match over leaves", () => {
+		const ambiguous = [tag(1, "Poland/Bollard"), tag(2, "Czechia/Bollard")];
+		expect(pairs(ambiguous, [h("h.a", "Bollard")])).toEqual([]);
+		const withFull = [tag(1, "Bollard"), tag(2, "Poland/Bollard")];
+		expect(pairs(withFull, [h("h.a", "Bollard")])).toEqual(["Bollard->h.a"]);
 	});
 
-	it("falls back to the nearest location when no pano matches", async () => {
-		const nearest = loc(1, "OTHER");
-		findNearby.mockResolvedValue([nearest, loc(2, "ALSO_OTHER")]);
-		await openDocHref(HREF);
-		expect(setActive).toHaveBeenCalledWith(nearest);
-		expect(addParsed).not.toHaveBeenCalled();
+	it("skips pairs already assigned in this doc", () => {
+		const linked = tag(1, "Antenna", ["https://docs.google.com/document/d/d1/edit#heading=h.a"]);
+		expect(pairs([linked], [h("h.a", "Antenna"), h("h.b", "Antenna")])).toEqual(["Antenna->h.b"]);
 	});
 
-	it("adds the location when nothing is within the duplicate radius", async () => {
-		findNearby.mockResolvedValue([]);
-		await openDocHref(HREF);
-		expect(findNearby).toHaveBeenCalledWith(parsed.lat, parsed.lng, 2.0);
-		expect(setActive).not.toHaveBeenCalled();
-		expect(addParsed).toHaveBeenCalledWith([parsed]);
+	it("ignores links to other docs when deciding what is assigned", () => {
+		const linked = tag(1, "Antenna", ["https://docs.google.com/document/d/OTHER/edit#heading=h.a"]);
+		expect(pairs([linked], [h("h.a", "Antenna")])).toEqual(["Antenna->h.a"]);
 	});
 });

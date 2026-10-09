@@ -1,37 +1,71 @@
 import { describe, it, expect } from "vitest";
-import { cycleMarkerOpacity, DEFAULT_PREFS, toggledOpacity } from "@/store/mapEmbedPrefs";
+import {
+	DEFAULT_PREFS,
+	layerOpacity,
+	toggledLayer,
+	type OpacityLayer,
+} from "@/store/mapEmbedPrefs";
+import { migrationsFor } from "@/store/migrations";
 
-it("keeps click-to-find enabled for existing users by default", () => {
-	expect(DEFAULT_PREFS.findNearbyPanoOnClick).toBe(true);
+describe("layer opacity", () => {
+	it("gates each layer's opacity on its own visibility", () => {
+		const prefs = { ...DEFAULT_PREFS, svOpacity: 0.5, markerOpacity: 0.4, selectedOpacity: 0.3 };
+		const layers: OpacityLayer[] = ["sv", "marker", "selected"];
+		for (const layer of layers) {
+			expect(layerOpacity(prefs, layer)).toBe(prefs[`${layer}Opacity`]);
+			const hidden = { ...prefs, [`${layer}Visible`]: false };
+			for (const other of layers) {
+				expect(layerOpacity(hidden, other)).toBe(other === layer ? 0 : prefs[`${other}Opacity`]);
+			}
+		}
+	});
 });
 
-describe("toggledOpacity", () => {
-	it("hides a visible layer", () => {
-		expect(toggledOpacity(0.5, 0.5, "previous")).toBe(0);
-		expect(toggledOpacity(1, 1, "full")).toBe(0);
+describe("toggledLayer", () => {
+	it("hides a visible layer without losing its opacity", () => {
+		expect(toggledLayer(0.35, true, "previous")).toEqual({ opacity: 0.35, visible: false });
+		expect(toggledLayer(0.35, true, "full")).toEqual({ opacity: 0.35, visible: false });
 	});
 
-	it("restores the last non-zero value", () => {
-		expect(toggledOpacity(0, 0.35, "previous")).toBe(0.35);
+	it("restores the hidden layer at its own opacity", () => {
+		expect(toggledLayer(0.35, false, "previous")).toEqual({ opacity: 0.35, visible: true });
 	});
 
 	it("restores full opacity when the setting says so", () => {
-		expect(toggledOpacity(0, 0.35, "full")).toBe(1);
+		expect(toggledLayer(0.35, false, "full")).toEqual({ opacity: 1, visible: true });
 	});
 
-	it("falls back to full opacity with no remembered value", () => {
-		expect(toggledOpacity(0, 0, "previous")).toBe(1);
+	it("survives a hide/show round trip at any opacity", () => {
+		for (const opacity of [0.05, 0.35, 1]) {
+			const hidden = toggledLayer(opacity, true, "previous");
+			expect(toggledLayer(hidden.opacity, hidden.visible, "previous")).toEqual({
+				opacity,
+				visible: true,
+			});
+		}
 	});
 });
 
-describe("cycleMarkerOpacity", () => {
-	it("cycles opaque, translucent, and hidden states", () => {
-		expect(cycleMarkerOpacity(1)).toBe(0.35);
-		expect(cycleMarkerOpacity(0.35)).toBe(0);
-		expect(cycleMarkerOpacity(0)).toBe(1);
+describe("mapEmbedPrefs migration", () => {
+	const migrate = (stored: Record<string, unknown>) => {
+		for (const m of migrationsFor("mapEmbedPrefs")) m(stored);
+		return stored;
+	};
+
+	// Literals on purpose: the migration names historical shapes, not live defaults.
+	it("turns a persisted zero opacity into a hidden layer at the default opacity", () => {
+		expect(migrate({ svOpacity: 0, markerOpacity: 0 })).toEqual({
+			svOpacity: 0.5,
+			svVisible: false,
+			markerOpacity: 1,
+			markerVisible: false,
+		});
 	});
 
-	it("normalizes an arbitrary slider value to the opaque state", () => {
-		expect(cycleMarkerOpacity(0.5)).toBe(1);
+	it("leaves visible layers alone and is idempotent", () => {
+		const once = migrate({ svOpacity: 0.35, markerOpacity: 0 });
+		expect(migrate({ ...once })).toEqual(once);
+		expect(once.svOpacity).toBe(0.35);
+		expect(once.svVisible).toBeUndefined();
 	});
 });

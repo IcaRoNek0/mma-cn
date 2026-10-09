@@ -10,6 +10,7 @@ const OFFSET = 5;
 const ARROW_W = 10;
 const ARROW_H = 5;
 const MARGIN = 4;
+const OVERLAP = 1;
 
 interface Shown {
 	content: string;
@@ -18,9 +19,7 @@ interface Shown {
 	trigger: HTMLElement;
 }
 
-/** Marks its child as a tooltip trigger. Adds attributes to the existing element instead of
- *  wrapping it, so a trigger costs no extra fibers and hovering re-renders only the single
- *  host below -- one portal for the whole app rather than one per trigger. */
+/** Shows `content` as a tooltip when its child is hovered. The child is not wrapped. */
 export function Tooltip({
 	content,
 	side = "top",
@@ -82,15 +81,16 @@ function place(trigger: DOMRect, tip: DOMRect, side: Side, align: Align) {
 		y = clamp(y, MARGIN, vh - tip.height - MARGIN);
 	}
 
+	const SWAP = (ARROW_W - ARROW_H) / 2;
 	const arrowX = vertical
 		? clamp(trigger.left + trigger.width / 2 - x, ARROW_W, tip.width - ARROW_W)
 		: resolved === "left"
-			? tip.width
-			: -ARROW_H;
+			? tip.width - SWAP - OVERLAP
+			: -ARROW_H - SWAP + OVERLAP;
 	const arrowY = vertical
 		? resolved === "top"
-			? tip.height
-			: -ARROW_H
+			? tip.height - OVERLAP
+			: -ARROW_H + OVERLAP
 		: clamp(trigger.top + trigger.height / 2 - y, ARROW_W, tip.height - ARROW_W);
 
 	return { x, y, resolved, arrowX, arrowY, vertical };
@@ -128,13 +128,19 @@ function TooltipHost() {
 				return null;
 			});
 		};
+		// Focus reaching a trigger without the keyboard (a dialog handing focus back to the
+		// button that opened it) is not a hover; only keyboard focus earns the tooltip.
+		const showOnKeyboardFocus = (e: Event) => {
+			const target = e.target as HTMLElement | null;
+			if (target?.matches?.(":focus-visible")) show(e);
+		};
 		const hideAll = () => setShown(null);
 
 		const ac = new AbortController();
 		const { signal } = ac;
 		document.addEventListener("pointerover", show, { signal });
 		document.addEventListener("pointerout", hide, { signal });
-		document.addEventListener("focusin", show, { signal });
+		document.addEventListener("focusin", showOnKeyboardFocus, { signal });
 		document.addEventListener("focusout", hide, { signal });
 		document.addEventListener("pointerdown", hideAll, { capture: true, signal });
 		window.addEventListener("scroll", hideAll, { capture: true, signal });
@@ -162,8 +168,9 @@ function TooltipHost() {
 		if (!arrow) return;
 		const rotate =
 			resolved === "top" ? 0 : resolved === "bottom" ? 180 : resolved === "left" ? 270 : 90;
-		const ax = Math.round(arrowX - (vertical ? ARROW_W / 2 : 0));
-		const ay = Math.round(arrowY - (vertical ? 0 : ARROW_W / 2));
+		// Absolute children start at the padding box, so the surface's border offsets them.
+		const ax = Math.round(arrowX - (vertical ? ARROW_W / 2 : 0) - tip.clientLeft);
+		const ay = Math.round(arrowY - (vertical ? 0 : ARROW_W / 2) - tip.clientTop);
 		arrow.style.transform = `translate3d(${ax}px, ${ay}px, 0) rotate(${rotate}deg)`;
 	}, [shown]);
 
@@ -172,7 +179,7 @@ function TooltipHost() {
 	return createPortal(
 		<div
 			ref={tipRef}
-			className="tooltip"
+			className="tooltip popover-surface"
 			role="tooltip"
 			style={{ position: "fixed", top: 0, left: 0, visibility: "hidden" }}
 		>

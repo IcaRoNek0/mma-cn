@@ -1,0 +1,69 @@
+//! Generic file ops: temp-file-then-rename writes and orphan sweeps.
+
+use super::*;
+use crate::types::AppResult;
+use std::fs;
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Write to `path` via a temporary `.tmp` sibling, then atomically rename.
+/// Guarantees readers never observe a partially-written file.
+pub(crate) fn atomic_write(
+    path: &Path,
+    write_fn: impl FnOnce(File) -> AppResult<()>,
+) -> AppResult<()> {
+    let tmp = tmp_path(path);
+    let file = File::create(&tmp)?;
+    write_fn(file)?;
+    // write_fn consumed the handle; reopen to fsync - without it the rename can
+    // become durable before the data, losing the file on power cut.
+    OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// A `.tmp` sibling unique to this write, so concurrent writers to one destination
+/// never truncate each other's in-flight bytes.
+fn tmp_path(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{}.{n}.tmp", std::process::id()))
+}
+
+/// [`atomic_write`] of `from`'s bytes to `to`.
+pub(crate) fn atomic_copy(from: &Path, to: &Path) -> AppResult<()> {
+    let mut source = File::open(from)?;
+    atomic_write(to, |mut file| {
+        io::copy(&mut source, &mut file)?;
+        Ok(())
+    })
+}
+
+/// Delete orphaned `.tmp` files left under the Arrow root by interrupted
+/// [`atomic_write`]s. Returns the number removed. Called once at startup.
+pub(crate) fn sweep_orphaned_tmp() -> usize {
+    arrow_dir().map(|d| sweep_tmp_under(&d)).unwrap_or(0)
+}
+
+/// Recursively delete `*.tmp` files under `dir`; returns the number removed.
+pub(crate) fn sweep_tmp_under(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut n = 0;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            n += sweep_tmp_under(&p);
+        } else if p.extension().is_some_and(|x| x == "tmp") && fs::remove_file(&p).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+#[cfg(test)]
+#[path = "files.test.rs"]
+mod tests;

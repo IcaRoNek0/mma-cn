@@ -1,82 +1,122 @@
-import type { Location, LocationPatch_Deserialize as LocationPatch } from "@/bindings.gen";
-import { nowUnix } from "@/lib/util/format";
+import type {
+	FieldDef,
+	Location,
+	LocationPatch_Deserialize as LocationPatch,
+} from "@/bindings.gen";
+import type { FieldType } from "@/bindings.consts";
+import { nowUnix } from "@/lib/util/util";
+import type { RequireNonNull } from "@/types/util";
+import { LocationFlag } from "@/bindings.consts";
+
+/** A field definition with every optional attribute spelled absent. */
+export function createFieldDef(
+	type: FieldType,
+	over: Partial<Omit<FieldDef, "type">> = {},
+): FieldDef {
+	return { label: null, values: null, comparison: null, ...over, type };
+}
+
+/** A tag's display identity: name, color, sidebar order, and document links. */
+export interface Tag {
+	id: number;
+	name: string;
+	color: string;
+	/** True while at least one location carries the tag. */
+	visible: boolean;
+	order: number | null;
+	doclinks: string[];
+}
+
+/** Partial update to a tag's editable display metadata; `null` clears the field. */
+export type TagPatch = { [K in "name" | "color" | "doclinks"]?: Tag[K] | null };
 
 /** Street View camera orientation (POV). */
 export type LocationPOV = Pick<Location, "heading" | "pitch" | "zoom">;
+/** A view on a specific panorama. */
+export type PanoView = LocationPOV & RequireNonNull<Pick<Location, "panoId">>;
+/** The camera fields a Location and the live Street View viewer share. */
+export type PanoCapture = LocationPOV & Pick<Location, "lat" | "lng" | "panoId">;
 
+/** A {lat, lng} coordinate pair. */
 export type LatLng = google.maps.LatLngLiteral;
+/** A {west, south, east, north} bounding box. */
 export type Bounds = google.maps.LatLngBoundsLiteral;
 
+/** True when bounds span the entire world. */
 export function isWorldBounds(b: Bounds): boolean {
 	return b.south === -90 && b.west === -180 && b.north === 90 && b.east === 180;
 }
 
+/** Convert a [south, west, north, east] tuple to a Bounds object. @unstable */
 export function scoreTupleToBounds([s, w, n, e]: [number, number, number, number]): Bounds {
 	return { south: s, west: w, north: n, east: e };
 }
 
+/** Convert a [west, south, east, north] bbox tuple to Bounds, or null. @unstable */
 export function bboxTupleToBounds(t: [number, number, number, number] | null): Bounds | null {
 	if (!t) return null;
 	return { south: t[1], west: t[0], north: t[3], east: t[2] };
 }
 
+/** Convert a Bounds object to a [south, west, north, east] tuple. @unstable */
 export function boundsToScoreTuple(b: Bounds): [number, number, number, number] {
 	return [b.south, b.west, b.north, b.east];
 }
 
-export const enum LocationFlag {
-	None = 0,
-	LoadAsPanoId = 1,
-	Informational = 2,
-	// Virtual-preview kind tags. JS-only and set only on the ephemeral active-location preview
-	// (never persisted) — strip with VIRTUAL_FLAGS before materializing one into the map.
-	ImportPreview = 4,
-	SeenOverlay = 8,
+/** Pinned: the location always opens this exact pano. */
+export function isPinned(loc: Location): loc is Location & { panoId: string } {
+	return (loc.flags & LocationFlag.LoadAsPanoId) !== 0 && loc.panoId != null && loc.panoId !== "";
 }
 
-/** Mask of the virtual-only kind bits, to clear when turning a preview into a real location. */
-export const VIRTUAL_FLAGS = LocationFlag.ImportPreview | LocationFlag.SeenOverlay;
-
-/** Panorama source type from Google's internal metadata. */
-export const enum PanoType {
-	Official = 2,
-	Unknown = 3,
-	UserUploaded = 10,
+/** The location pinned to the pano it carries, or unpinned to float on default coverage. */
+export function setPinned(loc: Location, on: boolean): Location {
+	return {
+		...loc,
+		flags: on ? loc.flags | LocationFlag.LoadAsPanoId : loc.flags & ~LocationFlag.LoadAsPanoId,
+	};
 }
 
-export function hasLoadAsPanoId(loc: Location): boolean {
-	return (loc.flags & LocationFlag.LoadAsPanoId) !== 0;
+/** The `extra` merge patch that turns `before` into `after`: changed keys carry their
+ *  new value, keys `after` lacks carry null. */
+export function extraPatch(
+	before: Record<string, unknown> | null,
+	after: Record<string, unknown> | null,
+): Record<string, unknown> {
+	const patch: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(after ?? {})) {
+		if (JSON.stringify(before?.[key] ?? null) !== JSON.stringify(value ?? null)) patch[key] = value;
+	}
+	for (const key of Object.keys(before ?? {})) {
+		if (!(key in (after ?? {}))) patch[key] = null;
+	}
+	return patch;
 }
 
-export function isInformational(loc: Location): boolean {
-	return (loc.flags & LocationFlag.Informational) !== 0;
+/** The same location on the same pano: what makes one row's answer another row's. @unstable */
+export function sameRow(a: Location, b: Location): boolean {
+	return a.id === b.id && a.panoId === b.panoId;
 }
 
-export function isPinnedToPano(loc: Location): boolean {
-	return hasLoadAsPanoId(loc) && loc.panoId != null;
-}
-
-/** Virtual locations exist only ephemerally as the single active-location preview — never in
- *  the map. They display like real locations but every mutate path no-ops. Identity is a unique
- *  negative id (so id-only checks work); the kind rides in `flags` (read where you hold the
- *  full Location). */
+/** True for virtual (preview-only) locations, which have negative ids and are not
+ *  part of the map. */
 export function isVirtualLocation(loc: { id: number }): boolean {
 	return loc.id < 0;
 }
 
-/** A location you already hold in full, or just its id to fetch on demand.
- *  Lets the pick -> activate path carry "materialized or not" as plain data;
- *  `resolveLocation` (in the store) fetches only the id case. */
+/** A full location or just its id (to be fetched on demand). */
 export type MaybeLocation = Location | number;
 
+/** Extract the id from a MaybeLocation. */
 export function locId(m: MaybeLocation): number {
 	return typeof m === "number" ? m : m.id;
 }
 
+/** True when the location is an import preview (not yet committed). @unstable */
 export function isImportPreview(loc: Location): boolean {
 	return (loc.flags & LocationFlag.ImportPreview) !== 0;
 }
 
+/** True when the location is a seen-history overlay preview. @unstable */
 export function isSeenPreview(loc: Location): boolean {
 	return (loc.flags & LocationFlag.SeenOverlay) !== 0;
 }
@@ -99,9 +139,26 @@ export function createLocation(partial: Partial<Location> & LatLng): Location {
 	};
 }
 
-/** Apply a LocationPatch JS-side, mirroring Rust's `overlay_update`: `extra` is a
- *  JSON Merge Patch (RFC 7386) — keys shallow-merge, a null value deletes its key,
- *  and a null patch clears extra entirely. */
+/** A new Location at the viewer's live camera, carrying `source`'s flags and the given
+ *  tags. `extra` describes the pano it was fetched for, so it only survives a drop that
+ *  stayed on that pano. @unstable */
+export function dropLocation(
+	source: Location,
+	live: PanoCapture,
+	panoId: string | null,
+	tags: number[],
+): Location {
+	return createLocation({
+		...live,
+		panoId,
+		flags: source.flags,
+		tags,
+		extra: panoId === source.panoId ? source.extra : null,
+	});
+}
+
+/** Apply a LocationPatch to a location. `extra` follows JSON Merge Patch (RFC 7386):
+ *  keys shallow-merge, a null value deletes its key, and a null patch clears extra. */
 export function applyLocationPatch(loc: Location, patch: LocationPatch): Location {
 	const { extra: extraPatch, ...rest } = patch;
 	const next = { ...loc, ...rest } as Location;

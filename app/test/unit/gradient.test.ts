@@ -1,3 +1,4 @@
+import { createFieldDef } from "@/types";
 import { describe, it, expect } from "vitest";
 import {
 	lerp,
@@ -6,7 +7,8 @@ import {
 	fieldScale,
 	colorPartition,
 } from "@/plugins/gradient/gradientMath";
-import type { PartitionGroup } from "@/lib/data/fieldOps";
+import { locationsKey } from "@/store/selections";
+import type { KeySpec, PartitionBucket } from "@/bindings.gen";
 
 describe("lerp", () => {
 	it("t=0 returns first color", () => {
@@ -109,23 +111,23 @@ describe("isNumericField", () => {
 	});
 
 	it("number type returns true", () => {
-		expect(isNumericField({ type: "number" })).toBe(true);
+		expect(isNumericField(createFieldDef("number"))).toBe(true);
 	});
 
 	it("date type returns true", () => {
-		expect(isNumericField({ type: "date" })).toBe(true);
+		expect(isNumericField(createFieldDef("date"))).toBe(true);
 	});
 
 	it("string type returns false", () => {
-		expect(isNumericField({ type: "string" })).toBe(false);
+		expect(isNumericField(createFieldDef("string"))).toBe(false);
 	});
 
 	it("enum type returns false", () => {
-		expect(isNumericField({ type: "enum" })).toBe(false);
+		expect(isNumericField(createFieldDef("enum"))).toBe(false);
 	});
 
 	it("month type returns false", () => {
-		expect(isNumericField({ type: "month" })).toBe(false);
+		expect(isNumericField(createFieldDef("month"))).toBe(false);
 	});
 });
 
@@ -151,79 +153,104 @@ describe("fieldScale", () => {
 });
 
 describe("colorPartition", () => {
+	const VALUE_SPEC: KeySpec = { kind: "value" };
 	const stops: [number, number, number][] = [
 		[0, 0, 0],
 		[255, 255, 255],
 	];
-	const numericBins: PartitionGroup[] = [
+	const numericBins: PartitionBucket[] = [
 		{ key: "0–50", ids: [1, 2], bin: [0, 50] },
 		{ key: "50–100", ids: [3], bin: [50, 100] },
 	];
 
-	it("unscoped numeric bins emit live Filter `between` selections", () => {
-		const sels = colorPartition(numericBins, {
+	it("skips the empty bins the pivot keeps, so no selection selects nothing", () => {
+		const withGap: PartitionBucket[] = [
+			{ key: "0–50", ids: [1, 2], bin: [0, 50] },
+			{ key: "50–100", ids: [], bin: [50, 100] },
+			{ key: "100–150", ids: [3], bin: [100, 150] },
+		];
+		const sels = colorPartition(withGap, {
 			fieldKey: "altitude",
 			fieldType: "number",
+			spec: VALUE_SPEC,
 			stops,
-			scoped: false,
+			narrowed: false,
 			ordinal: true,
 			eqFilter: false,
 		});
-		expect(sels.every((s) => s.props.type === "Filter")).toBe(true);
+		expect(sels).toHaveLength(2);
+		expect(sels[0].color).toEqual([0, 0, 0]);
+		expect(sels[1].color).toEqual([255, 255, 255]);
+	});
+
+	it("whole-map numeric bins emit live Filter `between` selections", () => {
+		const sels = colorPartition(numericBins, {
+			fieldKey: "altitude",
+			fieldType: "number",
+			spec: VALUE_SPEC,
+			stops,
+			narrowed: false,
+			ordinal: true,
+			eqFilter: false,
+		});
+		expect(sels.every((s) => s.selector.type === "Filter")).toBe(true);
 		expect(sels.every((s) => s.key.startsWith("filter:altitude:between:"))).toBe(true);
 	});
 
-	it("scoped numeric bins emit static Locations selections keyed by their id list", () => {
+	it("narrowed numeric bins emit static Locations selections keyed by their id list", () => {
 		const sels = colorPartition(numericBins, {
 			fieldKey: "altitude",
 			fieldType: "number",
+			spec: VALUE_SPEC,
 			stops,
-			scoped: true,
+			narrowed: true,
 			ordinal: true,
 			eqFilter: false,
 		});
-		expect(sels.every((s) => s.props.type === "Locations")).toBe(true);
-		const ids = sels.flatMap((s) => (s.props.type === "Locations" ? s.props.locations : []));
+		expect(sels.every((s) => s.selector.type === "Locations")).toBe(true);
+		const ids = sels.flatMap((s) => (s.selector.type === "Locations" ? s.selector.locations : []));
 		expect(ids.sort()).toEqual([1, 2, 3]);
 		const first = sels[0];
-		if (first.props.type === "Locations") {
-			expect(first.key).toBe(first.props.locations.join(","));
+		if (first.selector.type === "Locations") {
+			expect(first.key).toBe(locationsKey(first.selector.locations));
 			// carries the group key as its name, so it isn't a generic "Selection"
-			expect(first.props.name).toBe("0–50");
+			expect(first.selector.name).toBe("0–50");
 		}
 	});
 
-	it("unscoped value groups emit live Filter `eq` selections", () => {
-		const groups: PartitionGroup[] = [
+	it("whole-map value groups emit live Filter `eq` selections", () => {
+		const groups: PartitionBucket[] = [
 			{ key: "a", ids: [1, 3], bin: null },
 			{ key: "b", ids: [2], bin: null },
 		];
 		const sels = colorPartition(groups, {
 			fieldKey: "tag",
 			fieldType: "string",
+			spec: VALUE_SPEC,
 			stops,
-			scoped: false,
+			narrowed: false,
 			ordinal: false,
 			eqFilter: true,
 		});
-		expect(sels.every((s) => s.props.type === "Filter")).toBe(true);
+		expect(sels.every((s) => s.selector.type === "Filter")).toBe(true);
 		expect(sels.map((s) => s.key)).toEqual(["filter:tag:eq:a", "filter:tag:eq:b"]);
 	});
 
-	it("unscoped projection groups (no eqFilter, no bin) fall back to static Locations", () => {
-		const groups: PartitionGroup[] = [
+	it("whole-map projection groups (no eqFilter, no bin) fall back to static Locations", () => {
+		const groups: PartitionBucket[] = [
 			{ key: "2020-01-01", ids: [1, 2], bin: null },
 			{ key: "2020-01-02", ids: [3], bin: null },
 		];
 		const sels = colorPartition(groups, {
 			fieldKey: "datetime",
 			fieldType: "date",
+			spec: VALUE_SPEC,
 			stops,
-			scoped: false,
+			narrowed: false,
 			ordinal: false,
 			eqFilter: false,
 		});
-		expect(sels.every((s) => s.props.type === "Locations")).toBe(true);
+		expect(sels.every((s) => s.selector.type === "Locations")).toBe(true);
 	});
 
 	it("empty groups yield no selections", () => {
@@ -231,8 +258,9 @@ describe("colorPartition", () => {
 			colorPartition([], {
 				fieldKey: "x",
 				fieldType: "number",
+				spec: VALUE_SPEC,
 				stops,
-				scoped: true,
+				narrowed: true,
 				ordinal: true,
 				eqFilter: false,
 			}),

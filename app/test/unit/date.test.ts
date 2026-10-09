@@ -1,9 +1,9 @@
+import { mirrorCases } from "./fixtures/mirrorCases";
 import { describe, it, expect } from "vitest";
 import fc from "fast-check";
 import {
 	parseTypedDate,
 	MONTHS,
-	compareMonthOrder,
 	ymParse,
 	ymFormat,
 	ymFromDate,
@@ -11,7 +11,13 @@ import {
 	ymOrdinal,
 	ymFromOrdinal,
 } from "@/lib/util/date";
-import { partsToEpoch, dateParts } from "@/lib/data/fieldOps";
+import {
+	partsToEpoch,
+	dateParts,
+	pickPeriodEnd,
+	hasTimeOfDay,
+	stepFilterWindow,
+} from "@/lib/util/date";
 
 describe("MONTHS", () => {
 	it("short and full names align by index", () => {
@@ -20,17 +26,6 @@ describe("MONTHS", () => {
 		MONTHS.full.forEach((full, i) => {
 			expect(full.startsWith(MONTHS.short[i])).toBe(true);
 		});
-	});
-});
-
-describe("compareMonthOrder", () => {
-	it("orders month names by calendar position, not alphabetically", () => {
-		expect(["April", "January", "December", "August"].sort(compareMonthOrder)).toEqual([
-			"January",
-			"April",
-			"August",
-			"December",
-		]);
 	});
 });
 
@@ -186,5 +181,170 @@ describe("YYYY-MM codec", () => {
 				expect(ymFromDate(ymToDate(s)!)).toBe(s);
 			}),
 		);
+	});
+});
+
+describe("pickPeriodEnd", () => {
+	const localMidnight = (y: number, m: number, d: number) =>
+		Math.floor(new Date(y, m, d).getTime() / 1000);
+
+	it("day end is 23:59:59 of the same local day, every day of the year (DST-safe)", () => {
+		for (let day = 1; day <= 366; day++) {
+			const v = localMidnight(2024, 0, day);
+			const start = new Date(v * 1000);
+			const end = new Date(pickPeriodEnd(v, "day", false) * 1000);
+			expect([end.getFullYear(), end.getMonth(), end.getDate()]).toEqual([
+				start.getFullYear(),
+				start.getMonth(),
+				start.getDate(),
+			]);
+			expect([end.getHours(), end.getMinutes(), end.getSeconds()]).toEqual([23, 59, 59]);
+		}
+	});
+
+	it("day end is idempotent", () => {
+		const v = localMidnight(2024, 5, 3);
+		const end = pickPeriodEnd(v, "day", false);
+		expect(pickPeriodEnd(end, "day", false)).toBe(end);
+	});
+
+	it("wall-clock day end adds a fixed 24h period (no DST in the UTC frame)", () => {
+		const v = Math.floor(Date.UTC(2024, 5, 3) / 1000);
+		const end = pickPeriodEnd(v, "day", true);
+		expect(end).toBe(v + 86399);
+		expect(pickPeriodEnd(end, "day", true)).toBe(end);
+	});
+
+	it("minute end floors to the minute and adds 59s, idempotently", () => {
+		const v = Math.floor(Date.UTC(2024, 5, 3, 0, 5) / 1000);
+		const end = pickPeriodEnd(v, "minute", false);
+		expect(end).toBe(v + 59);
+		expect(pickPeriodEnd(end, "minute", false)).toBe(end);
+	});
+});
+
+describe("hasTimeOfDay", () => {
+	const local = (h: number, m: number, s = 0) =>
+		Math.floor(new Date(2024, 5, 3, h, m, s).getTime() / 1000);
+
+	it("midnight is day-grain; any time-of-day is minute-grain", () => {
+		expect(hasTimeOfDay(local(0, 0), false)).toBe(false);
+		expect(hasTimeOfDay(local(0, 5), false)).toBe(true);
+		expect(hasTimeOfDay(local(23, 59, 59), false)).toBe(true);
+	});
+
+	it("wall-clock values use the UTC frame", () => {
+		const v = Math.floor(Date.UTC(2024, 5, 3) / 1000);
+		expect(hasTimeOfDay(v, true)).toBe(false);
+		expect(hasTimeOfDay(v + 300, true)).toBe(true);
+	});
+
+	it("a day-end bound re-expands to itself (untouched edit round-trip)", () => {
+		const midnight = local(0, 0);
+		const end = pickPeriodEnd(midnight, "day", false);
+		// not midnight -> minute grain on resubmit -> floor+59 -> unchanged
+		expect(hasTimeOfDay(end, false)).toBe(true);
+		expect(pickPeriodEnd(end, "minute", false)).toBe(end);
+	});
+});
+
+describe("dateParts / partsToEpoch (wall-clock codec)", () => {
+	it("round-trips whole-second timestamps in both frames", () => {
+		for (const wallClock of [false, true]) {
+			for (const v of [
+				Math.floor(new Date(2024, 5, 3, 14, 5, 7).getTime() / 1000),
+				Math.floor(Date.UTC(2019, 11, 31, 23, 59, 59) / 1000),
+				Math.floor(new Date(2024, 0, 1).getTime() / 1000),
+			]) {
+				expect(partsToEpoch(dateParts(v, wallClock), wallClock)).toBe(v);
+			}
+		}
+	});
+
+	it("wall-clock frame reads the same digits regardless of viewer timezone semantics", () => {
+		const v = Math.floor(Date.UTC(2020, 2, 1, 9, 30) / 1000);
+		const p = dateParts(v, true);
+		expect([p.y, p.mo, p.d, p.h, p.mi]).toEqual([2020, 2, 1, 9, 30]);
+	});
+});
+
+describe("stepFilterWindow", () => {
+	const dayStart = (y: number, m: number, d: number) =>
+		Math.floor(new Date(y, m, d).getTime() / 1000);
+
+	it("steps a single-day window to the next day", () => {
+		const lo = dayStart(2024, 5, 3);
+		const hi = pickPeriodEnd(lo, "day", false);
+		expect(stepFilterWindow("date", { op: "between", lo, hi }, 1)).toEqual({
+			op: "between",
+			lo: dayStart(2024, 5, 4),
+			hi: pickPeriodEnd(dayStart(2024, 5, 4), "day", false),
+		});
+	});
+
+	it("tiles a multi-day window by its span", () => {
+		const lo = dayStart(2024, 5, 1);
+		const hi = pickPeriodEnd(dayStart(2024, 5, 3), "day", false); // 3-day window
+		expect(stepFilterWindow("date", { op: "between", lo, hi }, 1)).toEqual({
+			op: "between",
+			lo: dayStart(2024, 5, 4),
+			hi: pickPeriodEnd(dayStart(2024, 5, 6), "day", false),
+		});
+	});
+
+	it("forward then back is identity for every day of the year (DST-safe)", () => {
+		for (let day = 1; day <= 366; day++) {
+			const lo = dayStart(2024, 0, day);
+			const hi = pickPeriodEnd(lo, "day", false);
+			const fwd = stepFilterWindow("date", { op: "between", lo, hi }, 1)!;
+			const back = stepFilterWindow("date", fwd, -1);
+			expect(back).toEqual({ op: "between", lo, hi });
+		}
+	});
+
+	it("steps an instant (minute-grain) window by its second span", () => {
+		const lo = Math.floor(Date.UTC(2024, 5, 3, 14, 5) / 1000);
+		const hi = lo + 59;
+		expect(stepFilterWindow("date", { op: "between", lo, hi }, 1)).toEqual({
+			op: "between",
+			lo: lo + 60,
+			hi: hi + 60,
+		});
+	});
+
+	it("steps month eq and between windows, wrapping years", () => {
+		expect(stepFilterWindow("month", { op: "eq", value: "2019-12" }, 1)).toEqual({
+			op: "eq",
+			value: "2020-01",
+		});
+		expect(stepFilterWindow("month", { op: "between", lo: "2019-06", hi: "2019-08" }, 1)).toEqual({
+			op: "between",
+			lo: "2019-09",
+			hi: "2019-11",
+		});
+	});
+
+	it("translates numeric windows by span", () => {
+		expect(stepFilterWindow("number", { op: "between", lo: 0, hi: 100 }, 1)).toEqual({
+			op: "between",
+			lo: 100,
+			hi: 200,
+		});
+	});
+
+	it("returns null for non-window shapes", () => {
+		expect(stepFilterWindow("date", { op: "gt", value: dayStart(2024, 5, 3) }, 1)).toBeNull();
+		expect(stepFilterWindow("enum", { op: "eq", value: "US" }, 1)).toBeNull();
+		expect(
+			stepFilterWindow("date", { op: "between_anyyear", lo: "06-01", hi: "06-03" }, 1),
+		).toBeNull();
+		expect(stepFilterWindow("string", { op: "between", lo: "a", hi: "b" }, 1)).toBeNull();
+	});
+});
+
+describe("YYYY-MM shared mirror cases", () => {
+	it("parses exactly what the store parses", () => {
+		for (const [s, y, m] of mirrorCases.yearMonth.valid) expect(ymParse(s)).toEqual({ y, m });
+		for (const s of mirrorCases.yearMonth.invalid) expect(ymParse(s)).toBeNull();
 	});
 });

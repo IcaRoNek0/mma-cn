@@ -19,13 +19,9 @@ const INFO_PATH = "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 
 
 function Label({ children, info }: { children: ReactNode; info: string }) {
 	return (
-		<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+		<span className="inat-sidebar__info">
 			{children}
-			<svg
-				width={13} height={13} viewBox="0 0 24 24" fill="currentColor"
-				style={{ opacity: 0.35, cursor: "help", flexShrink: 0 }}
-				aria-label={info}
-			>
+			<svg width={13} height={13} viewBox="0 0 24 24" fill="currentColor" aria-label={info}>
 				<title>{info}</title>
 				<path d={INFO_PATH} />
 			</svg>
@@ -33,57 +29,38 @@ function Label({ children, info }: { children: ReactNode; info: string }) {
 	);
 }
 
-const { Section, Field, SegmentedControl } = MMA.ui;
+const {
+	ui: { Section, Field, SegmentedControl, Button, Checkbox, ProgressRow },
+	storage,
+	useJob,
+	toast,
+} = MMA;
 
 export function TaxonomySorter() {
-	const storage = MMA.storage("inaturalist");
-	const [lang, setLang] = useState<string>(() => storage.get("taxo_lang", "en"));
+	const store = storage("inaturalist");
+	const [lang, setLang] = useState<string>(() => store.get("taxo_lang", "en"));
 	const [deep, setDeep] = useState(true);
 	const [commonNames, setCommonNames] = useState(true);
-	const [running, setRunning] = useState(false);
-	const [progress, setProgress] = useState<SortProgress | null>(null);
-	const [result, setResult] = useState<SortResult | null>(null);
-	const [abortCtl, setAbortCtl] = useState<AbortController | null>(null);
 
 	const handleLangChange = useCallback((code: string) => {
 		setLang(code);
-		storage.set("taxo_lang", code);
-	}, [storage]);
+		store.set("taxo_lang", code);
+	}, [store]);
 
-	const handleSort = useCallback(async () => {
-		setRunning(true);
-		setResult(null);
-		setProgress(null);
-		const ctl = new AbortController();
-		setAbortCtl(ctl);
-		try {
-			const opts: SortOptions = { lang, deep, commonNames };
-			const r = await sortTagsByTaxonomy(opts, setProgress, ctl.signal);
-			setResult(r);
-			if (r.sorted > 0) {
-				MMA.toast(`Sorted ${r.sorted} tag${r.sorted === 1 ? "" : "s"} into taxonomy folders`);
-			} else {
-				MMA.toast("No tags needed sorting");
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === "AbortError") {
-				MMA.toast("Taxonomy sort cancelled");
-			} else {
-				MMA.toast("Taxonomy sort failed");
-			}
-		}
-		setRunning(false);
-		setAbortCtl(null);
-		setProgress(null);
-	}, [lang, deep, commonNames]);
-
-	const handleCancel = useCallback(() => {
-		abortCtl?.abort();
-	}, [abortCtl]);
+	const job = useJob<SortResult, SortProgress>(async ({ signal, report }) => {
+		const opts: SortOptions = { lang, deep, commonNames };
+		const r = await sortTagsByTaxonomy(opts, report, signal);
+		toast(
+			r.sorted > 0
+				? `Sorted ${r.sorted} tag${r.sorted === 1 ? "" : "s"} into taxonomy folders`
+				: "No tags needed sorting",
+		);
+		return r;
+	});
 
 	const handleClearCache = useCallback(() => {
 		clearTaxonomyCache();
-		MMA.toast("Taxonomy cache cleared");
+		toast("Taxonomy cache cleared");
 	}, []);
 
 	return (
@@ -108,43 +85,46 @@ export function TaxonomySorter() {
 			</Field>
 
 			<Field label={<Label info="Include translated common names from iNaturalist">Common names</Label>} row>
-				<input
-					type="checkbox"
-					checked={commonNames}
-					onChange={(e) => setCommonNames(e.target.checked)}
-				/>
+				<Checkbox checked={commonNames} onChange={(e) => setCommonNames(e.target.checked)} />
 			</Field>
 
-			<div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-				{running ? (
-					<button className="button button--danger" onClick={handleCancel} style={{ flex: 1 }}>
+			<div className="inat-sidebar__run">
+				{job.running ? (
+					<Button variant="destructive" onClick={job.cancel}>
 						Cancel
-					</button>
+					</Button>
 				) : (
-					<button className="button button--primary" onClick={handleSort} style={{ flex: 1 }}>
+					<Button variant="primary" onClick={job.run}>
 						Sort Tags
-					</button>
+					</Button>
 				)}
-				<button
-					className="button"
+				<Button
 					onClick={handleClearCache}
-					disabled={running}
-					title="Clear cached API results"
+					disabled={job.running}
+					title="Forget saved iNaturalist taxonomy results"
 				>
 					Clear Cache
-				</button>
+				</Button>
 			</div>
 
-			{progress && (
-				<div style={{ fontSize: 11, color: "var(--text-secondary, #999)", marginTop: 6 }}>
-					{progress.phase} ({progress.current}/{progress.total})
-					{progress.detail && <div style={{ opacity: 0.7 }}>{progress.detail}</div>}
-				</div>
+			{job.progress && (
+				<ProgressRow
+					className="inat-sidebar__status"
+					label={job.progress.phase}
+					count={`${job.progress.current}/${job.progress.total}`}
+					value={job.progress.total > 0 ? job.progress.current / job.progress.total : 0}
+				>
+					{job.progress.detail && <div className="inat-sidebar__detail">{job.progress.detail}</div>}
+				</ProgressRow>
 			)}
 
-			{result && !running && (
-				<div style={{ fontSize: 11, color: "var(--text-secondary, #999)", marginTop: 6 }}>
-					{result.sorted} sorted, {result.skipped} skipped
+			{job.error && (
+				<div className="inat-sidebar__error">{job.error}</div>
+			)}
+
+			{job.result && !job.running && (
+				<div className="inat-sidebar__status">
+					{job.result.sorted} sorted, {job.result.skipped} skipped
 				</div>
 			)}
 		</Section>

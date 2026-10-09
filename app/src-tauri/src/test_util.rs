@@ -1,10 +1,16 @@
 //! Shared fixtures for the `*.test.rs` modules.
 
-use crate::selections::LocView;
+use crate::selections::{FieldIndexes, LocView};
+use crate::store::arrow;
 use crate::types::Location;
 use arrow_array::RecordBatch;
 use roaring::RoaringBitmap;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::ops::Deref;
+use std::path::Path;
+use std::path::PathBuf;
 
 /// A location at `(lat, lng)` with default everything else.
 pub(crate) fn loc(id: u32, lat: f64, lng: f64) -> Location {
@@ -19,34 +25,34 @@ pub(crate) fn loc(id: u32, lat: f64, lng: f64) -> Location {
 
 /// A directory under the system temp dir, removed on drop so a panicking test
 /// leaves nothing behind. Derefs to its path.
-pub(crate) struct TempDir(std::path::PathBuf);
+pub(crate) struct TempDir(PathBuf);
 
 impl TempDir {
     /// Fresh empty directory.
     pub(crate) fn new(name: &str) -> Self {
         let d = TempDir::slot(name);
-        std::fs::create_dir_all(&d.0).unwrap();
+        fs::create_dir_all(&d.0).unwrap();
         d
     }
 
     /// Path cleared but not created, for code under test that must create it.
     pub(crate) fn slot(name: &str) -> Self {
-        let path = std::env::temp_dir().join(name);
-        let _ = std::fs::remove_dir_all(&path);
+        let path = env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&path);
         TempDir(path)
     }
 }
 
-impl std::ops::Deref for TempDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
+impl Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
         &self.0
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -55,7 +61,7 @@ impl Drop for TempDir {
 #[derive(Default)]
 pub(crate) struct Fx {
     pub batch: Option<RecordBatch>,
-    pub dead: HashSet<u32>,
+    pub dead: RoaringBitmap,
     pub patches: HashMap<u32, Location>,
     pub adds: Vec<Location>,
 }
@@ -71,7 +77,7 @@ impl Fx {
 
     /// Committed batch built from `locs`.
     pub(crate) fn base(locs: &[Location]) -> Self {
-        Fx::batch(crate::arrow_bridge::locations_to_batch(locs))
+        Fx::batch(arrow::locations_to_batch(locs))
     }
 
     pub(crate) fn batch(batch: RecordBatch) -> Self {
@@ -100,28 +106,28 @@ impl Fx {
         self.view_with(None)
     }
 
-    /// View backed by a `tag_id -> members` index.
-    pub(crate) fn view_indexed<'a>(&'a self, sets: &'a HashMap<u32, RoaringBitmap>) -> LocView<'a> {
-        self.view_with(Some(sets))
+    /// View backed by field indexes, the way the store hands them to `resolve`.
+    pub(crate) fn view_indexed<'a>(&'a self, indexes: &'a FieldIndexes) -> LocView<'a> {
+        self.view_with(Some(indexes))
     }
 
-    fn view_with<'a>(&'a self, sets: Option<&'a HashMap<u32, RoaringBitmap>>) -> LocView<'a> {
+    fn view_with<'a>(&'a self, indexes: Option<&'a FieldIndexes>) -> LocView<'a> {
         LocView::new(
             self.batch.as_ref(),
             &self.dead,
             &self.patches,
             &self.adds,
-            sets,
+            indexes,
         )
     }
 }
 
-/// Build a [`crate::location_store::LocationPatch`] from only the fields it sets.
+/// Build a [`crate::store::engine::LocationPatch`] from only the fields it sets.
 /// Each value is wrapped in one `Some`, so nullable fields take the inner option:
 /// `patch!(pano_id: None)` clears the pano id.
 macro_rules! patch {
     ($($field:ident: $value:expr),* $(,)?) => {
-        crate::location_store::LocationPatch {
+        crate::store::engine::LocationPatch {
             $($field: Some($value),)*
             ..Default::default()
         }

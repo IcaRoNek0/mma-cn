@@ -1,19 +1,23 @@
 import { useState, useCallback, useMemo, createContext, useContext } from "react";
-import { useDialog, useDialogState } from "@/store/dialogBus";
+import { useDialog, useDialogState, openDialog } from "@/store/dialogBus";
 import { Command } from "cmdk";
-import * as RadixDialog from "@radix-ui/react-dialog";
-import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
+import { Dialog as BaseDialog } from "@base-ui-components/react/dialog";
 import { Icon } from "@/components/primitives/Icon";
+import { Kbd } from "@/components/primitives/Kbd";
 import { mdiUndo, mdiPin, mdiPinOutline } from "@mdi/js";
 import { BulkOperationModal, type BulkOperation } from "@/components/dialogs/BulkOperationModal";
-import { getCommands, togglePinnedCommand, type CommandGroup } from "@/store/commands";
+import { getCommands, runCommand, togglePinnedCommand, type CommandGroup } from "@/store/commands";
 import { useSetting } from "@/store/settings";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { getBinding, useBinding } from "@/lib/util/hotkeys";
-import { getMapState, closeMap } from "@/store/useMapStore";
+import { getMapState, closeMap, setPluginMode } from "@/store/useMapStore";
+import { confirmMapExit } from "@/lib/jobs";
+import { getEnabledPlugins } from "@/plugins/pluginHost";
+import { score } from "@/lib/search";
 import { useMapList } from "@/store/mapList";
-import { goToMap } from "@/store/router";
+import { goTo } from "@/store/router";
 import { t, msg } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
 
 interface PaletteContext {
 	close: () => void;
@@ -69,11 +73,13 @@ function PaletteItem({
 		>
 			{icon && <span className="command-palette__icon">{icon}</span>}
 			<span className="command-palette__label">{label}</span>
-			{shortcut && <kbd className="command-palette__kbd">{shortcut}</kbd>}
+			{shortcut && <Kbd binding={shortcut} />}
 			{commandId && (
-				<button
-					className="command-palette__pin"
-					title={pinned ? t("Unpin from toolbar") : t("Pin to toolbar")}
+				<IconButton
+					className="icon-button--inline command-palette__pin"
+					icon={pinned ? mdiPin : mdiPinOutline}
+					size={18}
+					label={pinned ? t("Unpin from toolbar") : t("Pin to toolbar")}
 					onPointerDown={(e) => {
 						e.preventDefault();
 						e.stopPropagation();
@@ -83,25 +89,13 @@ function PaletteItem({
 						e.stopPropagation();
 						togglePinnedCommand(commandId);
 					}}
-				>
-					<Icon path={pinned ? mdiPin : mdiPinOutline} size={18} />
-				</button>
+				/>
 			)}
 		</Command.Item>
 	);
 }
 
 const UndoIcon = () => <Icon path={mdiUndo} size={18} />;
-
-function formatBinding(binding: string): string {
-	return binding
-		.replace("Mod+", navigator.platform.includes("Mac") ? "⌘" : "Ctrl+")
-		.replace("Shift+", "⇧")
-		.replace("ArrowLeft", "←")
-		.replace("ArrowRight", "→")
-		.replace("ArrowUp", "↑")
-		.replace("ArrowDown", "↓");
-}
 
 const COMMAND_GROUPS: CommandGroup[] = [
 	msg("Map"),
@@ -117,6 +111,7 @@ function MainCommands() {
 
 	return (
 		<>
+			<Command.Empty>{t("No results.")}</Command.Empty>
 			{COMMAND_GROUPS.map((group) => {
 				const groupCmds = commands.filter((c) => c.group === group);
 				if (groupCmds.length === 0) return null;
@@ -127,9 +122,9 @@ function MainCommands() {
 								key={cmd.id}
 								label={t(cmd.label)}
 								icon={cmd.icon ? <Icon path={cmd.icon} size={18} /> : undefined}
-								onSelect={cmd.execute}
+								onSelect={() => runCommand(cmd)}
 								disabled={cmd.enabled ? !cmd.enabled() : false}
-								shortcut={cmd.defaultBinding ? formatBinding(getBinding(cmd.id)) : undefined}
+								shortcut={cmd.defaultBinding ? getBinding(cmd.id) : undefined}
 								commandId={cmd.id}
 								pinned={pinnedSet.has(cmd.id)}
 								keywords={cmd.aliases}
@@ -145,7 +140,30 @@ function MainCommands() {
 					</Command.Group>
 				);
 			})}
+			<PluginCommands />
 		</>
+	);
+}
+
+/** Every openable plugin (the plugin-toolbar set), reachable from the palette too:
+ *  selecting one does exactly what its toolbar button does. */
+function PluginCommands() {
+	const plugins = getEnabledPlugins()
+		.filter((p) => p.sidebar || p.modal)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	if (plugins.length === 0) return null;
+
+	return (
+		<Command.Group heading={t("Plugins")}>
+			{plugins.map((p) => (
+				<PaletteItem
+					key={p.id}
+					label={p.name}
+					icon={<Icon path={p.icon} size={18} />}
+					onSelect={() => (p.sidebar ? setPluginMode(p.id) : openDialog("plugin-modal", p.id))}
+				/>
+			))}
+		</Command.Group>
 	);
 }
 
@@ -170,7 +188,11 @@ function MapSwitcher() {
 					<PaletteItem
 						key={m.id}
 						label={m.name}
-						onSelect={() => closeMap().then(() => goToMap(m.id))}
+						onSelect={() =>
+							void confirmMapExit("leave").then((ok) => {
+								if (ok) void closeMap().then(() => goTo({ type: "editor", mapId: m.id }));
+							})
+						}
 					/>
 				))
 			)}
@@ -196,6 +218,7 @@ function PaletteContent({ onChangeOpen }: { onChangeOpen: (v: boolean) => void }
 	return (
 		<Ctx.Provider value={ctx}>
 			<Command
+				filter={(value, query, keywords) => score(query, [value, ...(keywords ?? [])])}
 				onKeyDown={(e) => {
 					if (e.key === "Escape" && page !== null) {
 						e.preventDefault();
@@ -231,18 +254,21 @@ export function CommandPalette() {
 
 	return (
 		<>
-			<RadixDialog.Root open={open} onOpenChange={setOpen}>
-				<RadixDialog.Portal>
-					<RadixDialog.Overlay className="modal__backdrop" />
-					<RadixDialog.Content className="modal command-palette" aria-describedby={undefined}>
-						<VisuallyHidden.Root>
-							<RadixDialog.Title>{t("Command Palette")}</RadixDialog.Title>
-						</VisuallyHidden.Root>
+			<BaseDialog.Root open={open} onOpenChange={setOpen}>
+				<BaseDialog.Portal>
+					<BaseDialog.Backdrop className="modal__backdrop" />
+					<BaseDialog.Popup className="modal command-palette" aria-label={t("Command Palette")}>
 						<PaletteContent onChangeOpen={setOpen} />
-					</RadixDialog.Content>
-				</RadixDialog.Portal>
-			</RadixDialog.Root>
-			{bulkOp && <BulkOperationModal operation={bulkOp} onClose={() => setBulkOp(null)} />}
+					</BaseDialog.Popup>
+				</BaseDialog.Portal>
+			</BaseDialog.Root>
+			{bulkOp && (
+				<BulkOperationModal
+					open
+					onOpenChange={(open) => !open && setBulkOp(null)}
+					operation={bulkOp}
+				/>
+			)}
 		</>
 	);
 }

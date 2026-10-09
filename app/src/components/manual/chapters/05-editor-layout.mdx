@@ -21,7 +21,7 @@ Clicking a location's marker swaps the sidebar for the location editor (covered 
 
 Click the basemap control (top-left of the map) to choose the base imagery and open the layers panel:
 
-- **Basemap.** **Map**, **Satellite**, **OSM** (OpenStreetMap), or **Vector** (keyless MapLibre styles).
+- **Basemap.** **Map**, **Satellite**, **OSM** (OpenStreetMap), or **Vector**.
 - **Layers.** **Terrain**, **Labels**, and **Panoramas** (individual Street View dots, requires close zoom). The base Street View layer is always on.
 - **Street View.** Coverage lines: **Show lines** filtered to **Official**, **Unofficial**, or **All**; a color swatch for the lines; **Make the lines thinner**; and **Use blobby layer while zoomed out**.
 - **Settings.** **Emphasise country borders**, **Emphasise subdivision borders**, and switches to hide **road labels**, **points of interest**, **transit**, and **highways**.
@@ -37,4 +37,4 @@ Toggle **Select-only mode** (<Kbd>O</Kbd>) from the Map settings dropdown or its
 
 - **Pan / zoom.** Mouse drag and wheel, or the keyboard: <Kbd>W</Kbd><Kbd>A</Kbd><Kbd>S</Kbd><Kbd>D</Kbd> to pan and <Kbd>Shift</Kbd>+<Kbd>W</Kbd> / <Kbd>Shift</Kbd>+<Kbd>S</Kbd> to zoom. Hold <Kbd>Alt</Kbd> for slow, fine movement. <Kbd>Shift</Kbd>+<Kbd>B</Kbd> fits the map to all locations, <Kbd>Shift</Kbd>+<Kbd>E</Kbd> to the selected ones, and <Kbd>Shift</Kbd>+<Kbd>0</Kbd> zooms all the way out. All of these are rebindable.
 - **Place search.** The search control geocodes a place name via Nominatim and fits the map to it.
-- **Opacity slider.** A slider in the top-right controls the opacity of the Street View coverage layer or the markers - click the icon next to it to switch between the two. <Kbd>P</Kbd> and <Kbd>M</Kbd> toggle each layer straight to hidden and back.
+- **Opacity slider.** A slider in the top-right sets the opacity of one layer at a time: pick Street View coverage, unselected markers, or selected markers with the buttons next to it. Each button fades with its layer and is struck through while the layer is hidden. The selected markers button appears while a selection is active, in the selection's color. <Kbd>P</Kbd> and <Kbd>M</Kbd> toggle the Street View and marker layers straight to hidden and back.

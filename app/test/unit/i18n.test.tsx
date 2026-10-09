@@ -6,11 +6,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { t, msg, initLocale, getLocale } from "@/lib/i18n";
 import { Trans } from "@/components/primitives/Trans";
-import { staleCatalogs, pseudo, auditUnwrapped, catalogTargets } from "../../scripts/i18n-extract.mjs";
+import { BUILTIN_FIELDS, KNOWN_FIELDS } from "@/bindings.consts";
+import {
+	staleCatalogs,
+	pseudo,
+	auditUnwrapped,
+	catalogTargets,
+} from "../../scripts/i18n-extract.mjs";
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
-const TAGS = { one: "{n} tag", other: "{n} tags" };
+const WIDGETS = { one: "{n} widget", other: "{n} widgets" };
 
 function renderToText(node: React.ReactNode): string {
 	const host = document.createElement("div");
@@ -44,9 +48,9 @@ describe("i18n runtime", () => {
 	});
 
 	it("selects inline plural forms with the locale's rules", () => {
-		expect(t(TAGS, { n: 1 })).toBe("1 tag");
-		expect(t(TAGS, { n: 0 })).toBe("0 tags");
-		expect(t(TAGS, { n: 2000 })).toBe("2.000 tags");
+		expect(t(WIDGETS, { n: 1 })).toBe("1 widget");
+		expect(t(WIDGETS, { n: 0 })).toBe("0 widgets");
+		expect(t(WIDGETS, { n: 2000 })).toBe("2.000 widgets");
 	});
 
 	it("prefers a catalog entry over the source", async () => {
@@ -65,15 +69,13 @@ describe("Trans", () => {
 	});
 
 	it("splices React nodes into a translated sentence", () => {
-		const text = renderToText(
-			<Trans msg="Rename {n} tags in {name}" n={3} name={<b>Europe</b>} />,
-		);
+		const text = renderToText(<Trans msg="Rename {n} tags in {name}" n={3} name={<b>Europe</b>} />);
 		expect(text).toBe("Rename 3 tags in Europe");
 	});
 
 	it("formats the count slot and pluralises like t()", () => {
-		expect(renderToText(<Trans msg={TAGS} n={1} />)).toBe("1 tag");
-		expect(renderToText(<Trans msg={TAGS} n={4000} />)).toBe("4.000 tags");
+		expect(renderToText(<Trans msg={WIDGETS} n={1} />)).toBe("1 widget");
+		expect(renderToText(<Trans msg={WIDGETS} n={4000} />)).toBe("4.000 widgets");
 	});
 
 	it("shows unknown placeholders rather than dropping them", () => {
@@ -100,7 +102,7 @@ const forms = (entry: string | Record<string, string>) =>
 
 describe("i18n catalogs", () => {
 	it("are regenerated from the current source tree", () => {
-		expect(staleCatalogs().map(([f]: [string]) => path.basename(f))).toEqual([]);
+		expect(staleCatalogs().map(([f]: string[]) => path.basename(f))).toEqual([]);
 	});
 
 	it("leave no user-visible string unwrapped", () => {
@@ -111,6 +113,17 @@ describe("i18n catalogs", () => {
 			}
 		}
 		expect(unwrapped).toEqual([]);
+	});
+
+	// `bindingLabels()` in scripts/i18n-extract.mjs seeds these from bindings.consts.ts. Asserted
+	// independently of that seeding so dropping the bridge fails here instead of silently
+	// un-translating every field picker.
+	it("carry every Rust-side field and enum label", () => {
+		const labels = [
+			...BUILTIN_FIELDS.map((f) => f.label),
+			...KNOWN_FIELDS.flatMap((f) => [f.label, ...f.labels.map(([, l]) => l)]),
+		];
+		expect(labels.filter((l) => !(l in en.catalog))).toEqual([]);
 	});
 
 	it("ship at least the base locale and the pseudolocale", () => {

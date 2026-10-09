@@ -1,3 +1,8 @@
+import type { ERROR_CODES, SYNC_PROVIDERS } from "@/bindings.consts";
+
+/** A provider the backend declares; its direction and shape come with it. */
+export type SyncProviderId = keyof typeof SYNC_PROVIDERS;
+
 export interface RemoteMapSummary {
 	id: string;
 	name: string;
@@ -7,28 +12,25 @@ export interface RemoteMapSummary {
 	unsupported?: string;
 }
 
-/** Rust stamps auth failures with `auth: ` (see `sync.rs`); both providers detect them this way. */
+const AUTH_CODE = "auth" satisfies (typeof ERROR_CODES)[number];
+
+/** Rust stamps auth failures with the `auth` error code; both providers detect them this way. */
 export const isAuthPrefixed = (e: unknown): boolean =>
-	e instanceof Error && e.message.startsWith("auth: ");
+	e instanceof Error && e.message.startsWith(`${AUTH_CODE}: `);
 
 /**
- * The UI half of a sync backend. The merge itself lives in Rust (see `syncReconcile`); a provider
- * only supplies the map picker, the browser URL, and the credential the reconcile authenticates
- * with.
+ * The UI half of a sync backend. The merge itself lives in Rust (see `syncReconcile`), which also
+ * owns the credential; a provider only supplies its label, icon and browser URL.
  */
 export interface SyncProvider {
 	/** Persisted as the `provider` column of `remote_mapping`. Never change it for a shipped provider. */
-	readonly id: string;
+	readonly id: SyncProviderId;
 	readonly label: string;
+	/** Provider mark (SVG path) for any UI that has to say which provider this is. */
+	readonly icon: string;
 
-	/** Web URL of a remote map, for opening it in the user's browser. */
-	remoteMapUrl(remoteMapId: string): string;
-
-	/** Maps the signed-in user can link to. */
-	listMaps(signal?: AbortSignal): Promise<RemoteMapSummary[]>;
-
-	/** Credential the Rust reconcile needs (an API key); omitted for cookie/session providers. */
-	credential?(): string;
+	/** Web URL of a remote map, for opening it in the user's browser; null when it has none. */
+	remoteMapUrl(remoteMapId: string): string | null;
 
 	/**
 	 * Whether an error from the reconcile means the session or key is no longer valid. The live

@@ -1,19 +1,38 @@
 import { describe, it, expect, vi } from "vitest";
 
 // review.ts pulls in the store graph for its side-effectful API; stub it so the
-// pure helpers (the part under test) load in isolation.
+// module loads in isolation.
+const store = vi.hoisted(() => ({
+	liveIds: [] as number[],
+	mapState: { mapId: null, map: null, activeLocation: null } as Record<string, unknown>,
+	active: [] as { key: string; selector: { type: string } }[],
+}));
 vi.mock("@/store/useMapStore", () => ({
-	getMapState: () => ({ mapId: null, map: null, activeLocation: null }),
+	getMapState: () => store.mapState,
+	getActiveSelections: () => store.active,
 	setActiveLocation: vi.fn(),
-	addSelections: vi.fn(),
+	applySelectionUpdate: vi.fn(),
+	query: ({ locations }: { locations: number[] }) => ({
+		ids: async () => locations.filter((id) => store.liveIds.includes(id)),
+	}),
+	removeLocations: vi.fn(),
 	mutate: vi.fn(),
 }));
-vi.mock("@/lib/commands", () => ({ cmd: {} }));
-vi.mock("@/lib/events", () => ({ subscribe: () => () => {}, emit: vi.fn() }));
-vi.mock("@/store/selections", () => ({ selectionDisplayName: () => "x" }));
-vi.mock("@/lib/util/log", () => ({
-	log: { error: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
+vi.mock("@/lib/commands", () => ({
+	cmd: {
+		storeReviewUpdate: vi.fn(async () => {}),
+		storeReviewDelete: vi.fn(async () => {}),
+		storeReviewGet: vi.fn(async () => null),
+	},
 }));
+vi.mock("@/lib/events", () => ({ subscribe: () => () => {}, emit: vi.fn() }));
+vi.mock("@/store/selections", () => ({
+	selectionDisplayName: () => "x",
+	addSelection: vi.fn(),
+	removeSelection: vi.fn(),
+	buildSelection: () => ({ key: "" }),
+}));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 
 import {
 	pruneSession,
@@ -21,10 +40,19 @@ import {
 	retreat,
 	reviewIndex,
 	isAtStart,
+	isAtEnd,
+	reviewSet,
+	reviewDelete,
 	isCurrentReviewed,
 	reviewedHistoryIds,
-	type ReviewSession,
+	positionOf,
+	resumeReview,
+	getReviewSession,
+	cancelReview,
+	reviewSelected,
 } from "@/lib/review/review";
+import { cmd } from "@/lib/commands";
+import type { ReviewSession } from "@/bindings.gen";
 
 function mk(order: number[], cursorId: number, reviewed: number[] = []): ReviewSession {
 	return {
@@ -80,6 +108,34 @@ describe("pruneSession (the desync invariant)", () => {
 	});
 });
 
+describe("resuming a session", () => {
+	it("places the cursor where a live delete would when its location died while closed", async () => {
+		const s = mk([1, 2, 3, 4, 5], 3, [1, 2]);
+		store.liveIds = [1, 2, 4, 5];
+		await resumeReview(s);
+		expect(getReviewSession()).toEqual(pruneSession(s, new Set([3])).session);
+		cancelReview();
+	});
+});
+
+describe("deleting the current location", () => {
+	it("moves to the location that takes its place", async () => {
+		store.liveIds = [1, 2, 3, 4, 5];
+		await resumeReview(mk([1, 2, 3, 4, 5], 3));
+		await reviewDelete();
+		expect(getReviewSession()?.order).toEqual([1, 2, 4, 5]);
+		expect(getReviewSession()?.cursorId).toBe(4);
+		cancelReview();
+	});
+
+	it("ends the pass when it was the last location", async () => {
+		store.liveIds = [1, 2, 3];
+		await resumeReview(mk([1, 2, 3], 3));
+		await reviewDelete();
+		expect(getReviewSession()).toBeNull();
+	});
+});
+
 describe("reviewedHistoryIds (cross-session union)", () => {
 	it("unions reviewed ids across sessions and de-duplicates", () => {
 		const a = mk([1, 2, 3], 3, [1, 2]);
@@ -126,11 +182,60 @@ describe("advance / retreat", () => {
 });
 
 describe("helpers", () => {
-	it("reviewIndex / isAtStart / isCurrentReviewed", () => {
+	it("reviewIndex / isAtStart / isAtEnd / isCurrentReviewed", () => {
 		expect(reviewIndex(mk([1, 2, 3], 2))).toBe(1);
 		expect(isAtStart(mk([1, 2, 3], 1))).toBe(true);
 		expect(isAtStart(mk([1, 2, 3], 2))).toBe(false);
+		expect(isAtEnd(mk([1, 2, 3], 3))).toBe(true);
+		expect(isAtEnd(mk([1, 2, 3], 2))).toBe(false);
 		expect(isCurrentReviewed(mk([1, 2, 3], 2, [2]))).toBe(true);
 		expect(isCurrentReviewed(mk([1, 2, 3], 2, [1]))).toBe(false);
+	});
+
+	it("reviewSet splits the worklist into reviewed and still to review", () => {
+		const s = mk([1, 2, 3, 4], 3, [1, 2]);
+		expect(reviewSet(s, "reviewed")).toEqual([1, 2]);
+		expect(reviewSet(s, "unreviewed")).toEqual([3, 4]);
+	});
+});
+
+describe("worklist positions", () => {
+	it("answers the same positions indexOf would", () => {
+		const s = mk([7, 3, 9, 4], 9);
+		for (const id of [...s.order, 99]) expect(positionOf(s, id)).toBe(s.order.indexOf(id));
+	});
+
+	it("re-indexes after a prune instead of answering from the old worklist", () => {
+		const s = mk([1, 2, 3, 4, 5], 5, []);
+		expect(positionOf(s, 5)).toBe(4);
+		const { session } = pruneSession(s, new Set([1, 2]));
+		expect(session).not.toBeNull();
+		expect(positionOf(session!, 5)).toBe(2);
+		expect(positionOf(session!, 1)).toBe(-1);
+		expect(reviewIndex(session!)).toBe(2);
+		expect(positionOf(s, 5)).toBe(4); // the pruned-from session is untouched
+	});
+
+	it("steps a long worklist by position, not by scanning it", () => {
+		const order = Array.from({ length: 50_000 }, (_, i) => i + 1);
+		let s = mk(order, order[0]);
+		for (let i = 0; i < 5; i += 1) s = advance(s).session;
+		expect(s.cursorId).toBe(6);
+		expect(reviewIndex(s)).toBe(5);
+		expect(retreat(s)?.cursorId).toBe(5);
+	});
+});
+
+describe("reviewSelected", () => {
+	it("belongs to the one active selection, whatever is ghosted beside it", async () => {
+		const mapState = store.mapState;
+		store.mapState = { mapId: "m", map: { settings: {} }, selectedLocationIds: new Set([1]) };
+		store.active = [{ key: "tag:1", selector: { type: "Filter" } }];
+
+		await reviewSelected();
+
+		expect(cmd.storeReviewGet).toHaveBeenCalledWith("m", "tag:1");
+		store.mapState = mapState;
+		store.active = [];
 	});
 });

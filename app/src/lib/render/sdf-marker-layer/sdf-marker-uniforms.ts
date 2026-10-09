@@ -5,7 +5,6 @@ layout(std140) uniform sdfMarkerUniforms {
   float radiusPixels;
   float strokeWidthPixels;
   highp int shapeType;
-  float flattenOpacity;
 } sdfMarker;
 `;
 
@@ -13,9 +12,6 @@ export type SDFMarkerProps = {
 	radiusPixels: number;
 	strokeWidthPixels: number;
 	shapeType: number;
-	// > 0 enables layer-level translucency: output premultiplied color scaled by
-	// this value, alpha left at full shape coverage (see markerLayer.ts blending).
-	flattenOpacity: number;
 };
 
 export const sdfMarkerUniforms = {
@@ -27,6 +23,5 @@ export const sdfMarkerUniforms = {
 		radiusPixels: "f32",
 		strokeWidthPixels: "f32",
 		shapeType: "i32",
-		flattenOpacity: "f32",
 	},
 } as const satisfies ShaderModule<SDFMarkerProps>;

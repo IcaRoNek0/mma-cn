@@ -3,18 +3,20 @@
 // import preview — so picking, hover cursor, and clicks flow through the one deck pass with
 // no second overlay or interceptors. This module just owns the toggle + data + reactivity.
 
-import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import { emit as emitEvent, subscribe as onEvent } from "@/lib/events";
-import { fetchLocation, setActiveLocation, previewVirtualLocation } from "@/store/useMapStore";
-import { createLocation, LocationFlag } from "@/types";
-import { getSeenCount, getSeenEntries, seenSkipNext } from "./seen";
+import { query, setActiveLocation, previewVirtualLocation } from "@/store/useMapStore";
+import { createLocation } from "@/types";
+import { LocationFlag } from "@/bindings.consts";
+import { getSeenCount, getSeenEntries } from "./seen";
+import { seenSkipNext } from "./seenRecorder";
 import type { SeenEntry } from "@/bindings.gen";
+import type { RGBA } from "@/lib/util/color";
 
 // Dot colors: a pano already on the current map (clicking opens that location) vs one that's
 // only in history (clicking previews it, with "Add to map").
-const COLOR_ON_MAP: [number, number, number, number] = [64, 165, 255, 220]; // blue
-const COLOR_OFF_MAP: [number, number, number, number] = [255, 176, 0, 220]; // orange
+const COLOR_ON_MAP: RGBA = [64, 165, 255, 220]; // blue
+const COLOR_OFF_MAP: RGBA = [255, 176, 0, 220]; // orange
 
 let entries: SeenEntry[] = [];
 /** Seen-entry ids whose pano resolves to an existing location on the current map. */
@@ -31,7 +33,7 @@ export function getSeenOverlayEntries(): SeenEntry[] {
 
 /** Fill color for a seen dot: distinct when the pano already exists on the current map.
  *  Changes identity (`onMapIds`) on each load — use it as the layer's updateTrigger. */
-export function seenEntryColor(entry: SeenEntry): [number, number, number, number] {
+export function seenEntryColor(entry: SeenEntry): RGBA {
 	return onMapIds.has(entry.id) ? COLOR_ON_MAP : COLOR_OFF_MAP;
 }
 
@@ -44,7 +46,8 @@ export function getSeenOnMapIds(): ReadonlySet<number> {
 async function computeOnMap(list: SeenEntry[]): Promise<Set<number>> {
 	const locIds = [...new Set(list.map((e) => e.locationId).filter((x): x is number => x != null))];
 	if (locIds.length === 0) return new Set();
-	const panoById = new Map((await cmd.storeGetLocationsByIds(locIds)).map((l) => [l.id, l.panoId]));
+	const onMap = await query({ type: "Locations", locations: locIds, name: null }).locations();
+	const panoById = new Map(onMap.map((l) => [l.id, l.panoId]));
 	const out = new Set<number>();
 	for (const e of list) {
 		if (e.locationId != null && panoById.get(e.locationId) === e.panoId) out.add(e.id);
@@ -82,7 +85,11 @@ export async function openSeenEntry(index: number): Promise<void> {
 	if (!entry) return;
 	seenSkipNext(entry.panoId);
 	if (entry.locationId != null) {
-		const existing = await fetchLocation(entry.locationId);
+		const [existing] = await query({
+			type: "Locations",
+			locations: [entry.locationId],
+			name: null,
+		}).locations();
 		if (existing && existing.panoId === entry.panoId) {
 			void setActiveLocation(existing.id);
 			return;

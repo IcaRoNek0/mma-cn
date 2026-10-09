@@ -1,6 +1,5 @@
 import type {
 	Conflict,
-	FirstSyncMode,
 	Location,
 	LocationPatch_Deserialize,
 	NormalizedSyncLocation,
@@ -8,10 +7,11 @@ import type {
 	SyncPatch,
 	Update,
 } from "@/bindings.gen";
+import type { FirstSyncMode } from "@/bindings.consts";
 import type { SyncProvider } from "./provider";
 import type { IdentityKey, RemoteMappingRow, SyncStore } from "./syncStore";
 
-export type { FirstSyncMode } from "@/bindings.gen";
+export type { FirstSyncMode } from "@/bindings.consts";
 
 export interface SyncOutcome {
 	pushed: SideCounts;
@@ -44,6 +44,7 @@ function fieldsToLocal(
 		panoId: n.panoId,
 		flags: n.flags,
 		tags: n.tags.map(tagId).filter((id): id is number => id != null),
+		extra: n.extra,
 	};
 }
 
@@ -58,6 +59,7 @@ function patchToLocal(p: SyncPatch, tagId: TagId): LocationPatch_Deserialize {
 	if (p.panoIdSet) patch.panoId = p.panoId;
 	if (p.flags !== null) patch.flags = p.flags;
 	if (p.tags !== null) patch.tags = p.tags.map(tagId).filter((id): id is number => id != null);
+	if (p.extra !== null) patch.extra = p.extra;
 	return patch;
 }
 
@@ -80,7 +82,7 @@ export async function reconcile(
 	const assertStillOpen = () => {
 		if (signal?.aborted) throw new DOMException("sync aborted", "AbortError");
 		const open = M.getMapState().map;
-		if (!open || open.meta.id !== link.localMapId) throw new Error("linked map is no longer open");
+		if (!open || open.id !== link.localMapId) throw new Error("linked map is no longer open");
 		return open;
 	};
 
@@ -90,21 +92,28 @@ export async function reconcile(
 		provider.id,
 		link.localMapId,
 		link.remoteMapId,
-		provider.credential?.() ?? null,
 		opts.firstSync ?? null,
 		opts.resolutions ? [...opts.resolutions.entries()] : null,
 	);
 
 	// The command is not abortable; it has already pushed and written the push half's mapping rows.
-	// An abort now just skips the pull applies - the persisted mapping stays consistent regardless.
+	// Each pull's mapping row is written only after that pull applies, so an abort leaves it pending.
 	assertStillOpen();
 	const nameToId = new Map<string, number>();
-	for (const t of Object.values(M.getMapState().tags)) nameToId.set(t.name, t.id);
+	for (const t of Object.values(M.getTags())) nameToId.set(t.name, t.id);
 
 	// Create any local tags the incoming pulls reference, then resolve names -> ids.
+	// A tag the sync creates adopts the source's color; an existing tag keeps its own.
 	if (result.neededTags.length) {
 		assertStillOpen();
-		for (const t of await M.createTags(result.neededTags)) nameToId.set(t.name, t.id);
+		const existing = new Set(nameToId.values());
+		const created = await M.createTags(result.neededTags.map((t) => t.name));
+		for (const t of created) nameToId.set(t.name, t.id);
+		const color = new Map(result.neededTags.map((t) => [t.name, t.color]));
+		const recolors = created
+			.filter((t) => !existing.has(t.id) && color.get(t.name) != null)
+			.map((t) => ({ id: t.id, patch: { color: color.get(t.name)! } }));
+		if (recolors.length) await M.updateTags(recolors);
 	}
 	const tagId: TagId = (name) => nameToId.get(name);
 
@@ -131,12 +140,18 @@ export async function reconcile(
 		assertStillOpen();
 		await M.updateLocations(updates);
 	}
+	if (result.pullUpdates.length) {
+		await store.upsertMapping(
+			result.pullUpdates.map((u) => ({ localId: u.localId, remoteId: u.remoteId, hash: u.hash })),
+		);
+	}
 
 	const removals = new Set<number>([...result.pullDeleteIds, ...result.mirrorLocalDeleteIds]);
 	if (removals.size) {
 		assertStillOpen();
 		await M.removeLocations(removals);
 	}
+	if (result.pullDeleteIds.length) await store.deleteMapping(result.pullDeleteIds);
 
 	store.setLink({ ...link, lastSyncedAt: new Date().toISOString() });
 

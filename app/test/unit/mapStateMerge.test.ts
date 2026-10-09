@@ -1,59 +1,43 @@
+import { createFieldDef } from "@/types";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Pins the applyMutation contract: a MutationResult is a JSON merge patch onto
-// MapState — present fields are set, null fields were unchanged and must be
-// skipped so untouched slices keep their reference (the render gate for
-// useMapState selectors is reference identity).
+// Pins the applyMutation contract: a MutationResult carries only what moved. A present
+// field replaces its slice; a null field was untouched and must keep its reference (the
+// render gate for useMapState selectors is reference identity).
 
-vi.mock("@/lib/commands", () => {
-	const map = {
-		id: "m1",
-		meta: {
-			id: "m1",
-			name: "test",
-			description: "",
-			folder: null,
-			locationCount: 2,
-			tags: { 1: { id: 1, name: "red", color: "#ff0000", visible: true } },
-			settings: {},
-			scoreBounds: null,
-			createdAt: "",
-			updatedAt: "",
-			extra: null,
-		},
-	};
-	const handlers: Record<string, (...args: unknown[]) => unknown> = {
-		storeGetMap: async () => map,
-		storeOpenMap: async () => ({
-			tagCounts: { 1: 2 },
-			canUndo: false,
-			canRedo: false,
-			knownFieldKeys: ["alt"],
-		}),
-	};
-	return {
-		cmd: new Proxy({}, { get: (_t, name: string) => handlers[name] ?? (async () => null) }),
-	};
+vi.mock("@/lib/commands", async () => {
+	const { cmdProxy, testMap, openMapResult } = await import("./fixtures/mocks");
+	return cmdProxy({
+		storeGetMap: async () =>
+			testMap({
+				locationCount: 2,
+				tags: { 1: { id: 1, name: "red", color: "#ff0000", visible: true } },
+				extra: { fields: { alt: createFieldDef("number") } },
+			}),
+		storeOpenMap: async () =>
+			openMapResult({ tagCounts: { 1: 2 }, fieldDefs: { alt: createFieldDef("number") } }),
+	});
 });
-vi.mock("@/lib/util/log", () => ({
-	log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-	fireAndForget: (p: Promise<unknown>) => void p.catch(() => {}),
-}));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 
-import { openMap, mutate, getMapState } from "@/store/useMapStore";
-import type { MutationResult, Tag } from "@/bindings.gen";
-
-const result = (over: Partial<MutationResult> = {}): MutationResult => ({
-	delta: { added: [], updated: [], removed: [], fullReset: false },
-	selectionSync: null,
-	newFieldDefs: null,
-	tags: null,
+import { openMap, mutate, getMapState, getTags, getTagCounts } from "@/store/useMapStore";
+import { getKnownFieldKeys } from "@/lib/data/fieldDefRegistry";
+import type { MutationResult } from "@/bindings.gen";
+const result = (
+	values: Partial<MutationResult["values"]> = {},
+	over: Partial<MutationResult> = {},
+): MutationResult => ({
 	version: 0,
-	locationCount: 3,
-	canUndo: true,
-	canRedo: false,
-	tagCounts: null,
-	knownFieldKeys: [],
+	selectionSync: null,
+	values: {
+		locationCount: null,
+		canUndo: null,
+		canRedo: null,
+		valueCounts: null,
+		valueMeta: null,
+		fieldDefs: null,
+		...values,
+	},
 	...over,
 });
 
@@ -64,48 +48,69 @@ beforeEach(async () => {
 describe("applyMutation merge semantics", () => {
 	it("null fields are skipped: untouched slices keep their reference", async () => {
 		const before = getMapState();
+		const tagsBefore = getTags();
+		const countsBefore = getTagCounts();
 		await mutate(() => Promise.resolve(result()));
-		const after = getMapState();
-		expect(after.tagCounts).toBe(before.tagCounts);
-		expect(after.tags).toBe(before.tags);
-		expect(after.map).toBe(before.map);
-		expect(after.knownFieldKeys).toBe(before.knownFieldKeys);
+		expect(getTagCounts()).toBe(countsBefore);
+		expect(getTags()).toBe(tagsBefore);
+		expect(getMapState().map).toBe(before.map);
 	});
 
-	it("scalars always track the result", async () => {
+	it("present scalars replace, absent ones hold", async () => {
 		await mutate(() =>
 			Promise.resolve(result({ locationCount: 42, canUndo: true, canRedo: true })),
 		);
-		const s = getMapState();
+		let s = getMapState();
 		expect(s.locationCount).toBe(42);
 		expect(s.canUndo).toBe(true);
 		expect(s.canRedo).toBe(true);
+		await mutate(() => Promise.resolve(result({ canRedo: false })));
+		s = getMapState();
+		expect(s.locationCount).toBe(42);
+		expect(s.canUndo).toBe(true);
+		expect(s.canRedo).toBe(false);
 	});
 
 	it("present fields replace their slice; a tag change never re-mints the map", async () => {
-		const tags: Record<number, Tag> = {
-			1: { id: 1, name: "red", color: "#ff0000", visible: true },
-			2: { id: 2, name: "blue", color: "#0000ff", visible: true },
-		};
 		const mapBefore = getMapState().map;
-		await mutate(() => Promise.resolve(result({ tags, tagCounts: { 1: 5, 2: 0 } })));
-		const s = getMapState();
-		expect(s.tags).toBe(tags);
-		expect(s.tagCounts).toEqual({ 1: 5, 2: 0 });
-		expect(s.map).toBe(mapBefore);
+		await mutate(() =>
+			Promise.resolve(
+				result({
+					valueMeta: {
+						tags: { 1: { name: "red", color: "#ff0000" }, 2: { name: "blue", color: "#0000ff" } },
+					},
+					valueCounts: { tags: { 1: 5, 2: 0 } },
+				}),
+			),
+		);
+		expect(getTags()[1]).toMatchObject({ id: 1, name: "red", color: "#ff0000", visible: true });
+		expect(getTags()[2].visible).toBe(false);
+		expect(getTagCounts()).toEqual({ 1: 5, 2: 0 });
+		expect(getMapState().map).toBe(mapBefore);
 	});
 
-	it("newFieldDefs extend knownFieldKeys incrementally", async () => {
-		expect([...getMapState().knownFieldKeys]).toEqual(["alt"]);
-		await mutate(() => Promise.resolve(result({ newFieldDefs: { foo: { type: "string" } } })));
-		expect([...getMapState().knownFieldKeys].sort()).toEqual(["alt", "foo"]);
+	// The field registry ships whole when it changed; the known-key set is its key set
+	// and holds its reference when nothing arrived.
+	it("fieldDefs replace the registry when present and hold when absent", async () => {
+		expect([...getKnownFieldKeys()]).toEqual(["alt"]);
+		await mutate(() =>
+			Promise.resolve(
+				result({ fieldDefs: { alt: createFieldDef("number"), foo: createFieldDef("string") } }),
+			),
+		);
+		expect([...getKnownFieldKeys()].sort()).toEqual(["alt", "foo"]);
+
+		await mutate(() => Promise.resolve(result({ fieldDefs: { foo: createFieldDef("string") } })));
+		expect([...getKnownFieldKeys()]).toEqual(["foo"]);
+
+		const held = getKnownFieldKeys();
+		await mutate(() => Promise.resolve(result()));
+		expect(getKnownFieldKeys()).toBe(held);
 	});
 
 	it("selectionSync refreshes selectionCounts", async () => {
 		await mutate(() =>
-			Promise.resolve(
-				result({ selectionSync: { counts: { "tag:1": 7 }, bitmask: null, selectedCount: 7 } }),
-			),
+			Promise.resolve(result({}, { selectionSync: { counts: { "tag:1": 7 }, selectedCount: 7 } })),
 		);
 		expect(getMapState().selectionCounts).toEqual({ "tag:1": 7 });
 	});

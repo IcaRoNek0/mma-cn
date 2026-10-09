@@ -1,55 +1,35 @@
-/*
- * Unified field-definition registry.
- *
- * Field **existence** (which keys have data) is tracked separately by
- * `knownFieldKeys` in `useMapStore`. This module handles field **metadata**
- * (type, label, enum values) from two sources, in priority order:
- *
- *   1. **User overrides** — persisted in `MapMeta.extra.fields`, editable via
- *      ManageFields. Loaded on map open, updated on save. Curated defs for
- *      well-known SV keys are written here by Rust (`known_field_def`) when the
- *      key first appears in location data, so they show up the same way.
- *   2. **Plugin defs** — declared by `EnrichmentProvider.fieldDefs` at
- *      registration time. Available as long as the plugin is active.
- *
- * `getFieldDef(key)` composes the layers **per-attribute**, not whole-object: the
- * user layer wins for any attribute it actually has an opinion on, falling through
- * to the plugin layer for null/absent ones. This matters because Rust auto-registers
- * a label-less placeholder (`{ type, label: null, comparison: null, ... }`) into the
- * user layer the first time a plugin-owned key appears in data — Rust can't see the
- * plugin layer, so it must infer *something*. Whole-object precedence would let that
- * placeholder shadow the plugin's real label and comparison; per-attribute fallthrough
- * treats a null attribute as "no opinion, ask the next layer." Returns `undefined` if
- * no layer declares the key (the UI falls back to the raw key name).
- */
+// Unified field-definition registry.
+//
+// Layers, in priority order:
+//   1. User overrides (per-map, persisted in MapMeta)
+//   2. Plugin defs (declared by Provider.fieldDefs, live while the plugin is active)
+//   3. Built-in fields
+//
+// `getFieldDef` composes per-attribute (not whole-object): a null attribute in a
+// higher layer falls through to the next.
 
 import { emit } from "@/lib/events";
-import { BUILTIN_FIELDS } from "@/bindings.gen";
-import type { ExtraFieldDef } from "@/bindings.gen";
+import { getMapState } from "@/store/useMapStore";
+import { memoOnRefs } from "@/lib/util/memoOnRefs";
+import { createFieldDef } from "@/types";
+import { BUILTIN_FIELDS, CLEARABLE_BUILTINS } from "@/bindings.consts";
+import type { FieldDef } from "@/bindings.gen";
+import { t } from "@/lib/i18n";
 
-/**
- * What a registry field *is*, which determines how it may be accessed:
- * - "identity": composes the location itself (position). Never writable through the
- *   field system, never offered in pickers; resolvable by exact key only.
- * - "virtual": derived, not stored on the location. Never writable.
- * - "writable": explicitly bulk-editable top-level field.
- * - undefined: on the location, listable and filterable, but read-only.
- * Extra (user/plugin) fields live outside this map and are always writable and listable.
- */
-type FieldKind = "identity" | "virtual" | "writable";
+// Field kind: identity (position), virtual (derived), term (expression-only),
+// writable (bulk-editable), or undefined (read-only, listable).
+type FieldKind = NonNullable<(typeof BUILTIN_FIELDS)[number]["kind"]>;
 
-interface RegistryFieldDef extends ExtraFieldDef {
+interface RegistryFieldDef extends FieldDef {
 	kind?: FieldKind;
 }
 
-/** Derived from the Rust `BUILTIN_FIELDS` table, which the filter resolvers share. */
+// Built-in field definitions, derived from the shared BUILTIN_FIELDS table.
 const FIELDS: Record<string, RegistryFieldDef> = Object.fromEntries(
 	BUILTIN_FIELDS.map((f) => [
 		f.key,
 		{
-			type: f.type,
-			label: f.label,
-			comparison: f.comparison,
+			...createFieldDef(f.type, { label: f.label, comparison: f.comparison }),
 			kind: f.kind ?? undefined,
 		},
 	]),
@@ -57,27 +37,37 @@ const FIELDS: Record<string, RegistryFieldDef> = Object.fromEntries(
 
 /** True when `key` is a built-in Location field (stored top-level, not under `extra`). */
 export function isBuiltinField(key: string): boolean {
-	return key in FIELDS && FIELDS[key].kind !== "virtual";
+	return key in FIELDS && !isDerived(FIELDS[key].kind);
 }
 
+/** Derived from the location rather than stored on it, so never a column to assign. */
+function isDerived(kind: FieldKind | undefined): boolean {
+	return kind === "virtual";
+}
+
+/** True when the field can be bulk-edited. @unstable */
 export function isWritableField(key: string): boolean {
 	return key in FIELDS ? FIELDS[key].kind === "writable" : true;
 }
 
-/** False only for identity fields (lat/lng), which pickers must not offer. */
+/** True when the field can be bulk-cleared. @unstable */
+export function isClearableField(key: string): boolean {
+	return key in FIELDS ? (CLEARABLE_BUILTINS as readonly string[]).includes(key) : true;
+}
+
+/** True when the field should appear in field pickers. @unstable */
 export function isListableField(key: string): boolean {
 	return key in FIELDS ? FIELDS[key].kind !== "identity" : true;
 }
 
-/** All built-in field keys (excluding virtual). */
+/** All built-in field keys (excluding virtual). @unstable */
 export function getBuiltinKeys(): string[] {
 	return Object.keys(FIELDS).filter(isBuiltinField);
 }
 
-let pluginDefs: Record<string, ExtraFieldDef> = {};
-let userDefs: Record<string, ExtraFieldDef> = {};
+let pluginDefs: Record<string, FieldDef> = {};
 /** Register field definitions from an enrichment provider (called at activation). */
-export function registerPluginFieldDefs(defs: Record<string, ExtraFieldDef>) {
+export function registerPluginFieldDefs(defs: Record<string, FieldDef>) {
 	pluginDefs = { ...pluginDefs, ...defs };
 	emit("fields:changed");
 }
@@ -91,67 +81,65 @@ export function unregisterPluginFieldDefs(keys: string[]) {
 	emit("fields:changed");
 }
 
-/** Load user-customized field definitions from `MapMeta.extra.fields` (called on map open). */
-export function setUserFieldDefs(defs: Record<string, ExtraFieldDef>) {
-	userDefs = defs;
-	emit("fields:changed");
+/** Every listable built-in, and every field this map defines. @unstable */
+export function getFieldKeys(): string[] {
+	return [...new Set([...Object.keys(FIELDS), ...getKnownFieldKeys()])].filter(isListableField);
 }
 
-/** Merge auto-registered/inferred defs into the user layer (e.g. after a mutation
- *  discovers new extra keys). Existing entries win, so user edits and previously-loaded
- *  defs are never clobbered. Keeps the registry the live source of truth without a reload. */
-export function mergeUserFieldDefs(defs: Record<string, ExtraFieldDef>) {
-	userDefs = { ...defs, ...userDefs };
-	emit("fields:changed");
-}
+/** Keys this map defines a field for. Same reference until the user layer moves. */
+export const getKnownFieldKeys: () => ReadonlySet<string> = memoOnRefs(
+	() => [getMapState().fieldDefs] as const,
+	(defs) => new Set(Object.keys(defs)),
+);
 
-/** Clear per-map state on map close. Plugin defs persist across maps. */
-export function resetForMapChange() {
-	userDefs = {};
-	emit("fields:changed");
-}
-
-/** Compose two layers per-attribute: the user value wins when present, falling
- *  through to the plugin value for null/absent attributes (a label-less inferred
- *  placeholder must not shadow the plugin's real label/comparison). */
-function mergeDef(
-	user: ExtraFieldDef | undefined,
-	plugin: ExtraFieldDef | undefined,
-): ExtraFieldDef | undefined {
+// Compose two layers per-attribute: the higher layer wins when non-null.
+function mergeDef(user: FieldDef | undefined, plugin: FieldDef | undefined): FieldDef | undefined {
 	if (!user) return plugin;
 	if (!plugin) return user;
 	return {
 		type: user.type,
 		label: user.label ?? plugin.label,
 		values: user.values ?? plugin.values,
-		labels: user.labels ?? plugin.labels,
 		comparison: user.comparison ?? plugin.comparison,
 	};
 }
 
-/** Look up metadata for a single field key. Returns `undefined` if no metadata exists. */
-export function getFieldDef(key: string): ExtraFieldDef | undefined {
-	return mergeDef(mergeDef(userDefs[key], pluginDefs[key]), FIELDS[key]);
+/** Look up metadata for a field key. Returns `undefined` if no layer declares it. */
+export function getFieldDef(key: string): FieldDef | undefined {
+	return mergeDef(mergeDef(getMapState().fieldDefs[key], pluginDefs[key]), FIELDS[key]);
 }
 
-/** Display label for a field key: registered label if known, otherwise sentence-cased from camelCase/snake_case. */
+/** Translated display label for a field key, falling back to a sentence-cased version of the key. */
 export function fieldLabel(key: string): string {
-	return (
-		getFieldDef(key)?.label ??
-		key
-			.replace(/([a-z])([A-Z])/g, (_, a, b) => `${a} ${b.toLowerCase()}`)
-			.replace(/_/g, " ")
-			.replace(/^./, (c) => c.toUpperCase())
-	);
+	const label = getFieldDef(key)?.label;
+	return label
+		? t(label)
+		: key
+				.replace(/([a-z])([A-Z])/g, (_, a, b) => `${a} ${b.toLowerCase()}`)
+				.replace(/_/g, " ")
+				.replace(/^./, (c) => c.toUpperCase());
+}
+
+/** Display label for a field value. Enum values use their translated display name. */
+export function fieldValueLabel(def: FieldDef | undefined, value: unknown): string {
+	const raw = String(value);
+	const label = def?.values?.find((v) => v.value === raw)?.label;
+	return label ? t(label) : raw;
+}
+
+/** The value space a field declares, as bare strings. Distinct from the store's
+ *  `fieldValues`, which reports the values actually present in the data. */
+export function declaredValues(def: FieldDef | undefined): string[] | null {
+	return def?.values?.map((v) => v.value) ?? null;
 }
 
 /** Merged view of all field definitions across all layers. */
-export function getAllFieldDefs(): Record<string, ExtraFieldDef> {
-	const out: Record<string, ExtraFieldDef> = {};
+export function getAllFieldDefs(): Record<string, FieldDef> {
+	const out: Record<string, FieldDef> = {};
 	const allKeys = new Set([
 		...Object.keys(FIELDS),
 		...Object.keys(pluginDefs),
-		...Object.keys(userDefs),
+		...getKnownFieldKeys(),
 	]);
 	for (const key of allKeys) {
 		const merged = getFieldDef(key);

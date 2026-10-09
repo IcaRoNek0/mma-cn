@@ -1,11 +1,10 @@
-import type { ExtraFieldDef, PartitionBucket, SelectionProps } from "@/bindings.gen";
+import type { FieldDef, KeySpec, PartitionBucket, Selection } from "@/bindings.gen";
+import type { RGB } from "@/lib/util/color";
 import { ymOrdinal } from "@/lib/util/date";
+import { partitionLabel } from "@/lib/util/format";
+import { buildSelection } from "@/store/selections";
 
-export function lerp(
-	a: [number, number, number],
-	b: [number, number, number],
-	t: number,
-): [number, number, number] {
+export function lerp(a: RGB, b: RGB, t: number): RGB {
 	return [
 		Math.round(a[0] + (b[0] - a[0]) * t),
 		Math.round(a[1] + (b[1] - a[1]) * t),
@@ -13,10 +12,7 @@ export function lerp(
 	];
 }
 
-export function gradientColor(
-	stops: [number, number, number][],
-	t: number,
-): [number, number, number] {
+export function gradientColor(stops: RGB[], t: number): RGB {
 	if (t <= 0) return stops[0];
 	if (t >= 1) return stops[stops.length - 1];
 	const segment = t * (stops.length - 1);
@@ -24,7 +20,7 @@ export function gradientColor(
 	return lerp(stops[i], stops[Math.min(i + 1, stops.length - 1)], segment - i);
 }
 
-export function isNumericField(def: ExtraFieldDef | undefined): boolean {
+export function isNumericField(def: FieldDef | undefined): boolean {
 	if (!def) return false;
 	return def.type === "number" || def.type === "date";
 }
@@ -38,12 +34,6 @@ export function fieldScale(value: string, type: string | undefined): number | nu
 	return value.trim() !== "" && Number.isFinite(n) ? n : null;
 }
 
-export interface GradientSelection {
-	props: SelectionProps;
-	key: string;
-	color: [number, number, number];
-}
-
 // Color a partition's groups along the ramp and turn each into a selection — the
 // gradient sink over the shared `partition()` kernel.
 //
@@ -51,24 +41,27 @@ export interface GradientSelection {
 // color proportionally when every key has a numeric scale (e.g. months, numeric strings),
 // else by even spacing.
 //
-// Selection shape (`key` mirrors the engine's key, for setSelectionColors):
+// Selection shape:
 //   - unscoped numeric bin  -> live Filter `between` (re-evaluates against the whole map)
 //   - unscoped value group  -> live Filter `eq`
 //   - everything else       -> static Locations (projections can't be expressed as a Filter;
-//                              scoped groups are inherently a fixed id subset)
+//                              narrowed groups are inherently a fixed id subset)
 export function colorPartition(
 	groups: PartitionBucket[],
 	opts: {
 		fieldKey: string;
 		fieldType: string | undefined;
-		stops: [number, number, number][];
-		scoped: boolean;
+		spec: KeySpec;
+		stops: RGB[];
+		narrowed: boolean;
 		ordinal: boolean;
 		eqFilter: boolean;
 	},
-): GradientSelection[] {
+): Selection[] {
+	// Numeric bins keep their empties for the pivot; an empty selection is noise here.
+	groups = groups.filter((g) => g.ids.length > 0);
 	if (groups.length === 0) return [];
-	const { fieldKey, fieldType, stops, scoped, ordinal, eqFilter } = opts;
+	const { fieldKey, fieldType, spec, stops, narrowed, ordinal, eqFilter } = opts;
 	const n = groups.length;
 	const evenSpaced = (i: number) => (n === 1 ? 0.5 : i / (n - 1));
 
@@ -87,27 +80,18 @@ export function colorPartition(
 		}
 	}
 
-	return groups.map((g, i) => {
+	return groups.map((g, i): Selection => {
 		const color = gradientColor(stops, ts[i]);
-		if (!scoped && g.bin) {
+		if (!narrowed && g.bin) {
 			const [lo, hi] = g.bin;
-			return {
-				props: { type: "Filter", field: fieldKey, op: "between", value: lo, value2: hi },
-				key: `filter:${fieldKey}:between:${lo}:${hi}`,
-				color,
-			};
+			const test = { op: "between", lo, hi } as const;
+			return { ...buildSelection({ type: "Filter", field: fieldKey, test }), color };
 		}
-		if (!scoped && eqFilter) {
-			return {
-				props: { type: "Filter", field: fieldKey, op: "eq", value: g.key, value2: null },
-				key: `filter:${fieldKey}:eq:${g.key}`,
-				color,
-			};
+		if (!narrowed && eqFilter) {
+			const test = { op: "eq", value: g.key } as const;
+			return { ...buildSelection({ type: "Filter", field: fieldKey, test }), color };
 		}
-		return {
-			props: { type: "Locations", locations: g.ids, name: g.key },
-			key: g.ids.join(","),
-			color,
-		};
+		const name = partitionLabel(g.key, spec);
+		return { ...buildSelection({ type: "Locations", locations: g.ids, name }), color };
 	});
 }

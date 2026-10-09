@@ -1,15 +1,22 @@
 //! Spherical geometry shared across the workspace: one authority for
 //! meters<->degrees conversion, wrap-aware distances, the "which grid cells cover
-//! a radius around a point" computation, and ray-casting point-in-polygon with
-//! antimeridian handling. Consumed by the app's grids (`DupGrid`, `SpatialIndex`),
-//! polygon selections, borders, and vali-generate's region filters, so latitude
-//! scaling and antimeridian handling cannot drift between consumers.
+//! a radius around a point" computation, ray-casting point-in-polygon with
+//! antimeridian handling, and the honeycomb of evenly spaced points. Consumed by the
+//! app's grids (`DupGrid`, `SpatialIndex`), polygon selections, borders, the map
+//! generator's grid, and vali-generate's region filters, so latitude scaling and
+//! antimeridian handling cannot drift between consumers.
 
 use std::f64::consts::PI;
 use std::ops::RangeInclusive;
 
+mod grid;
+mod hex;
 mod polygon;
+mod sample;
+pub use grid::SpatialIndex;
+pub use hex::{HexGrid, HexNode};
 pub use polygon::*;
+pub use sample::{poisson_points, random_points};
 
 pub const EARTH_R_M: f64 = 6_371_000.0;
 
@@ -126,9 +133,15 @@ pub fn covering_cells(lat: f64, lng: f64, radius_m: f64, cell_deg: f64) -> CellC
         let d_lng = (sin_r / cos_lat).asin().to_degrees();
         let (lo, hi) = (lng - d_lng, lng + d_lng);
         if lo < -180.0 {
-            [Some(to_range(-180.0, hi)), Some(to_range(lo + 360.0, 180.0))]
+            [
+                Some(to_range(-180.0, hi)),
+                Some(to_range(lo + 360.0, 180.0)),
+            ]
         } else if hi > 180.0 {
-            [Some(to_range(lo, 180.0)), Some(to_range(-180.0, hi - 360.0))]
+            [
+                Some(to_range(lo, 180.0)),
+                Some(to_range(-180.0, hi - 360.0)),
+            ]
         } else {
             [Some(to_range(lo, hi)), None]
         }

@@ -1,0 +1,384 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { IconLayer, PathLayer, TextLayer } from "@deck.gl/layers";
+import { PathStyleExtension } from "@deck.gl/extensions";
+import { mdiFlagVariant } from "@mdi/js";
+import {
+	createMapHost,
+	hostKindForMapType,
+	type DeckOverlayHandle,
+	type MapHost,
+} from "@/lib/map/host";
+import { CUSTOM_STYLES_KEY, type CustomStyle } from "@/lib/geo/mapStack";
+import { getLocal } from "@/lib/hooks/useLocalStorage";
+import { cmd } from "@/lib/commands";
+import { usePluginState } from "@/plugins/pluginStorage";
+import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { rgbCss, type RGB } from "@/lib/util/color";
+import type { LatLng } from "@/types";
+import type { RoundResult } from "./game";
+
+const GUESS_COLOR: RGB = [64, 133, 244];
+const TRUTH_COLOR: RGB = [76, 175, 80];
+const DIMMED = 0.3;
+
+/**
+ * A map host and its deck overlay for one game surface. Recreated only when the basemap
+ * engine changes, because each host burns a WebGL context; a basemap on the same engine
+ * restyles in place. `prepare` runs alongside host creation and `onReady` runs before the
+ * first ready render, so a surface can frame its camera without painting the default one.
+ */
+export function useGameMap(
+	containerRef: RefObject<HTMLDivElement | null>,
+	prefs: MapEmbedPrefs,
+	{ prepare, onReady }: { prepare?: () => Promise<void>; onReady?: (host: MapHost) => void } = {},
+) {
+	const hostRef = useRef<MapHost | null>(null);
+	const overlayRef = useRef<DeckOverlayHandle | null>(null);
+	const [ready, setReady] = useState(false);
+	const latest = useRef({ prefs, prepare, onReady });
+	latest.current = { prefs, prepare, onReady };
+	const kind = hostKindForMapType(prefs.mapType);
+
+	useLayoutEffect(() => {
+		const container = containerRef.current;
+		if (!container) return;
+		let cancelled = false;
+		const div = document.createElement("div");
+		div.style.cssText = "position:absolute;inset:0";
+		container.appendChild(div);
+
+		void (async () => {
+			try {
+				const [host] = await Promise.all([
+					createMapHost(kind, div, latest.current.prefs, {
+						customStyles: getLocal<CustomStyle[]>(CUSTOM_STYLES_KEY, []),
+						camera: { center: { lat: 20, lng: 0 }, zoom: 1.5 },
+						scaleControl: false,
+					}),
+					latest.current.prepare?.(),
+				]);
+				if (cancelled) {
+					host.destroy();
+					return;
+				}
+				hostRef.current = host;
+				overlayRef.current = host.createDeckOverlay();
+				latest.current.onReady?.(host);
+				setReady(true);
+			} catch {
+				if (!cancelled) setReady(false);
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+			overlayRef.current?.finalize();
+			overlayRef.current = null;
+			hostRef.current?.destroy();
+			hostRef.current = null;
+			div.remove();
+			setReady(false);
+		};
+	}, [containerRef, kind]);
+
+	useEffect(() => {
+		const host = hostRef.current;
+		if (!host || !ready || hostKindForMapType(prefs.mapType) !== host.kind) return;
+		host.applyPrefs(latest.current.prefs, {
+			customStyles: getLocal<CustomStyle[]>(CUSTOM_STYLES_KEY, []),
+		});
+	}, [prefs.mapType, ready]);
+
+	return { hostRef, overlayRef, ready };
+}
+
+const ROPE_SETTLE_MS = 450;
+const ROPE_MAX_STRETCH = 1;
+
+/** The zoom a rope sized for `rope` is pulled to when the map sits at `live`: it stretches
+ *  with the map up to a limit, and past it is dragged along. */
+export function ropeTension(rope: number, live: number): number {
+	return Math.min(live + ROPE_MAX_STRETCH, Math.max(live - ROPE_MAX_STRETCH, rope));
+}
+
+/** Overshoots slightly before resting, like a rope springing taut. */
+export function ropeEase(t: number): number {
+	const s = 1.4;
+	return 1 + (s + 1) * (t - 1) ** 3 + s * (t - 1) ** 2;
+}
+
+/** The zoom the result line is sized for while `active`, else null. It holds through a
+ *  zoom so the line stretches with the map, then springs to the resting zoom once the
+ *  camera comes to rest. */
+export function useRopeZoom(hostRef: RefObject<MapHost | null>, active: boolean): number | null {
+	const [zoom, setZoom] = useState<number | null>(null);
+	useEffect(() => {
+		const host = hostRef.current;
+		if (!host || !active) {
+			setZoom(null);
+			return;
+		}
+		let rope = host.getZoom();
+		let frame = 0;
+		const set = (value: number) => {
+			rope = value;
+			setZoom(value);
+		};
+		set(rope);
+		const offZoom = host.on("zoom", () => {
+			const pulled = ropeTension(rope, host.getZoom());
+			if (pulled !== rope) set(pulled);
+		});
+		const offIdle = host.on("idle", () => {
+			cancelAnimationFrame(frame);
+			const from = rope;
+			const to = host.getZoom();
+			if (from === to) return;
+			const start = performance.now();
+			const step = (now: number) => {
+				const t = Math.min(1, (now - start) / ROPE_SETTLE_MS);
+				set(from + (to - from) * ropeEase(t));
+				if (t < 1) frame = requestAnimationFrame(step);
+			};
+			frame = requestAnimationFrame(step);
+		});
+		return () => {
+			offZoom();
+			offIdle();
+			cancelAnimationFrame(frame);
+		};
+	}, [hostRef, active]);
+	return zoom;
+}
+
+const PIN_SIZE = 36;
+const PIN_RADIUS = 13.5;
+const PIN_RING = 3;
+
+interface PinIcon {
+	id: string;
+	url: string;
+	width: number;
+	height: number;
+}
+
+type PinFace = (ctx: CanvasRenderingContext2D, center: number, radius: number) => void;
+
+/** A white-ringed badge with a soft drop shadow, so it lifts off any basemap. */
+function drawPin(id: string, color: RGB, face?: PinFace): PinIcon {
+	const scale = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+	const canvas = document.createElement("canvas");
+	canvas.width = canvas.height = PIN_SIZE * scale;
+	const ctx = canvas.getContext("2d")!;
+	ctx.scale(scale, scale);
+	const center = PIN_SIZE / 2;
+	const inner = PIN_RADIUS - PIN_RING;
+
+	ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+	ctx.shadowBlur = 4;
+	ctx.shadowOffsetY = 1.5;
+	ctx.beginPath();
+	ctx.arc(center, center, PIN_RADIUS, 0, 2 * Math.PI);
+	ctx.fillStyle = "#fff";
+	ctx.fill();
+	ctx.shadowColor = "transparent";
+
+	const fill = ctx.createLinearGradient(0, center - inner, 0, center + inner);
+	fill.addColorStop(0, rgbCss(color.map((v) => v + (255 - v) * 0.3) as RGB));
+	fill.addColorStop(1, rgbCss(color));
+	ctx.beginPath();
+	ctx.arc(center, center, inner, 0, 2 * Math.PI);
+	ctx.fillStyle = fill;
+	ctx.fill();
+
+	ctx.fillStyle = "#fff";
+	face?.(ctx, center, inner);
+	return { id, url: canvas.toDataURL(), width: canvas.width, height: canvas.height };
+}
+
+const dotFace: PinFace = (ctx, center) => {
+	ctx.beginPath();
+	ctx.arc(center, center, 3, 0, 2 * Math.PI);
+	ctx.fill();
+};
+
+const flagFace: PinFace = (ctx, center) => {
+	const size = 14;
+	ctx.translate(center - size / 2, center - size / 2);
+	ctx.scale(size / 24, size / 24);
+	ctx.fill(new Path2D(mdiFlagVariant));
+};
+
+function lazy<T>(make: () => T): () => T {
+	let value: T | undefined;
+	return () => (value ??= make());
+}
+
+const GUESS_PIN = lazy(() => drawPin("guess", GUESS_COLOR, dotFace));
+export const TRUTH_PIN = lazy(() => drawPin("truth", TRUTH_COLOR, flagFace));
+const NUMBERED_TRUTH_PIN = lazy(() => drawPin("truth-numbered", TRUTH_COLOR));
+
+const imageFace =
+	(image: HTMLImageElement): PinFace =>
+	(ctx, center, radius) => {
+		ctx.beginPath();
+		ctx.arc(center, center, radius, 0, 2 * Math.PI);
+		ctx.clip();
+		ctx.drawImage(image, center - radius, center - radius, radius * 2, radius * 2);
+	};
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+	return new Promise((resolve, reject) => {
+		const image = new Image();
+		image.crossOrigin = "anonymous";
+		image.onload = () => resolve(image);
+		image.onerror = reject;
+		image.src = url;
+	});
+}
+
+/** The signed-in GitHub account's avatar, or null when signed out. */
+export function useGitHubAvatar(): string | null {
+	const [url, setUrl] = useState<string | null>(null);
+	useEffect(() => {
+		let cancelled = false;
+		void cmd
+			.githubMe()
+			.then((user) => !cancelled && setUrl(user?.avatarUrl ?? null))
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+	return url;
+}
+
+export function useAvatarPinSetting() {
+	return usePluginState<boolean>("localguessr", "avatarPin", true);
+}
+
+/** The player's guess pin: their GitHub avatar when signed in and chosen, else the default. */
+export function useGuessPin(): () => PinIcon {
+	const [avatarPin] = useAvatarPinSetting();
+	const avatarUrl = useGitHubAvatar();
+	const [avatar, setAvatar] = useState<PinIcon | null>(null);
+	useEffect(() => {
+		setAvatar(null);
+		if (!avatarPin || !avatarUrl) return;
+		let cancelled = false;
+		void loadImage(avatarUrl)
+			.then((image) => {
+				if (!cancelled) setAvatar(drawPin(`avatar:${avatarUrl}`, GUESS_COLOR, imageFace(image)));
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, [avatarPin, avatarUrl]);
+	return useMemo(() => (avatar ? () => avatar : GUESS_PIN), [avatar]);
+}
+
+export function pinLayers<T extends LatLng>(
+	id: string,
+	pins: T[],
+	icon: () => PinIcon,
+	pickable: boolean,
+	opacity = 1,
+) {
+	return new IconLayer<T>({
+		id,
+		data: pins,
+		getPosition: (d) => [d.lng, d.lat],
+		getIcon: icon,
+		getSize: PIN_SIZE,
+		sizeUnits: "pixels",
+		opacity,
+		pickable,
+	});
+}
+
+export interface RoundPair {
+	guess: LatLng;
+	truth: LatLng;
+}
+
+/** Dashed guess-to-answer lines, anchored to the map (common units + high-precision dash)
+ *  so the pattern stretches with the world, and 2.5px wide at `ropeZoom`. */
+export function resultLineLayer(id: string, pairs: RoundPair[], ropeZoom: number, opacity = 1) {
+	// Under the maps overlay, deck's zoom sits one below the host's; one common
+	// unit is 2^(zoom-1) screen px.
+	const width = 2.5 / 2 ** (ropeZoom - 1);
+	return new PathLayer({
+		id,
+		data: pairs,
+		getPath: ({ guess, truth }: RoundPair) => [
+			[guess.lng, guess.lat],
+			[truth.lng, truth.lat],
+		],
+		getColor: [25, 25, 25, 240],
+		getWidth: width,
+		widthUnits: "common",
+		capRounded: true,
+		getDashArray: [4, 3],
+		opacity,
+		extensions: [new PathStyleExtension({ dash: true, highPrecisionDash: true })],
+	});
+}
+
+export interface ReplayPin extends LatLng {
+	round: number;
+}
+
+/** Every round's guess, answer and line on one map, answers numbered by round. While a
+ *  round is highlighted the others dim beneath it. */
+export function replayLayers(
+	results: Pick<RoundResult, "location" | "guess">[],
+	highlighted: number | null,
+	ropeZoom: number | null,
+	guessPin: () => PinIcon,
+) {
+	const group = (rounds: number[], id: string, opacity: number) => {
+		const truths: ReplayPin[] = rounds.map((round) => {
+			const { lat, lng } = results[round].location;
+			return { lat, lng, round };
+		});
+		const guesses: ReplayPin[] = rounds.flatMap((round) => {
+			const guess = results[round].guess;
+			return guess ? [{ ...guess, round }] : [];
+		});
+		const pairs = guesses.map(({ round, ...guess }) => ({
+			guess,
+			truth: results[round].location,
+		}));
+		return [
+			...(ropeZoom !== null && pairs.length > 0
+				? [resultLineLayer(`${id}-line`, pairs, ropeZoom, opacity)]
+				: []),
+			pinLayers(`${id}-guess`, guesses, guessPin, true, opacity),
+			pinLayers(`${id}-truth`, truths, NUMBERED_TRUTH_PIN, true, opacity),
+			new TextLayer<ReplayPin>({
+				id: `${id}-n`,
+				data: truths,
+				getPosition: (d) => [d.lng, d.lat],
+				getText: (d) => String(d.round + 1),
+				getSize: 12,
+				getColor: [255, 255, 255],
+				fontFamily: '"Open Sans", sans-serif',
+				fontWeight: 700,
+				characterSet: "auto",
+				opacity,
+				pickable: false,
+			}),
+		];
+	};
+	const all = results.map((_, round) => round);
+	if (highlighted === null || !results[highlighted]) return group(all, "lg-replay", 1);
+	return [
+		...group(
+			all.filter((round) => round !== highlighted),
+			"lg-replay",
+			DIMMED,
+		),
+		...group([highlighted], "lg-replay-active", 1),
+	];
+}

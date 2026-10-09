@@ -1,7 +1,8 @@
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/primitives/Button";
 import { Checkbox } from "@/components/primitives/Checkbox";
-import { EmptyState } from "@/components/primitives/Sidebar";
+
 import { useT, type MessageKey, type MessageParams } from "@/lib/i18n";
 import { mdiChartBoxOutline, mdiChevronDown } from "@mdi/js";
 import { computeAnalytics } from "./analyticsStore";
@@ -348,7 +349,8 @@ function ScoreTrendChart({
 							fill="var(--gg-accent)"
 							fontWeight={600}
 						>
-							{hover.score.toLocaleString()} rolling · {hover.avgScore.toLocaleString()}/round
+							{hover.score.toLocaleString()} {t("rolling ·")} {hover.avgScore.toLocaleString()}
+							/round
 						</text>
 						<text
 							x={tooltipX}
@@ -445,7 +447,7 @@ function ReplayEntry({
 }) {
 	const { t } = useT();
 	return (
-		<div className="gg-analytics__row gg-analytics__row--game">
+		<div className="gg-analytics__row gg-analytics__row">
 			<span className="gg-analytics__name">{session.mapName}</span>
 			<span className="gg-analytics__meta">
 				{session.totalScore.toLocaleString()} · {session.config.movementMode} ·{" "}
@@ -569,9 +571,9 @@ export function AnalyticsPage({
 				value: m,
 				label:
 					String(m) === "moving"
-						? "Moving"
+						? t("Moving")
 						: m === "no-move"
-							? "No Move"
+							? t("No Move")
 							: m === "nmpz"
 								? "NMPZ"
 								: m,
@@ -650,10 +652,13 @@ export function AnalyticsPage({
 				</div>
 				<div className="gg-analytics__header-actions">
 					{mapId && (
-						<label className="gg-analytics__filter">
-							<Checkbox checked={filterMap} onChange={(e) => setFilterMap(e.target.checked)} />
+						<Checkbox
+							className="gg-analytics__filter"
+							checked={filterMap}
+							onChange={(e) => setFilterMap(e.target.checked)}
+						>
 							{t("Current map only")}
-						</label>
+						</Checkbox>
 					)}
 					<Button variant="ghost" onClick={onBack}>
 						{t("Back")}
@@ -744,7 +749,7 @@ export function AnalyticsPage({
 								{c.accuracy}%
 							</span>
 							<span className="gg-analytics__meta">
-								{c.rounds} · avg {c.avgScore}
+								{c.rounds} {t("· avg")} {c.avgScore}
 							</span>
 						</div>
 					))}
@@ -758,7 +763,7 @@ export function AnalyticsPage({
 						<div key={p.provider} className="gg-analytics__row">
 							<span className="gg-analytics__name gg-analytics__provider">{p.provider}</span>
 							<span className="gg-analytics__meta">
-								{p.rounds} rounds · avg {p.avgScore.toLocaleString()}
+								{p.rounds} {t("rounds · avg")} {p.avgScore.toLocaleString()}
 							</span>
 						</div>
 					))}
@@ -772,15 +777,15 @@ export function AnalyticsPage({
 						<div key={m.mode} className="gg-analytics__row">
 							<span className="gg-analytics__name">
 								{String(m.mode) === "moving"
-									? "Moving"
+									? t("Moving")
 									: m.mode === "no-move"
-										? "No Move"
+										? t("No Move")
 										: m.mode === "nmpz"
 											? "NMPZ"
 											: m.mode}
 							</span>
 							<span className="gg-analytics__meta">
-								{m.games} games · avg {m.avgScore.toLocaleString()}
+								{m.games} {t("games · avg")} {m.avgScore.toLocaleString()}
 							</span>
 						</div>
 					))}
@@ -794,7 +799,7 @@ export function AnalyticsPage({
 						<div key={m.mapId} className="gg-analytics__row">
 							<span className="gg-analytics__name">{m.mapName}</span>
 							<span className="gg-analytics__meta">
-								{m.games} games · avg {m.avgScore.toLocaleString()} · best{" "}
+								{m.games} {t("games · avg")} {m.avgScore.toLocaleString()} {t("· best")}{" "}
 								{m.bestScore.toLocaleString()}
 							</span>
 						</div>

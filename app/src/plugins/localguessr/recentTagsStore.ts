@@ -1,4 +1,4 @@
-import { createPluginStorage } from "@/plugins/registry";
+import { storage as createPluginStorage } from "@/plugins/pluginStorage";
 
 const PLUGIN_ID = "localguessr";
 const RECENT_TAGS_KEY = "recentTags";

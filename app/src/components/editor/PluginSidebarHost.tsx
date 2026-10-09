@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useMapState, exitPluginMode } from "@/store/useMapStore";
-import { getPlugin, isPluginEnabled } from "@/plugins/registry";
+import { getPlugin } from "@/plugins/registry";
+import { isPluginEnabled } from "@/plugins/pluginHost";
+import { PluginBoundary } from "@/plugins/PluginBoundary";
 import { useEvent } from "@/lib/events";
 
 /** Always mounted while a map is open. Normal plugin sidebars mount/unmount with
@@ -27,11 +29,17 @@ export function PluginSidebarHost() {
 				const KeptSidebar = plugin.sidebar;
 				return (
 					<div key={id} style={{ display: inPluginMode && id === pluginId ? "contents" : "none" }}>
-						<KeptSidebar onClose={exitPluginMode} />
+						<PluginBoundary pluginId={id}>
+							<KeptSidebar onClose={exitPluginMode} />
+						</PluginBoundary>
 					</div>
 				);
 			})}
-			{ActiveSidebar && <ActiveSidebar onClose={exitPluginMode} />}
+			{ActiveSidebar && (
+				<PluginBoundary pluginId={pluginId!}>
+					<ActiveSidebar onClose={exitPluginMode} />
+				</PluginBoundary>
+			)}
 		</>
 	);
 }

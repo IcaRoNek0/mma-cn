@@ -1,4 +1,5 @@
 import { useEffect, useEffectEvent, useState, type Dispatch, type SetStateAction } from "react";
+import type { Selector } from "@/bindings.gen";
 
 type DialogPayloads = {
 	commit: void;
@@ -7,6 +8,7 @@ type DialogPayloads = {
 	history: void;
 	seen: void;
 	"copy-to-map": void;
+	"save-as": void;
 	"quick-copy-to-map": number;
 	"tag-find-replace": void;
 	"apply-field-as-tags": void;
@@ -17,8 +19,13 @@ type DialogPayloads = {
 	"review-selected": void;
 	"doclink-assign": void;
 	"command-palette": void;
+	feedback: void;
 	"bulk-op": string;
+	"plugin-modal": string;
 	"inline-panel": string;
+	"recolor-tags": { tagIds: number[]; root: string | null };
+	"rename-folder": string;
+	"rename-in-selection": { tagIds: number[]; name: string; scope: Selector };
 };
 
 export type DialogKey = keyof DialogPayloads;

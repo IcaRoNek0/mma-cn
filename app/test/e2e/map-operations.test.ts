@@ -1,14 +1,15 @@
+import { createFieldDef } from "@/types";
 import {
-	waitForReady,
-	createAndOpenMap,
+	addLocs,
 	closeMap,
+	createAndOpenMap,
+	createLocation,
 	deleteMap,
 	flushAndWait,
 	openMap,
-	addLocs,
-	createLocation,
-	withApi,
 	useMap,
+	waitForReady,
+	withApi,
 } from "./helpers";
 
 describe("Map rename", () => {
@@ -16,10 +17,10 @@ describe("Map rename", () => {
 
 	it("rename open map updates in-memory name", async () => {
 		await withApi(async (api, id) => {
-			await api.renameMap(id, "Renamed Map");
+			await api.patchMapMeta(id, { name: "Renamed Map" });
 		}, map.id);
 
-		const name = await withApi(async (api) => api.getMapState().map?.meta.name);
+		const name = await withApi(async (api) => api.getMapState().map?.name);
 		expect(name).toBe("Renamed Map");
 	});
 
@@ -28,7 +29,7 @@ describe("Map rename", () => {
 		await closeMap();
 		await openMap(map.id);
 
-		const name = await withApi(async (api) => api.getMapState().map?.meta.name);
+		const name = await withApi(async (api) => api.getMapState().map?.name);
 		expect(name).toBe("Renamed Map");
 	});
 
@@ -138,17 +139,17 @@ describe("Map metadata updates", () => {
 			await api.updateMapMeta({ description: "Test map for E2E" });
 		});
 
-		const desc = await withApi(async (api) => api.getMapState().map?.meta.description);
+		const desc = await withApi(async (api) => api.getMapState().map?.description);
 		expect(desc).toBe("Test map for E2E");
 	});
 
 	it("update settings", async () => {
 		await withApi(async (api) => {
-			const cur = api.getMapState().map!.meta.settings;
+			const cur = api.getMapState().map!.settings;
 			await api.updateMapMeta({ settings: { ...cur, enrichMetadata: true } });
 		});
 
-		const settings = await withApi(async (api) => api.getMapState().map!.meta.settings);
+		const settings = await withApi(async (api) => api.getMapState().map!.settings);
 		expect(settings.enrichMetadata).toBe(true);
 	});
 
@@ -159,7 +160,7 @@ describe("Map metadata updates", () => {
 			});
 		});
 
-		const bounds = await withApi(async (api) => api.getMapState().map?.meta.scoreBounds);
+		const bounds = await withApi(async (api) => api.getMapState().map?.scoreBounds);
 		expect(bounds).toEqual([100, 200, 300, 400]);
 	});
 
@@ -168,7 +169,7 @@ describe("Map metadata updates", () => {
 		await closeMap();
 		await openMap(map.id);
 
-		const meta = await withApi(async (api) => api.getMapState().map!.meta);
+		const meta = await withApi(async (api) => api.getMapState().map!);
 		expect(meta.description).toBe("Test map for E2E");
 		expect(meta.settings.enrichMetadata).toBe(true);
 		expect(meta.scoreBounds).toEqual([100, 200, 300, 400]);
@@ -242,25 +243,33 @@ describe("Extra field definitions", () => {
 	const map = useMap("E2E Extra Fields");
 
 	it("set extra field definitions on map", async () => {
-		await withApi(async (api) => {
-			const cur = api.getMapState().map!.meta.extra?.fields ?? {};
+		const defs = {
+			altitude: createFieldDef("number", { label: "Altitude (m)" }),
+			country: createFieldDef("string", { label: "Country" }),
+			region: createFieldDef("enum", {
+				label: "Region",
+				values: [
+					{ value: "NA", label: null },
+					{ value: "EU", label: null },
+					{ value: "AS", label: null },
+				],
+			}),
+		};
+		await withApi(async (api, defs) => {
+			const cur = api.getMapState().map!.extra?.fields ?? {};
 			await api.updateMapMeta({
-				extra: {
-					...api.getMapState().map!.meta.extra,
-					fields: {
-						...cur,
-						altitude: { type: "number", label: "Altitude (m)" },
-						country: { type: "string", label: "Country" },
-						region: { type: "enum", label: "Region", values: ["NA", "EU", "AS"] },
-					},
-				},
+				extra: { ...api.getMapState().map!.extra, fields: { ...cur, ...defs } },
 			});
-		});
+		}, defs);
 
-		const extra = await withApi(async (api) => api.getMapState().map?.meta.extra);
+		const extra = await withApi(async (api) => api.getMapState().map?.extra);
 		expect(extra!.fields!.altitude.type).toBe("number");
 		expect(extra!.fields!.country.type).toBe("string");
-		expect(extra!.fields!.region.values).toEqual(["NA", "EU", "AS"]);
+		expect(extra!.fields!.region.values).toEqual([
+			{ value: "NA", label: null },
+			{ value: "EU", label: null },
+			{ value: "AS", label: null },
+		]);
 	});
 
 	it("extra field definitions persist", async () => {
@@ -268,7 +277,7 @@ describe("Extra field definitions", () => {
 		await closeMap();
 		await openMap(map.id);
 
-		const extra = await withApi(async (api) => api.getMapState().map?.meta.extra);
+		const extra = await withApi(async (api) => api.getMapState().map?.extra);
 		expect(extra!.fields!.altitude.type).toBe("number");
 		expect(extra!.fields!.altitude.label).toBe("Altitude (m)");
 	});
@@ -302,8 +311,8 @@ describe("Extra field definitions", () => {
 		});
 
 		const known = await withApi(async (api) => ({
-			countryCode: api.getMapState().knownFieldKeys.has("countryCode"),
-			imageDate: api.getMapState().knownFieldKeys.has("imageDate"),
+			countryCode: api.getKnownFieldKeys().has("countryCode"),
+			imageDate: api.getKnownFieldKeys().has("imageDate"),
 		}));
 		expect(known.countryCode).toBe(true);
 		expect(known.imageDate).toBe(true);
@@ -326,7 +335,7 @@ describe("Extra field definitions", () => {
 		await closeMap();
 		await openMap(map.id);
 
-		const extra = await withApi(async (api) => api.getMapState().map?.meta.extra);
+		const extra = await withApi(async (api) => api.getMapState().map?.extra);
 		expect(extra!.fields!.fleeb).toBeDefined();
 		expect(extra!.fields!.fleeb.type).toBe("number");
 	});
@@ -354,22 +363,20 @@ describe("Extra field definitions", () => {
 
 	it("does not re-register already known keys", async () => {
 		// Explicitly register with a custom label
-		await withApi(async (api) => {
-			const cur = api.getMapState().map!.meta.extra?.fields ?? {};
+		const score = createFieldDef("number", { label: "My Score" });
+		await withApi(async (api, score) => {
+			const cur = api.getMapState().map!.extra?.fields ?? {};
 			await api.updateMapMeta({
-				extra: {
-					...api.getMapState().map!.meta.extra,
-					fields: { ...cur, score: { type: "number", label: "My Score" } },
-				},
+				extra: { ...api.getMapState().map!.extra, fields: { ...cur, score } },
 			});
-		});
+		}, score);
 
 		// Add a location with the same key — should not overwrite the custom def
 		await withApi(async (api) => {
 			await api.addLocations([api.createLocation({ lat: 0, lng: 0, extra: { score: 42 } })]);
 		});
 
-		const extra = await withApi(async (api) => api.getMapState().map?.meta.extra);
+		const extra = await withApi(async (api) => api.getMapState().map?.extra);
 		expect(extra!.fields!.score.label).toBe("My Score");
 	});
 });

@@ -1,51 +1,106 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
+import type { ListedSelection, SavedSelection, Selection, Selector } from "@/bindings.gen";
 
-// The store binds tag lookups internally; back them with a settable fake tag set.
+// The store binds tag lookups internally; back them with a settable fake tag set. The
+// Rust table is a plain array here, so the module's cache/refresh path is exercised.
 const h = vi.hoisted(() => ({
 	tags: {} as Record<number, { id: number; name: string; color: string; visible: boolean }>,
-	saved: [] as unknown[],
-	resolve: undefined as unknown as ReturnType<typeof vi.fn>,
+	rows: [] as SavedSelection[],
+	added: [] as Selector[][],
+	calls: [] as string[],
 }));
+
 vi.mock("@/store/useMapStore", () => ({
-	addSelections: vi.fn(),
+	applySelectionUpdate: (op: (rows: ListedSelection[]) => ListedSelection[]) =>
+		h.added.push(op([]).map((r) => r.selection.selector)),
 	getTag: (id: number) => h.tags[id],
 	getVisibleTags: () => Object.values(h.tags).filter((t) => t.visible !== false),
+	getMapState: () => ({ fieldDefs: {} }),
 }));
-vi.mock("@/store/settings", () => ({
-	getSettings: () => ({ savedSelections: h.saved }),
-	setSetting: vi.fn(),
+vi.mock("@/store/settings", () => ({ getSettings: () => ({}) }));
+vi.mock("@/lib/util/log", () => ({
+	log: { warn: vi.fn(), error: vi.fn() },
+	fireAndForget: (p: Promise<unknown>) => void p.catch(() => {}),
 }));
 vi.mock("@/lib/commands", () => ({
-	cmd: { storeResolveSelection: (props: unknown) => h.resolve(props) },
+	cmd: {
+		storeListSavedSelections: async () => {
+			h.calls.push("list");
+			return h.rows.map(({ id, name, color, createdAt }) => ({ id, name, color, createdAt }));
+		},
+		storeGetSavedSelections: async (ids: string[]) => {
+			h.calls.push(`get:${ids.join(",")}`);
+			return structuredClone(h.rows.filter((r) => ids.includes(r.id)));
+		},
+		storeSaveSelection: async (
+			name: string,
+			selector: Selector,
+			tagNames: Record<number, string>,
+			color: [number, number, number],
+		) => {
+			const row = { id: `s${h.rows.length + 1}`, name, selector, tagNames, color, createdAt: "" };
+			h.rows.push(row);
+			return row;
+		},
+		storeDeleteSavedSelection: async (id: string) => {
+			h.rows = h.rows.filter((r) => r.id !== id);
+		},
+		storeImportLegacySavedSelections: async () => 0,
+	},
 }));
 
 import {
-	selectionToSaved,
-	savedToSelectionProps,
-	describeRule,
-	resolveSavedSelectionIds,
 	MAP_LOCAL_TYPES,
-	type SavedSelection,
-	type SavedSelectionProps,
+	applySavedSelection,
+	deleteSavedSelection,
+	getSavedSelectionIndex,
+	isSaveable,
+	loadAllSavedSelections,
+	loadSavedSelections,
+	saveCurrentSelections,
+	savedParts,
+	savedSelector,
 } from "@/store/savedSelections";
-import type { Selection } from "@/bindings.gen";
+import {
+	buildSelection,
+	tagSelector,
+	unpannedSelector,
+	untaggedSelector,
+} from "@/store/selections";
 
-beforeEach(() => {
-	h.tags = {};
-	h.saved = [];
-	h.resolve = vi.fn();
+/** Matches nothing: what a `Tag` leaf resolves to when its saved name is gone here. */
+const NOTHING: Selector = { type: "Locations", locations: [], name: null };
+
+const rule = (selector: Selector, tagNames: Record<number, string> = {}): SavedSelection => ({
+	id: "s1",
+	name: "rule",
+	selector,
+	tagNames,
+	color: [1, 2, 3],
+	createdAt: "2026-01-01T00:00:00.000Z",
 });
 
-function makeSel(props: Selection["props"]): Selection {
-	return { key: "test", color: [100, 100, 100], props };
-}
+const sel = (selector: Selector, color: [number, number, number] = [0, 0, 0]): Selection => ({
+	...buildSelection(selector),
+	color,
+});
+
+beforeEach(async () => {
+	h.tags = {};
+	h.rows = [];
+	h.added = [];
+	h.calls = [];
+	// Drop any index/bodies the previous test left behind.
+	await loadAllSavedSelections();
+	h.calls = [];
+});
 
 // ============================================================================
-// INVARIANT: saved selections are global name-based rules, resolved fresh
-// against the open map. Map-local renames/deletes never rewrite them — an
-// unresolvable rule is skipped at resolution, never mutated or dropped.
+// INVARIANT: saved selections are global name-based rules, resolved fresh against
+// the open map. The stored tree is never rewritten -- a tag rename on one map only
+// changes what the rule resolves to there, and a rule whose tag is missing stays a
+// whole rule with one dead leaf.
 // ============================================================================
 
 describe("saved selections survive map-local renames untouched", () => {
@@ -57,342 +112,159 @@ describe("saved selections survive map-local renames untouched", () => {
 		return obj;
 	};
 
-	it("a TagName rule tracks the current map's tags, not a snapshot", () => {
-		const rule = deepFreeze<SavedSelectionProps>({ type: "TagName", tagName: "Japan" });
+	it("a Tag leaf tracks the current map's tags by name, not by stored id", () => {
+		const saved = deepFreeze(rule(tagSelector(5), { 5: "Japan" }));
 
-		h.tags = { 1: { id: 1, name: "Japan", color: "#f00", visible: true } };
-		expect(savedToSelectionProps(rule)).toEqual({ type: "Tag", tagId: 1 });
-
-		// Rename in the "current map": the rule is not rewritten, it just stops resolving.
-		h.tags = { 1: { id: 1, name: "Asia/Japan", color: "#f00", visible: true } };
-		expect(savedToSelectionProps(rule)).toBeNull();
-		expect(rule).toEqual({ type: "TagName", tagName: "Japan" });
-
-		// A map where the name exists (or the rename is undone) resolves again.
+		// The name resolves to a different id here: the leaf follows the name.
 		h.tags = { 9: { id: 9, name: "japan", color: "#0f0", visible: true } };
-		expect(savedToSelectionProps(rule)).toEqual({ type: "Tag", tagId: 9 });
+		expect(savedParts(saved)[0].selector).toEqual(tagSelector(9));
+
+		// Renamed away: the rule is not rewritten, its leaf just stops matching.
+		h.tags = { 9: { id: 9, name: "Asia/Japan", color: "#0f0", visible: true } };
+		expect(savedParts(saved)[0].selector).toEqual(NOTHING);
+		expect(saved.selector).toEqual(tagSelector(5));
+	});
+
+	it("a soft-deleted tag is never resurrected by name", () => {
+		h.tags = { 3: { id: 3, name: "Coastal", color: "#00f", visible: false } };
+		const saved = rule(tagSelector(3), { 3: "Coastal" });
+		expect(savedParts(saved)[0].selector).toEqual(NOTHING);
+	});
+
+	it("a dead leaf leaves the composite around it intact", () => {
+		h.tags = { 1: { id: 1, name: "Valid", color: "#aaa", visible: true } };
+		const saved = rule(
+			{
+				type: "Intersection",
+				selections: [sel(tagSelector(7)), sel(tagSelector(8))],
+			},
+			{ 7: "Valid", 8: "Gone" },
+		);
+		const resolved = savedParts(saved)[0].selector;
+		expect(resolved.type).toBe("Intersection");
+		if (resolved.type !== "Intersection") return;
+		expect(resolved.selections.map((c) => c.selector)).toEqual([tagSelector(1), NOTHING]);
 	});
 
 	it("a Filter rule outlives its field's deletion in the current map", () => {
-		// JS holds no field registry per rule: the Filter passes through verbatim and
-		// Rust treats a missing field as non-matching. Deletion must not drop the rule.
-		const rule = deepFreeze<SavedSelectionProps>({
+		// JS holds no field registry per rule: the Filter passes through verbatim and Rust
+		// treats a missing field as non-matching. Deletion must not drop the rule.
+		const selector: Selector = {
 			type: "Filter",
 			field: "deleted-everywhere",
-			op: "eq",
-			value: 1,
-		});
-		expect(savedToSelectionProps(rule)).toEqual(rule);
+			test: { op: "eq", value: 1 },
+		};
+		expect(savedParts(rule(selector))[0].selector).toEqual(selector);
 	});
 
-	it("resolution never mutates the saved definition", async () => {
-		const saved: SavedSelection = deepFreeze({
-			id: "s1",
-			name: "n",
-			items: [
-				{ props: { type: "TagName", tagName: "Gone" }, color: [0, 0, 0] },
-				{ props: { type: "Untagged" }, color: [0, 0, 0] },
-			],
-		} as SavedSelection);
-		h.saved = [saved];
-		h.resolve.mockResolvedValueOnce([1]);
-		const ids = await resolveSavedSelectionIds("s1");
-		expect([...ids]).toEqual([1]);
-		expect(saved.items).toHaveLength(2);
+	it("labels a missing tag with the name it was saved under", () => {
+		const saved = rule(tagSelector(5), { 5: "Japan" });
+		expect(savedParts(saved)[0].label).toBe("Tag: Japan");
 	});
 });
 
 // ============================================================================
-// selectionToSaved
+// isSaveable
 // ============================================================================
 
-describe("selectionToSaved", () => {
-	it("converts Everything selection", () => {
-		const result = selectionToSaved(makeSel({ type: "Everything" }));
-		expect(result).toEqual({ type: "Everything" });
+describe("isSaveable", () => {
+	it("accepts portable leaves", () => {
+		expect(isSaveable({ type: "Everything" })).toBe(true);
+		expect(isSaveable(tagSelector(1))).toBe(true);
+		expect(isSaveable({ type: "Duplicates", distance: 50 })).toBe(true);
 	});
 
-	it("converts Untagged selection", () => {
-		const result = selectionToSaved(makeSel({ type: "Untagged" }));
-		expect(result).toEqual({ type: "Untagged" });
-	});
-
-	it("converts Unpanned selection", () => {
-		const result = selectionToSaved(makeSel({ type: "Unpanned" }));
-		expect(result).toEqual({ type: "Unpanned" });
-	});
-
-	it("converts PanoIds selection", () => {
-		const result = selectionToSaved(makeSel({ type: "PanoIds" }));
-		expect(result).toEqual({ type: "PanoIds" });
-	});
-
-	it("converts NotPanoIds selection", () => {
-		const result = selectionToSaved(makeSel({ type: "NotPanoIds" }));
-		expect(result).toEqual({ type: "NotPanoIds" });
-	});
-
-	it("converts Duplicates selection with distance", () => {
-		const result = selectionToSaved(makeSel({ type: "Duplicates", distance: 50 }));
-		expect(result).toEqual({ type: "Duplicates", distance: 50 });
-	});
-
-	it("converts Tag selection to TagName using map tag lookup", () => {
-		h.tags = { 7: { id: 7, name: "Mountains", color: "#ff0000", visible: true } };
-		const result = selectionToSaved(makeSel({ type: "Tag", tagId: 7 }));
-		expect(result).toEqual({ type: "TagName", tagName: "Mountains" });
-	});
-
-	it("returns null for Tag selection with unknown tagId", () => {
-		const result = selectionToSaved(makeSel({ type: "Tag", tagId: 999 }));
-		expect(result).toBeNull();
-	});
-
-	it("returns null for Manual selection (not saveable)", () => {
-		const result = selectionToSaved(makeSel({ type: "Manual", locations: [1, 2, 3] }));
-		expect(result).toBeNull();
-	});
-
-	it("returns null for Locations selection (not saveable)", () => {
-		const result = selectionToSaved(makeSel({ type: "Locations", locations: [1, 2], name: null }));
-		expect(result).toBeNull();
-	});
-
-	it("returns null for ValidationState selection (not saveable)", () => {
-		const result = selectionToSaved(makeSel({ type: "ValidationState", locations: [1], state: 0 }));
-		expect(result).toBeNull();
-	});
-
-	it("converts Filter selection", () => {
-		const result = selectionToSaved(
-			makeSel({ type: "Filter", field: "altitude", op: "gt", value: 1000, value2: null }),
-		);
-		expect(result).toEqual({
-			type: "Filter",
-			field: "altitude",
-			op: "gt",
-			value: 1000,
-			value2: null,
-		});
-	});
-
-	it("converts Union of saveable children", () => {
-		h.tags = { 1: { id: 1, name: "A", color: "#aaa", visible: true } };
-		const sel = makeSel({
-			type: "Union",
-			selections: [
-				{ key: "panoids", color: [0, 0, 0], props: { type: "PanoIds" } },
-				{ key: "tag:1", color: [0, 0, 0], props: { type: "Tag", tagId: 1 } },
-			],
-		});
-		const result = selectionToSaved(sel);
-		expect(result).toEqual({
-			type: "Union",
-			selections: [{ type: "PanoIds" }, { type: "TagName", tagName: "A" }],
-		});
-	});
-
-	it("returns null for composite where all children are unsaveable", () => {
-		const sel = makeSel({
-			type: "Intersection",
-			selections: [{ key: "manual", color: [0, 0, 0], props: { type: "Manual", locations: [1] } }],
-		});
-		const result = selectionToSaved(sel);
-		expect(result).toBeNull();
-	});
-});
-
-// ============================================================================
-// savedToSelectionProps
-// ============================================================================
-
-describe("savedToSelectionProps", () => {
-	it("resolves TagName to Tag using map lookup (case-insensitive)", () => {
-		h.tags = { 3: { id: 3, name: "Coastal", color: "#00f", visible: true } };
-		const result = savedToSelectionProps({ type: "TagName", tagName: "coastal" });
-		expect(result).toEqual({ type: "Tag", tagId: 3 });
-	});
-
-	it("returns null for TagName when tag no longer exists", () => {
-		const result = savedToSelectionProps({ type: "TagName", tagName: "Deleted" });
-		expect(result).toBeNull();
-	});
-
-	it("passes through Everything unchanged", () => {
-		const result = savedToSelectionProps({ type: "Everything" });
-		expect(result).toEqual({ type: "Everything" });
-	});
-
-	it("passes through PanoIds unchanged", () => {
-		const result = savedToSelectionProps({ type: "PanoIds" });
-		expect(result).toEqual({ type: "PanoIds" });
-	});
-
-	it("passes through Filter unchanged", () => {
-		const saved: SavedSelectionProps = {
-			type: "Filter",
-			field: "altitude",
-			op: "between",
-			value: 0,
-			value2: 5000,
-		};
-		const result = savedToSelectionProps(saved);
-		expect(result).toEqual(saved);
-	});
-
-	it("returns null for composite with all unresolvable children", () => {
-		const saved: SavedSelectionProps = {
-			type: "Intersection",
-			selections: [{ type: "TagName", tagName: "NoSuchTag" }],
-		};
-		const result = savedToSelectionProps(saved);
-		expect(result).toBeNull();
-	});
-
-	it("resolves composite with mixed resolvable/unresolvable children", () => {
-		h.tags = { 1: { id: 1, name: "Valid", color: "#aaa", visible: true } };
-		const saved: SavedSelectionProps = {
-			type: "Union",
-			selections: [
-				{ type: "TagName", tagName: "Valid" },
-				{ type: "TagName", tagName: "Missing" },
-			],
-		};
-		const result = savedToSelectionProps(saved);
-		expect(result).not.toBeNull();
-		expect(result!.type).toBe("Union");
-		if (result!.type === "Union") {
-			expect(result!.selections).toHaveLength(1);
-			expect(result!.selections[0].props.type).toBe("Tag");
-		}
-	});
-});
-
-// ============================================================================
-// describeRule
-// ============================================================================
-
-describe("describeRule", () => {
-	it("describes Everything", () => {
-		expect(describeRule({ type: "Everything" })).toBe("All");
-	});
-
-	it("describes TagName", () => {
-		expect(describeRule({ type: "TagName", tagName: "Mountains" })).toBe("Tag: Mountains");
-	});
-
-	it("describes Untagged", () => {
-		expect(describeRule({ type: "Untagged" })).toBe("Untagged");
-	});
-
-	it("describes Unpanned", () => {
-		expect(describeRule({ type: "Unpanned" })).toBe("Unpanned");
-	});
-
-	it("describes PanoIds", () => {
-		expect(describeRule({ type: "PanoIds" })).toBe("Has Pano ID");
-	});
-
-	it("describes NotPanoIds", () => {
-		expect(describeRule({ type: "NotPanoIds" })).toBe("No Pano ID");
-	});
-
-	it("describes Duplicates with distance", () => {
-		expect(describeRule({ type: "Duplicates", distance: 100 })).toBe("Dupes (100m)");
-	});
-
-	it("describes Filter", () => {
-		expect(describeRule({ type: "Filter", field: "altitude", op: "gt", value: 500 })).toBe(
-			"altitude gt 500",
+	it("rejects every map-local leaf", () => {
+		expect(isSaveable({ type: "Locations", locations: [1], name: null })).toBe(false);
+		expect(isSaveable({ type: "Manual", locations: [1] })).toBe(false);
+		expect(isSaveable({ type: "Validation", locations: [1], category: "valid" })).toBe(false);
+		expect(isSaveable({ type: "Reviewed", locations: [1], sessionId: "s", mode: "reviewed" })).toBe(
+			false,
 		);
 	});
 
-	it("describes Polygon with name", () => {
-		const polygon = { type: "Feature", geometry: {}, properties: { name: "Europe" } } as any;
-		expect(describeRule({ type: "Polygon", polygon, includeInformational: false })).toBe("Europe");
-	});
-
-	it("describes Polygon without name", () => {
-		const polygon = { type: "Feature", geometry: {}, properties: {} } as any;
-		expect(describeRule({ type: "Polygon", polygon, includeInformational: false })).toBe("Polygon");
-	});
-
-	it("describes Intersection", () => {
-		const result = describeRule({
-			type: "Intersection",
-			selections: [{ type: "PanoIds" }, { type: "Untagged" }],
-		});
-		expect(result).toBe("Has Pano ID AND Untagged");
-	});
-
-	it("describes Union", () => {
-		const result = describeRule({
+	it("rejects a composite that hides a map-local leaf at any depth", () => {
+		const reviewed: Selector = {
+			type: "Reviewed",
+			locations: [1, 2, 3],
+			sessionId: "session-1",
+			mode: "unreviewed",
+		};
+		const nested: Selector = {
 			type: "Union",
 			selections: [
-				{ type: "TagName", tagName: "A" },
-				{ type: "TagName", tagName: "B" },
+				sel(untaggedSelector()),
+				sel({ type: "Intersection", selections: [sel(reviewed)] }),
 			],
-		});
-		expect(result).toBe("Tag: A OR Tag: B");
-	});
-
-	it("describes Invert", () => {
-		const result = describeRule({
-			type: "Invert",
-			selections: [{ type: "Everything" }],
-		});
-		expect(result).toBe("NOT (All)");
+		};
+		expect(isSaveable(nested)).toBe(false);
 	});
 });
 
 // ============================================================================
-// INVARIANT: every generated SelectionProps variant is either named map-local
-// (never saved) or fully saveable — convertible and describable. A new Rust
-// variant is saveable by default, so it must not be able to slip through
-// unhandled.
+// INVARIANT: every generated Selector variant is either named map-local (never
+// saved) or fully saveable and describable. A new Rust variant is saveable by
+// default, so it must not be able to slip through unhandled.
 // ============================================================================
 
-describe("SelectionProps coverage", () => {
-	const SAMPLES: Record<string, Selection["props"]> = {
+describe("Selector coverage", () => {
+	const SAMPLES: Record<string, Selector> = {
 		Locations: { type: "Locations", locations: [1], name: null },
 		Everything: { type: "Everything" },
 		Polygon: {
 			type: "Polygon",
-			polygon: { type: "Feature", geometry: {}, properties: { name: "P" } } as any,
-			includeInformational: false,
+			polygon: {
+				coordinates: [
+					[
+						[0, 0],
+						[1, 0],
+						[1, 1],
+					],
+				],
+				extraPolygons: null,
+				properties: { name: "P" },
+			},
 		},
-		Tag: { type: "Tag", tagId: 1 },
-		Untagged: { type: "Untagged" },
-		Unpanned: { type: "Unpanned" },
-		PanoIds: { type: "PanoIds" },
-		NotPanoIds: { type: "NotPanoIds" },
 		Uncommitted: { type: "Uncommitted" },
 		Manual: { type: "Manual", locations: [1] },
 		Duplicates: { type: "Duplicates", distance: 25 },
-		ValidationState: { type: "ValidationState", locations: [1], state: 0 },
+		Validation: { type: "Validation", locations: [1], category: "valid" },
 		Reviewed: { type: "Reviewed", locations: [1], sessionId: "s", mode: "reviewed" },
-		Intersection: {
-			type: "Intersection",
-			selections: [{ key: "e", color: [0, 0, 0], props: { type: "Everything" } }],
+		Intersection: { type: "Intersection", selections: [sel({ type: "Everything" })] },
+		Union: { type: "Union", selections: [sel({ type: "Everything" })] },
+		Invert: { type: "Invert", selections: [sel({ type: "Everything" })] },
+		Filter: { type: "Filter", field: "altitude", test: { op: "gt", value: 1, tzLocal: true } },
+		Ranked: {
+			type: "Ranked",
+			selection: sel({ type: "Filter", field: "altitude", test: { op: "has" } }),
+			expr: "altitude",
+			k: 5,
+			ascending: false,
 		},
-		Union: {
-			type: "Union",
-			selections: [{ key: "e", color: [0, 0, 0], props: { type: "Everything" } }],
-		},
-		Invert: {
-			type: "Invert",
-			selections: [{ key: "e", color: [0, 0, 0], props: { type: "Everything" } }],
-		},
-		Filter: { type: "Filter", field: "altitude", op: "gt", value: 1, tzLocal: true },
-		TopK: { type: "TopK", field: "altitude", k: 5, ascending: false },
 	};
 
-	// Read the variants off the generated union so a new Rust variant fails here.
+	// Read the variants off the generated union so a new Rust variant fails here. A
+	// doc-commented variant wraps onto its own line, so read the whole declaration
+	// block rather than its first line.
 	const generatedTypes = (): string[] => {
 		const src = readFileSync(new URL("../../src/bindings.gen.ts", import.meta.url), "utf8");
-		const line = src.split("\n").find((l) => l.startsWith("export type SelectionProps ="))!;
-		return [...line.matchAll(/type: "(\w+)"/g)].map((m) => m[1]);
+		const decl = src.slice(src.indexOf("export type Selector =")).split("\n\n")[0];
+		return [...decl.matchAll(/type: "(\w+)"/g)].map((m) => m[1]);
 	};
+
+	it("sees a child a selector wraps outside a `selections` list", () => {
+		// Ranked holds one child under `selection`; a walk that only knew `selections`
+		// would call a map-local tree saveable.
+		expect(
+			isSaveable({
+				type: "Ranked",
+				selection: sel({ type: "Manual", locations: [1] }),
+				expr: "altitude",
+				k: null,
+				ascending: false,
+			}),
+		).toBe(false);
+	});
 
 	it("has a sample for every generated variant", () => {
 		expect(generatedTypes().sort()).toEqual(Object.keys(SAMPLES).sort());
@@ -401,79 +273,150 @@ describe("SelectionProps coverage", () => {
 	it("every variant is map-local or saveable and describable", () => {
 		h.tags = { 1: { id: 1, name: "T", color: "#fff", visible: true } };
 		for (const type of generatedTypes()) {
-			const saved = selectionToSaved(makeSel(SAMPLES[type]));
-			if ((MAP_LOCAL_TYPES as readonly string[]).includes(type)) {
-				expect(saved, `${type} is map-local`).toBeNull();
-				continue;
-			}
-			expect(saved, `${type} is saveable`).not.toBeNull();
-			const desc = describeRule(saved!);
-			expect(typeof desc, `${type} is describable`).toBe("string");
-			expect(desc.length).toBeGreaterThan(0);
+			const mapLocal = (MAP_LOCAL_TYPES as readonly string[]).includes(type);
+			expect(isSaveable(SAMPLES[type]), `${type} saveability`).toBe(!mapLocal);
+			if (mapLocal) continue;
+			const [part] = savedParts(rule(SAMPLES[type]));
+			expect(typeof part.label, `${type} is describable`).toBe("string");
+			expect(part.label.length).toBeGreaterThan(0);
 		}
 	});
 
-	it("Reviewed never persists a session snapshot", () => {
-		const props: Selection["props"] = {
+	it("a Reviewed session id can never reach storage", async () => {
+		const reviewed: Selector = {
 			type: "Reviewed",
 			locations: [1, 2, 3],
 			sessionId: "session-1",
 			mode: "unreviewed",
 		};
-		expect(selectionToSaved(makeSel(props))).toBeNull();
-
-		// Nor smuggled in through a composite: the composite drops to null with it.
-		const composite = makeSel({
-			type: "Union",
-			selections: [{ key: "rev", color: [0, 0, 0], props }],
-		});
-		expect(selectionToSaved(composite)).toBeNull();
-
-		const mixed = selectionToSaved(
-			makeSel({
-				type: "Union",
-				selections: [
-					{ key: "rev", color: [0, 0, 0], props },
-					{ key: "untagged", color: [0, 0, 0], props: { type: "Untagged" } },
-				],
-			}),
+		expect(await saveCurrentSelections("mixed", [sel(reviewed), sel(untaggedSelector())])).toBe(
+			true,
 		);
-		expect(mixed).toEqual({ type: "Union", selections: [{ type: "Untagged" }] });
-		expect(JSON.stringify(mixed)).not.toContain("session-1");
+		expect(JSON.stringify(h.rows)).not.toContain("session-1");
+		expect(h.rows[0].selector).toEqual(untaggedSelector());
 	});
 });
 
 // ============================================================================
-// resolveSavedSelectionIds
+// Save / apply round trip
 // ============================================================================
 
-describe("resolveSavedSelectionIds", () => {
-	const entry = (items: SavedSelectionProps[]): SavedSelection => ({
-		id: "s1",
-		name: "n",
-		items: items.map((props) => ({ props, color: [0, 0, 0] as [number, number, number] })),
-		createdAt: 0,
+describe("saveCurrentSelections", () => {
+	it("stores one selection as itself and its tag names beside it", async () => {
+		h.tags = { 4: { id: 4, name: "Japan", color: "#f00", visible: true } };
+		expect(await saveCurrentSelections("japan", [sel(tagSelector(4), [9, 9, 9])])).toBe(true);
+		expect(h.rows[0]).toMatchObject({
+			name: "japan",
+			selector: tagSelector(4),
+			tagNames: { 4: "Japan" },
+			color: [9, 9, 9],
+		});
 	});
 
-	it("unions the ids of all items", async () => {
-		h.saved = [entry([{ type: "Untagged" }, { type: "Unpanned" }])];
-		h.resolve.mockResolvedValueOnce([1, 2]).mockResolvedValueOnce([2, 3]);
-		const ids = await resolveSavedSelectionIds("s1");
-		expect([...ids].sort()).toEqual([1, 2, 3]);
-		expect(h.resolve).toHaveBeenCalledTimes(2);
+	it("unions several selections into one rule, keeping their colors", async () => {
+		await saveCurrentSelections("two", [
+			sel(untaggedSelector(), [1, 1, 1]),
+			sel(unpannedSelector(), [2, 2, 2]),
+		]);
+		const parts = savedParts(h.rows[0]);
+		expect(parts.map((p) => p.selector.type)).toEqual(["Filter", "Filter"]);
+		expect(parts.map((p) => p.color)).toEqual([
+			[1, 1, 1],
+			[2, 2, 2],
+		]);
 	});
 
-	it("skips items that no longer resolve", async () => {
-		h.saved = [entry([{ type: "TagName", tagName: "gone" }, { type: "Untagged" }])];
-		h.resolve.mockResolvedValueOnce([7]);
-		const ids = await resolveSavedSelectionIds("s1");
-		expect([...ids]).toEqual([7]);
-		expect(h.resolve).toHaveBeenCalledTimes(1);
+	it("captures tag names from every depth of the tree", async () => {
+		h.tags = {
+			1: { id: 1, name: "A", color: "#a", visible: true },
+			2: { id: 2, name: "B", color: "#b", visible: true },
+		};
+		await saveCurrentSelections("nested", [
+			sel({
+				type: "Intersection",
+				selections: [sel(tagSelector(1)), sel(tagSelector(2))],
+			}),
+		]);
+		expect(h.rows[0].tagNames).toEqual({ 1: "A", 2: "B" });
 	});
 
-	it("returns an empty set for an unknown id", async () => {
-		const ids = await resolveSavedSelectionIds("nope");
-		expect(ids.size).toBe(0);
-		expect(h.resolve).not.toHaveBeenCalled();
+	it("refuses a save with nothing saveable in it", async () => {
+		expect(await saveCurrentSelections("nope", [sel({ type: "Manual", locations: [1] })])).toBe(
+			false,
+		);
+		expect(h.rows).toHaveLength(0);
+	});
+});
+
+describe("applySavedSelection", () => {
+	it("adds one selection per saved part", () => {
+		h.tags = { 9: { id: 9, name: "Japan", color: "#f00", visible: true } };
+		const saved = rule(
+			{ type: "Union", selections: [sel(tagSelector(5)), sel(untaggedSelector())] },
+			{ 5: "Japan" },
+		);
+		expect(applySavedSelection(saved)).toBe(2);
+		expect(h.added[0]).toEqual([tagSelector(9), untaggedSelector()]);
+	});
+
+	it("adds a non-union rule as a single selection", () => {
+		expect(applySavedSelection(rule(untaggedSelector()))).toBe(1);
+		expect(h.added[0]).toEqual([untaggedSelector()]);
+	});
+});
+
+describe("the index and the bodies", () => {
+	it("follows saves and deletes", async () => {
+		expect(getSavedSelectionIndex()).toEqual([]);
+		await saveCurrentSelections("a", [sel(untaggedSelector())]);
+		await saveCurrentSelections("b", [sel(unpannedSelector())]);
+		expect(getSavedSelectionIndex().map((s) => s.name)).toEqual(["a", "b"]);
+
+		await deleteSavedSelection(getSavedSelectionIndex()[0].id);
+		expect(getSavedSelectionIndex().map((s) => s.name)).toEqual(["b"]);
+	});
+
+	it("never reads a body just to list the rules", async () => {
+		h.rows = [rule(untaggedSelector())];
+		await loadAllSavedSelections();
+		h.calls = [];
+
+		getSavedSelectionIndex();
+		expect(h.calls.filter((c) => c.startsWith("get:"))).toEqual([]);
+	});
+
+	it("fetches a body once and reuses it", async () => {
+		h.rows = [rule(untaggedSelector())];
+		await loadSavedSelections(["s1"]);
+		await loadSavedSelections(["s1"]);
+		expect(h.calls.filter((c) => c.startsWith("get:"))).toEqual(["get:s1"]);
+	});
+
+	it("does not re-request a rule that is not there", async () => {
+		await loadSavedSelections(["ghost"]);
+		await loadSavedSelections(["ghost"]);
+		expect(h.calls.filter((c) => c.startsWith("get:"))).toEqual(["get:ghost"]);
+	});
+});
+
+describe("savedSelector", () => {
+	it("matches nothing until the body arrives, then resolves it", async () => {
+		h.rows = [rule(untaggedSelector())];
+		// First read only knows the id: it starts the fetch and matches nothing meanwhile.
+		expect(savedSelector("s1")).toEqual(NOTHING);
+		await loadSavedSelections(["s1"]);
+		expect(savedSelector("s1")).toEqual(untaggedSelector());
+	});
+
+	it("is the whole rule as one resolved Selector", async () => {
+		await saveCurrentSelections("two", [sel(untaggedSelector()), sel(unpannedSelector())]);
+		const selector = savedSelector(getSavedSelectionIndex()[0].id);
+		expect(selector.type).toBe("Union");
+		if (selector.type !== "Union") return;
+		expect(selector.selections.map((c) => c.selector.type)).toEqual(["Filter", "Filter"]);
+	});
+
+	it("matches nothing for an unknown id", () => {
+		expect(savedSelector("nope")).toEqual(NOTHING);
 	});
 });

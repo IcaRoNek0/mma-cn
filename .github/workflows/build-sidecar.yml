@@ -59,7 +59,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -76,7 +76,7 @@ jobs:
             ~/.cache/ort.pyke.io
             ~\AppData\Local\ort.pyke.io
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: inputs.pre-build-python
         with:
           python-version: '3.11'
@@ -106,7 +106,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} ${{ steps.features.outputs.args }}
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ inputs.binary-name }}-${{ matrix.label }}
           path: |

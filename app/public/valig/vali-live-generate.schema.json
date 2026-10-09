@@ -3,17 +3,22 @@
 	"title": "Vali Live Generate Map Definition",
 	"type": "object",
 	"description": "Configuration for live-generating maps using Google API",
+	"required": ["countries", "locationFilter"],
 	"properties": {
 		"countries": {
 			"type": "object",
-			"description": "Countries with their location count goals (e.g., {\u0022NO\u0022: 1000, \u0022SE\u0022: 2000})",
+			"description": "Countries with their location count goals (e.g., {\"NO\": 1000, \"SE\": 2000})",
 			"minProperties": 1,
 			"additionalProperties": {
 				"type": "integer",
 				"format": "int32"
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"distribution": {
+			"description": "Location distribution settings (minimum distance, overshoot factor)",
 			"oneOf": [
 				{
 					"type": "null"
@@ -25,7 +30,8 @@
 		},
 		"locationTags": {
 			"type": "array",
-			"description": "Tags to add to generated locations. Numeric tags can be extended with -\u003Cnumber\u003E for bucketing (e.g., Buildings25-5, ClosestCoast-100).",
+			"description": "Tags to add to generated locations. Numeric tags can be extended with -<number> for bucketing (e.g., Buildings25-5, ClosestCoast-100).",
+			"uniqueItems": true,
 			"items": {
 				"type": "string",
 				"oneOf": [
@@ -73,7 +79,7 @@
 					},
 					{
 						"type": "string",
-						"pattern": "^(ArrowCount|Buildings10|Buildings100|Buildings200|Buildings25|ClosestCoast|ClosestLake|ClosestRailway|ClosestRiver|DescriptionLength|DrivingDirectionAngle|Elevation|Heading|PanoramaCount|ResolutionHeight|Roads0|Roads10|Roads100|Roads200|Roads25|Roads50|Tunnels10|Tunnels200)-\\d\u002B$"
+						"pattern": "^(Buildings10|Buildings100|Buildings200|Buildings25|ClosestCoast|ClosestLake|ClosestRailway|ClosestRiver|DrivingDirectionAngle|Elevation|Heading|HighwayTypeCount|Month|ResolutionHeight|Roads0|Roads10|Roads100|Roads200|Roads25|Roads50|Tunnels10|Tunnels200|Year)-\\d+$"
 					}
 				]
 			}
@@ -91,7 +97,7 @@
 		"headingMode": {
 			"type": ["null", "string"],
 			"description": "How to set the camera heading/direction",
-			"enum": ["Random", "DrivingDirection"]
+			"enum": ["DrivingDirection", "Random"]
 		},
 		"headingDelta": {
 			"type": ["integer", "null"],
@@ -132,9 +138,9 @@
 			"enum": ["Random"]
 		},
 		"zoom": {
-			"type": ["null", "number"],
+			"type": ["integer", "null"],
 			"description": "Fixed zoom level",
-			"format": "double",
+			"format": "int32",
 			"maximum": 3.36,
 			"minimum": 0.435
 		},
@@ -156,6 +162,7 @@
 			"type": "integer",
 			"description": "Geohash precision for subdividing areas (0-9, higher = smaller boxes)",
 			"format": "int32",
+			"default": 4,
 			"maximum": 9.0,
 			"minimum": 0.0
 		},
@@ -163,6 +170,7 @@
 			"type": "integer",
 			"description": "Number of parallel API requests to Google",
 			"format": "int32",
+			"default": 100,
 			"maximum": 200.0,
 			"minimum": 1.0
 		},
@@ -170,11 +178,13 @@
 			"type": "integer",
 			"description": "Search radius in meters for finding locations",
 			"format": "int32",
-			"minimum": 5.0
+			"default": 100,
+			"minimum": 1.0
 		},
 		"locationFilter": {
 			"type": "string",
-			"description": "Filter expression for locations (e.g., \u0027ArrowCount gte 2 and Year gt 2015\u0027)"
+			"description": "Filter expression for locations (e.g., 'ArrowCount gte 2 and Year gt 2015')",
+			"examples": ["ArrowCount gte 2 and Year gt 2015", "Year gte 2020", "*"]
 		},
 		"panoSelectionStrategy": {
 			"type": ["null", "string"],
@@ -205,23 +215,26 @@
 		"geoJsonFiles": {
 			"type": "array",
 			"description": "Paths to GeoJSON files defining areas to search within",
+			"uniqueItems": true,
 			"items": {
 				"type": "string"
 			}
 		},
 		"rejectLocationsWithoutDescription": {
 			"type": "boolean",
-			"description": "Reject locations without a description field (filters out some unofficial coverage)"
+			"description": "Reject locations without a description field (filters out some unofficial coverage)",
+			"default": true
 		},
 		"acceptedCoverage": {
 			"type": ["null", "string"],
 			"description": "Type of coverage to accept from Google Street View",
-			"enum": ["Official", "Unofficial", "All"]
+			"enum": ["official", "unofficial", "all"]
 		},
 		"batchSize": {
 			"type": "integer",
 			"description": "Number of locations to process in each batch",
 			"format": "int32",
+			"default": 10000,
 			"minimum": 100.0
 		},
 		"checkLinkedPanoramas": {
@@ -237,6 +250,7 @@
 	"definitions": {
 		"LocationDistribution": {
 			"type": "object",
+			"required": ["minMinDistance"],
 			"properties": {
 				"minMinDistance": {
 					"type": "integer",
@@ -246,8 +260,9 @@
 				},
 				"overshootFactor": {
 					"type": "integer",
-					"description": "Multiplier for initial location count (e.g., 2 means generate 2x locations then filter down). Higher = better coverage but slower.",
+					"description": "Multiplier for initial location count (e.g., 2 = generate 2x then filter down). Higher = better distribution but slower.",
 					"format": "int32",
+					"default": 1,
 					"maximum": 10.0,
 					"minimum": 1.0
 				}
@@ -259,13 +274,12 @@
 			"if": {
 				"properties": {
 					"headingMode": {
-						"const": "Random"
+						"enum": ["Random"]
 					}
 				},
 				"required": ["headingMode"]
 			},
 			"then": {
-				"required": [],
 				"properties": {
 					"headingDelta": {
 						"not": {}
@@ -276,32 +290,13 @@
 		{
 			"if": {
 				"properties": {
-					"zoomMode": {
-						"const": "Random"
-					}
-				},
-				"required": ["zoomMode"]
-			},
-			"then": {
-				"required": [],
-				"properties": {
-					"zoom": {
-						"not": {}
-					}
-				}
-			}
-		},
-		{
-			"if": {
-				"properties": {
 					"pitchMode": {
-						"const": "Random"
+						"enum": ["Random"]
 					}
 				},
 				"required": ["pitchMode"]
 			},
 			"then": {
-				"required": [],
 				"properties": {
 					"pitch": {
 						"not": {}
@@ -311,21 +306,16 @@
 		},
 		{
 			"if": {
-				"not": {
-					"properties": {
-						"zoomMode": {
-							"const": "Random"
-						}
-					},
-					"required": ["zoomMode"]
-				}
+				"properties": {
+					"zoomMode": {
+						"enum": ["Random"]
+					}
+				},
+				"required": ["zoomMode"]
 			},
 			"then": {
 				"properties": {
-					"randomZoomMin": {
-						"not": {}
-					},
-					"randomZoomMax": {
+					"zoom": {
 						"not": {}
 					}
 				}
@@ -336,7 +326,7 @@
 				"not": {
 					"properties": {
 						"pitchMode": {
-							"const": "Random"
+							"enum": ["Random"]
 						}
 					},
 					"required": ["pitchMode"]
@@ -348,6 +338,28 @@
 						"not": {}
 					},
 					"randomPitchMax": {
+						"not": {}
+					}
+				}
+			}
+		},
+		{
+			"if": {
+				"not": {
+					"properties": {
+						"zoomMode": {
+							"enum": ["Random"]
+						}
+					},
+					"required": ["zoomMode"]
+				}
+			},
+			"then": {
+				"properties": {
+					"randomZoomMin": {
+						"not": {}
+					},
+					"randomZoomMax": {
 						"not": {}
 					}
 				}

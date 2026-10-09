@@ -1,23 +1,15 @@
-/**
- * Plugin registration scope — generalized ownership + teardown.
- *
- * The registry runs each `plugin.activate()` inside `runAsPlugin(id, ...)`, which
- * sets the current owner. Any host registration made during that window calls
- * `trackDisposable(undo)` to enroll its teardown under that owner. `disposePlugin(id)`
- * then reverses every registration uniformly — so deactivating a plugin reclaims
- * everything it registered, without per-surface bookkeeping.
- *
- * Caveat: ownership is captured synchronously. Registrations made after an `await`
- * or in a later callback (outside the activate window) are not attributed.
- */
+// Plugin registration scope: ownership tracking and teardown.
+// Ownership is captured synchronously during `runAsPlugin`. Registrations made
+// after an `await` or in a later callback are not attributed.
 import { log } from "@/lib/util/log";
 
 type Disposable = () => void;
 
 let currentOwner: string | null = null;
 const stores = new Map<string, Disposable[]>();
+const baseDirs = new Map<string, string>();
 
-/** Run `fn` attributed to plugin `id`; host registrations during it are tracked for teardown. */
+/** Run `fn` as plugin `id`. Registrations made during `fn` are tracked for teardown. */
 export function runAsPlugin<T>(id: string, fn: () => T): T {
 	const prev = currentOwner;
 	currentOwner = id;
@@ -28,7 +20,7 @@ export function runAsPlugin<T>(id: string, fn: () => T): T {
 	}
 }
 
-/** Enroll a teardown callback under the currently-activating plugin. No-op outside activation. */
+/** Enroll a teardown callback under the current plugin. No-op outside activation. */
 export function trackDisposable(dispose: Disposable): void {
 	if (!currentOwner) return;
 	let store = stores.get(currentOwner);
@@ -39,14 +31,28 @@ export function trackDisposable(dispose: Disposable): void {
 	store.push(dispose);
 }
 
-/** Run and clear every teardown a plugin registered, in reverse order. */
+/** Set the base directory for a plugin's assets on disk. */
+export function setPluginBaseDir(id: string, dir: string): void {
+	baseDirs.set(id, dir);
+}
+
+/** Resolve a relative path against the current plugin's base directory. Absolute
+ *  paths and `res://` URLs pass through unchanged. */
+export function resolvePluginPath(path: string): string {
+	if (!currentOwner || path.startsWith("res://") || path.startsWith("/") || /^[a-zA-Z]:/.test(path))
+		return path;
+	const dir = baseDirs.get(currentOwner);
+	return dir ? `${dir}/${path}` : path;
+}
+
+/** Run all teardowns a plugin registered (in reverse order) and clear them. */
 export function disposePlugin(id: string): void {
 	const store = stores.get(id);
 	if (!store) return;
 	stores.delete(id);
-	for (let i = store.length - 1; i >= 0; i--) {
+	for (const dispose of store.toReversed()) {
 		try {
-			store[i]();
+			dispose();
 		} catch (e) {
 			log.error(`[plugin] teardown failed for "${id}":`, e);
 		}

@@ -7,7 +7,7 @@
 .gradient-sidebar__preset {
 	background: none;
 	border: 2px solid transparent;
-	border-radius: 4px;
+	border-radius: var(--radius-1);
 	padding: 2px;
 	cursor: pointer;
 }
@@ -35,23 +35,8 @@
 	display: flex;
 	justify-content: space-between;
 	font-size: 10px;
-	opacity: 0.6;
+	color: var(--text-2);
 	padding: 0 2px;
-}
-
-.gradient-sidebar__check {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	font-size: 12px;
-	cursor: pointer;
-	user-select: none;
-	margin-top: 4px;
-}
-
-.gradient-sidebar__check input[type="checkbox"] {
-	margin: 0;
-	cursor: pointer;
 }
 
 .gradient-sidebar__apply-row {
@@ -63,5 +48,12 @@
 
 .gradient-sidebar__result {
 	font-size: 12px;
-	opacity: 0.7;
+	color: var(--text-2);
+}
+
+.gradient-sidebar__skipped {
+	font-size: 12px;
+	line-height: 1.4;
+	margin-top: 6px;
+	color: var(--text-2);
 }

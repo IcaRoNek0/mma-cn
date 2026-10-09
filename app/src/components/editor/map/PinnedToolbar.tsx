@@ -1,21 +1,24 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import clsx from "clsx";
 import { useEventValue } from "@/lib/events";
 import { useSetting } from "@/store/settings";
 import {
 	getCommand,
+	runCommand,
 	movePinnedCommand,
 	removePinnedAt,
 	insertSeparator,
 	reorderPinned,
 } from "@/store/commands";
-import { Icon } from "@/components/primitives/Icon";
 import { Button } from "@/components/primitives/Button";
 import { useDialog } from "@/store/dialogBus";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { ContextMenu } from "@base-ui-components/react/context-menu";
 import { toggleInSet } from "@/lib/util/util";
+import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import { t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
+import { MenuPopup, MenuItem, MenuSeparator } from "@/components/primitives/Menu";
 
 export interface PanelDef {
 	render: (onClose: () => void) => ReactNode;
@@ -32,6 +35,22 @@ export function PinnedToolbar({
 	const [openPanels, setOpenPanels] = useState<Set<string>>(new Set());
 	const [dragIdx, setDragIdx] = useState<number | null>(null);
 	const [dropIdx, setDropIdx] = useState<number | null>(null);
+	const dropIdxRef = useRef<number | null>(null);
+	const setDrop = (i: number | null) => {
+		dropIdxRef.current = i;
+		setDropIdx(i);
+	};
+	const handleDragStart = useItemDrag((_e, i: number) => ({
+		onStart: () => setDragIdx(i),
+		onDrop: () => {
+			const to = dropIdxRef.current;
+			if (to !== null && to !== i) reorderPinned(i, to);
+		},
+		onEnd: () => {
+			setDragIdx(null);
+			setDrop(null);
+		},
+	}));
 	useEventValue("store:changed", () =>
 		pinned.map((id) => (getCommand(id)?.enabled?.() === false ? "0" : "1")).join(""),
 	);
@@ -58,37 +77,8 @@ export function PinnedToolbar({
 	if (pinned.length === 0 && !right) return null;
 	const togglePanel = (id: string) => setOpenPanels((prev) => toggleInSet(prev, id));
 
-	const handleDragStart = (i: number, e: React.MouseEvent) => {
-		if (e.button !== 0) return;
-		e.preventDefault();
-		const startX = e.clientX;
-		let started = false;
-
-		const onMove = (me: MouseEvent) => {
-			if (!started && Math.abs(me.clientX - startX) > 4) {
-				started = true;
-				setDragIdx(i);
-			}
-		};
-		const onUp = () => {
-			window.removeEventListener("mousemove", onMove);
-			window.removeEventListener("mouseup", onUp);
-			if (started) {
-				setDragIdx((di) => {
-					setDropIdx((dri) => {
-						if (di !== null && dri !== null && di !== dri) reorderPinned(di, dri);
-						return null;
-					});
-					return null;
-				});
-			}
-		};
-		window.addEventListener("mousemove", onMove);
-		window.addEventListener("mouseup", onUp);
-	};
-
 	const handleDragOver = (i: number) => {
-		if (dragIdx !== null && i !== dragIdx) setDropIdx(i);
+		if (dragIdx !== null && i !== dragIdx) setDrop(i);
 	};
 
 	return (
@@ -103,23 +93,16 @@ export function PinnedToolbar({
 										<span
 											className={`selection-manager__bar-sep${dragIdx === i ? " is-dragging" : ""}`}
 											data-drop={dropIdx === i ? "" : undefined}
-											onMouseDown={(e) => handleDragStart(i, e)}
+											onMouseDown={(e) => handleDragStart(e, i)}
 											onMouseMove={() => handleDragOver(i)}
 										/>
 									}
 								/>
-								<ContextMenu.Portal>
-									<ContextMenu.Positioner className="menu-positioner">
-										<ContextMenu.Popup className="context-menu">
-											<ContextMenu.Item
-												className="context-menu__item"
-												onClick={() => removePinnedAt(i)}
-											>
-												{t("Remove separator")}
-											</ContextMenu.Item>
-										</ContextMenu.Popup>
-									</ContextMenu.Positioner>
-								</ContextMenu.Portal>
+								<MenuPopup>
+									<MenuItem tone="destructive" onClick={() => removePinnedAt(i)}>
+										{t("Remove separator")}
+									</MenuItem>
+								</MenuPopup>
 							</ContextMenu.Root>
 						);
 					}
@@ -128,27 +111,26 @@ export function PinnedToolbar({
 					const disabled = command.enabled ? !command.enabled() : false;
 					const hasPanel = id in panels;
 					const isOpen = openPanels.has(id);
-					const handleClick = hasPanel ? () => togglePanel(id) : command.execute;
+					const handleClick = hasPanel ? () => togglePanel(id) : () => runCommand(command);
 					const isFirst = i === 0;
 					const isLast = i === pinned.length - 1;
 
 					const btn = command.icon ? (
-						<button
-							className={clsx("icon-button", {
-								"is-active": isOpen,
+						<IconButton
+							className={clsx({
 								"is-disabled": disabled,
 								"is-dragging": dragIdx === i,
 							})}
-							type="button"
-							aria-label={t(command.label)}
+							icon={command.icon}
+							label={t(command.label)}
+							tooltip={false}
+							active={isOpen}
 							data-qa={id}
 							data-drop={dropIdx === i ? "" : undefined}
 							onClick={disabled ? undefined : handleClick}
-							onMouseDown={(e) => handleDragStart(i, e)}
+							onMouseDown={(e) => handleDragStart(e, i)}
 							onMouseMove={() => handleDragOver(i)}
-						>
-							<Icon path={command.icon} />
-						</button>
+						/>
 					) : (
 						<Button
 							className={clsx({
@@ -158,7 +140,7 @@ export function PinnedToolbar({
 							})}
 							data-drop={dropIdx === i ? "" : undefined}
 							onClick={disabled ? undefined : handleClick}
-							onMouseDown={(e) => handleDragStart(i, e)}
+							onMouseDown={(e) => handleDragStart(e, i)}
 							onMouseMove={() => handleDragOver(i)}
 						>
 							{t(command.label)}
@@ -170,48 +152,25 @@ export function PinnedToolbar({
 							<Tooltip content={t(command.label)} side="bottom">
 								<ContextMenu.Trigger render={btn} />
 							</Tooltip>
-							<ContextMenu.Portal>
-								<ContextMenu.Positioner className="menu-positioner">
-									<ContextMenu.Popup className="context-menu">
-										{!isFirst && (
-											<ContextMenu.Item
-												className="context-menu__item"
-												onClick={() => movePinnedCommand(i, -1)}
-											>
-												{t("Move left")}
-											</ContextMenu.Item>
-										)}
-										{!isLast && (
-											<ContextMenu.Item
-												className="context-menu__item"
-												onClick={() => movePinnedCommand(i, 1)}
-											>
-												{t("Move right")}
-											</ContextMenu.Item>
-										)}
-										<ContextMenu.Separator className="context-menu__separator" />
-										<ContextMenu.Item
-											className="context-menu__item"
-											onClick={() => insertSeparator(i, "before")}
-										>
-											{t("Add separator before")}
-										</ContextMenu.Item>
-										<ContextMenu.Item
-											className="context-menu__item"
-											onClick={() => insertSeparator(i, "after")}
-										>
-											{t("Add separator after")}
-										</ContextMenu.Item>
-										<ContextMenu.Separator className="context-menu__separator" />
-										<ContextMenu.Item
-											className="context-menu__item"
-											onClick={() => removePinnedAt(i)}
-										>
-											{t("Remove from toolbar")}
-										</ContextMenu.Item>
-									</ContextMenu.Popup>
-								</ContextMenu.Positioner>
-							</ContextMenu.Portal>
+							<MenuPopup>
+								{!isFirst && (
+									<MenuItem onClick={() => movePinnedCommand(i, -1)}>{t("Move left")}</MenuItem>
+								)}
+								{!isLast && (
+									<MenuItem onClick={() => movePinnedCommand(i, 1)}>{t("Move right")}</MenuItem>
+								)}
+								<MenuSeparator />
+								<MenuItem onClick={() => insertSeparator(i, "before")}>
+									{t("Add separator before")}
+								</MenuItem>
+								<MenuItem onClick={() => insertSeparator(i, "after")}>
+									{t("Add separator after")}
+								</MenuItem>
+								<MenuSeparator />
+								<MenuItem tone="destructive" onClick={() => removePinnedAt(i)}>
+									{t("Remove from toolbar")}
+								</MenuItem>
+							</MenuPopup>
 						</ContextMenu.Root>
 					);
 				})}

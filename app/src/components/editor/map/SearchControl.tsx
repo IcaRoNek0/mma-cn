@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef } from "react";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
-import { parseMapsUrl, parseCoordinates, type ParsedLocation } from "@/lib/data/importExport";
+import { parseCoordinates } from "@/lib/data/importExport";
+import { cmd } from "@/lib/commands";
+import type { ParsedLocation } from "@/bindings.gen";
 import type { LatLng } from "@/types";
 import { t } from "@/lib/i18n";
 
@@ -30,31 +32,35 @@ export function SearchControl({
 		// and Nominatim may answer them out of order.
 		acRef.current?.abort();
 		const ac = (acRef.current = new AbortController());
-		timerRef.current = setTimeout(async () => {
-			try {
-				const res = await fetch(
-					`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5`,
-					{ headers: { "Accept-Language": "en" }, signal: ac.signal },
-				);
-				if (!res.ok) return;
-				const data = await res.json();
-				setResults(
-					data.map((r: { display_name: string; lat: string; lon: string }) => ({
-						name: r.display_name,
-						lat: parseFloat(r.lat),
-						lng: parseFloat(r.lon),
-					})),
-				);
-			} catch {
-				// ignored
-			}
-		}, 300);
+		timerRef.current = setTimeout(
+			() =>
+				void (async () => {
+					try {
+						const res = await fetch(
+							`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5`,
+							{ headers: { "Accept-Language": "en" }, signal: ac.signal },
+						);
+						if (!res.ok) return;
+						const data = await res.json();
+						setResults(
+							data.map((r: { display_name: string; lat: string; lon: string }) => ({
+								name: r.display_name,
+								lat: parseFloat(r.lat),
+								lng: parseFloat(r.lon),
+							})),
+						);
+					} catch {
+						// A failed lookup shows no results.
+					}
+				})(),
+			300,
+		);
 	}, []);
 
 	// a Maps URL or coordinate resolves to a location, otherwise default geocode
 	const resolveOrSearch = useCallback(
 		async (q: string) => {
-			const parsed = (await parseMapsUrl(q)) ?? parseCoordinates(q);
+			const parsed = (await cmd.parseMapsUrl(q)) ?? parseCoordinates(q);
 			if (parsed) {
 				clearTimeout(timerRef.current);
 				setResults([]);
@@ -73,7 +79,7 @@ export function SearchControl({
 		<SuggestInput
 			containerClassName="map-control search-control"
 			inputClassName="search-control__input"
-			placeholder={t("Search for places…")}
+			placeholder={t("Search for places...")}
 			value={query}
 			onChange={(v) => {
 				setQuery(v);
@@ -98,7 +104,7 @@ export function SearchControl({
 						{context && (
 							<>
 								<br />
-								<span className="search-result__context">{context}</span>
+								<span className="search-result__context truncate">{context}</span>
 							</>
 						)}
 					</>

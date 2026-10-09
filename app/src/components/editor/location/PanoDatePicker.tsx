@@ -1,39 +1,50 @@
-import { memo, useRef, useCallback } from "react";
+import { memo, useCallback } from "react";
 import { useSetting } from "@/store/settings";
 import { dateFmt } from "@/lib/util/format";
-import { type PanoReference } from "@/lib/sv/lookup";
+import { civilToDate } from "@/lib/util/date";
+import type { Pano } from "@/bindings.gen";
 import { useCameraType, type FullCameraType } from "./useCameraType";
-import { usePanoViewer } from "./PanoViewerContext";
+import { usePanoViewer, usePanoDates, viewerPosition } from "./PanoViewerContext";
+import { useMapState } from "@/store/useMapStore";
+import { isFieldEnabled } from "@/lib/data/fieldDefs";
+import { fieldValueLabel, getFieldDef } from "@/lib/data/fieldDefRegistry";
+import { useTimezone } from "@/lib/util/timezone";
 import { NSelect } from "@/components/primitives/NSelect";
 import { getLocale, t } from "@/lib/i18n";
 
-function PanoBadge({ cameraType }: { cameraType: FullCameraType | null }) {
-	switch (cameraType) {
-		case "unofficial":
-			return <span className="pano-option__badge badge badge--unofficial">{t("unofficial")}</span>;
-		case "gen1":
-			return <span className="pano-option__badge badge badge--gen1">{t("Gen1")}</span>;
-		case "gen2":
-			return <span className="pano-option__badge badge badge--gen2">{t("Gen2/3")}</span>;
-		case "gen4":
-			return <span className="pano-option__badge badge badge--gen4">{t("Gen4")}</span>;
-		case "badcam":
-			return <span className="pano-option__badge badge badge--badcam">{t("Badcam")}</span>;
-		case "tripod":
-			return <span className="pano-option__badge badge badge--tripod">{t("Tripod")}</span>;
-		case "trekker":
-			return <span className="pano-option__badge badge badge--rb">{t("Trekker")}</span>;
-		default:
-			return null;
-	}
+/** "Jun 2024" for a pano's civil capture date, "" when there is none. */
+function monthLabel(civil: string | undefined): string {
+	const d = civil ? civilToDate(civil) : null;
+	return d ? dateFmt.format(d) : "";
 }
 
-function PanoOption({ pano }: { pano: PanoReference }) {
-	const showBadges = useSetting("showCameraBadges");
-	const cameraType = useCameraType(pano.pano);
+const BADGE_CLASS: Record<Exclude<FullCameraType, "unofficial">, string> = {
+	gen1: "gen1",
+	gen2: "gen2",
+	gen4: "gen4",
+	badcam: "badcam",
+	tripod: "tripod",
+	trekker: "rb",
+};
+
+function PanoBadge({ cameraType }: { cameraType: FullCameraType | null }) {
+	if (cameraType === null) return null;
+	if (cameraType === "unofficial") {
+		return <span className="pano-option__badge badge badge--unofficial">{t("unofficial")}</span>;
+	}
 	return (
-		<option value={pano.pano} className="pano-option">
-			<span className="pano-option__name">{dateFmt.format(pano.date)}</span>
+		<span className={`pano-option__badge badge badge--${BADGE_CLASS[cameraType]}`}>
+			{fieldValueLabel(getFieldDef("cameraType"), cameraType)}
+		</span>
+	);
+}
+
+function PanoOption({ panoId, date }: Pano["time"][number]) {
+	const showBadges = useSetting("showCameraBadges");
+	const cameraType = useCameraType(panoId);
+	return (
+		<option value={panoId} className="pano-option">
+			<span>{monthLabel(date)}</span>
 			{(cameraType === "unofficial" || showBadges) && <PanoBadge cameraType={cameraType} />}
 		</option>
 	);
@@ -44,15 +55,24 @@ export const PanoDatePicker = memo(function PanoDatePicker({
 }: {
 	onChange: (panoId: string | null) => void;
 }) {
-	const { selectedPanoId, dateState, exactDate, resolvedTz } = usePanoViewer();
-	const { defaultEntry, sorted, isDefault, displayDate, triggerPanoId } = dateState;
-	const prevLabelRef = useRef("");
+	const { draft, currentPano, timeline, enriching } = usePanoViewer();
+	const entries = timeline ?? [];
+	const exactTs = (draft?.extra?.datetime as number | undefined) ?? null;
+	const location = useMapState((s) => s.activeLocation);
+	const enrichFields = useMapState((s) => s.map?.settings.enrichFields ?? null);
+	// An exact date is on its way: the field is on, and what the draft holds is not this pano's yet.
+	const resolvingExact =
+		enriching &&
+		isFieldEnabled(enrichFields, "datetime") &&
+		(exactTs == null || draft?.panoId !== location?.panoId);
+
+	const { defaultEntry, currentEntry, isDefault } = usePanoDates();
+	const displayDate = currentEntry ? civilToDate(currentEntry.date) : null;
 	const displayLabel = displayDate
 		? isDefault
 			? t("Default ({date})", { date: dateFmt.format(displayDate) })
 			: dateFmt.format(displayDate)
-		: prevLabelRef.current;
-	if (displayLabel) prevLabelRef.current = displayLabel;
+		: "";
 
 	const handleValueChange = useCallback(
 		(value: string) => {
@@ -65,11 +85,16 @@ export const PanoDatePicker = memo(function PanoDatePicker({
 	const showBadges = useSetting("showCameraBadges");
 	const exactDateFormat = useSetting("exactDateFormat");
 	const dateTimezone = useSetting("dateTimezone");
-	const triggerCameraType = useCameraType(triggerPanoId);
+	const { lat, lng } = viewerPosition(draft, location);
+	const resolvedTz = useTimezone(lat, lng, dateTimezone === "location");
+	const triggerCameraType = useCameraType(
+		currentEntry?.panoId ?? currentPano?.id ?? null,
+		currentPano,
+	);
 	const tzOption = dateTimezone === "utc" ? "UTC" : (resolvedTz ?? undefined);
-	const exactLabel = exactDate.ts
+	const exactLabel = exactTs
 		? exactDateFormat === "datetime"
-			? new Date(exactDate.ts * 1000).toLocaleString(getLocale(), {
+			? new Date(exactTs * 1000).toLocaleString(getLocale(), {
 					year: "numeric",
 					month: "short",
 					day: "numeric",
@@ -77,7 +102,7 @@ export const PanoDatePicker = memo(function PanoDatePicker({
 					minute: "2-digit",
 					timeZone: tzOption,
 				})
-			: new Date(exactDate.ts * 1000).toLocaleDateString(getLocale(), {
+			: new Date(exactTs * 1000).toLocaleDateString(getLocale(), {
 					year: "numeric",
 					month: "short",
 					day: "numeric",
@@ -85,7 +110,7 @@ export const PanoDatePicker = memo(function PanoDatePicker({
 				})
 		: null;
 
-	if (sorted.length === 0) {
+	if (entries.length === 0) {
 		return (
 			<NSelect className="pano-date-select" disabled>
 				<button type="button" className="pano-date-select__trigger">
@@ -99,7 +124,7 @@ export const PanoDatePicker = memo(function PanoDatePicker({
 		<NSelect
 			className="pano-date-select"
 			data-side="top"
-			value={selectedPanoId ?? "default"}
+			value={isDefault ? "default" : (currentEntry?.panoId ?? "default")}
 			onChange={(e) => {
 				const select = e.currentTarget;
 				handleValueChange(e.target.value);
@@ -108,27 +133,27 @@ export const PanoDatePicker = memo(function PanoDatePicker({
 		>
 			<button type="button" className="pano-date-select__trigger">
 				<span className="pano-value">
-					{exactDate.loading ? displayLabel : (exactLabel ?? displayLabel)}
+					{resolvingExact ? displayLabel : (exactLabel ?? displayLabel)}
 					<span style={{ display: "flex", gap: 4, alignItems: "center" }}>
-						{exactDate.loading && <span className="badge badge--loading">...</span>}
+						{resolvingExact && <span className="badge">...</span>}
 						{(triggerCameraType === "unofficial" || showBadges) && (
 							<PanoBadge cameraType={triggerCameraType} />
 						)}
 					</span>
-					<span className="badge badge--number">{sorted.length}</span>
+					<span className="badge badge--number">{entries.length}</span>
 				</span>
 			</button>
 			<optgroup label={t("Specific Panorama")}>
-				{sorted.map((d) => (
-					<PanoOption key={d.pano} pano={d} />
+				{entries.map((d) => (
+					<PanoOption key={d.panoId} {...d} />
 				))}
 			</optgroup>
 			<optgroup label={t("Default / auto-updating")}>
 				<option value="default" className="pano-option">
-					<span className="pano-option__name">
+					<span>
 						{t("Default")}
-						{(defaultEntry?.date ?? sorted[sorted.length - 1]?.date)
-							? ` (${dateFmt.format((defaultEntry?.date ?? sorted[sorted.length - 1]?.date)!)})`
+						{monthLabel(defaultEntry?.date ?? entries.at(-1)?.date)
+							? ` (${monthLabel(defaultEntry?.date ?? entries.at(-1)?.date)})`
 							: ""}
 					</span>
 				</option>

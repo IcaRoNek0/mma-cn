@@ -7,7 +7,6 @@ import {
 	colorAt,
 	evenStops,
 	gradientCss,
-	gradientIdFromLegacyIndex,
 	hexToRgb,
 	isBuiltinGradient,
 	moveStop,
@@ -21,8 +20,8 @@ import {
 	setStopColor,
 	type GradientStop,
 	type HeatmapGradient,
-	type RGB,
 } from "../../../plugins/heatmap/src/gradients";
+import type { RGB } from "@/lib/util/color";
 
 const blackWhite: GradientStop[] = [
 	{ color: [0, 0, 0], pos: 0 },
@@ -51,20 +50,6 @@ describe("builtin gradients", () => {
 	it("isBuiltinGradient only matches builtins", () => {
 		expect(isBuiltinGradient("classic")).toBe(true);
 		expect(isBuiltinGradient("custom-1")).toBe(false);
-	});
-});
-
-describe("gradientIdFromLegacyIndex", () => {
-	it("maps a stored index to the builtin at that position", () => {
-		BUILTIN_GRADIENTS.forEach((g, i) => {
-			expect(gradientIdFromLegacyIndex(i)).toBe(g.id);
-		});
-	});
-
-	it("falls back to the default for out-of-range or missing indexes", () => {
-		expect(gradientIdFromLegacyIndex(BUILTIN_GRADIENTS.length)).toBe(DEFAULT_GRADIENT_ID);
-		expect(gradientIdFromLegacyIndex(-1)).toBe(DEFAULT_GRADIENT_ID);
-		expect(gradientIdFromLegacyIndex(undefined)).toBe(DEFAULT_GRADIENT_ID);
 	});
 });
 
@@ -163,9 +148,12 @@ describe("sampleColorRange", () => {
 
 describe("gradientCss", () => {
 	it("places each stop at its own position", () => {
-		expect(gradientCss([{ color: [0, 0, 0], pos: 0 }, { color: [255, 0, 0], pos: 0.25 }])).toBe(
-			"linear-gradient(to right, rgb(0,0,0) 0%, rgb(255,0,0) 25%)",
-		);
+		expect(
+			gradientCss([
+				{ color: [0, 0, 0], pos: 0 },
+				{ color: [255, 0, 0], pos: 0.25 },
+			]),
+		).toBe("linear-gradient(to right, rgb(0,0,0) 0%, rgb(255,0,0) 25%)");
 	});
 
 	it("renders a single stop flat and an empty ramp transparent", () => {

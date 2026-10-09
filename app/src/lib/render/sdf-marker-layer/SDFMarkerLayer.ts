@@ -1,6 +1,7 @@
 import { Layer, color, project32, picking } from "@deck.gl/core";
 import { Model, Geometry } from "@luma.gl/engine";
 import { sdfMarkerUniforms, type SDFMarkerProps } from "./sdf-marker-uniforms";
+import { drawIntoGroup } from "@/lib/render/translucentGroup";
 import vs from "./sdf-marker-vertex.glsl";
 import fs from "./sdf-marker-fragment.glsl";
 
@@ -26,8 +27,8 @@ type _SDFMarkerLayerProps<DataT> = {
 	data: LayerDataSource<DataT>;
 	shape?: SDFShape;
 	radiusPixels?: number;
-	strokeWidthPixels?: number;
-	flattenOpacity?: number;
+	/** Draw offscreen into this translucent group instead of straight onto the map. */
+	translucentGroup?: string | null;
 	getPosition?: Accessor<DataT, Position>;
 	getFillColor?: Accessor<DataT, Color>;
 	/** Per-marker visibility, unorm8: 255 draws, 0 hides. Omit for always-visible layers. */
@@ -41,8 +42,7 @@ export type SDFMarkerLayerProps<DataT = unknown> = _SDFMarkerLayerProps<DataT> &
 const defaultProps: DefaultProps<SDFMarkerLayerProps> = {
 	shape: "circle",
 	radiusPixels: { type: "number", min: 0, value: 12 },
-	strokeWidthPixels: { type: "number", min: 0, value: 1.5 },
-	flattenOpacity: { type: "number", min: 0, max: 1, value: 0 },
+	translucentGroup: null,
 	getPosition: { type: "accessor", value: [0, 0] },
 	getFillColor: { type: "accessor", value: [0, 0, 0, 255] },
 	// unorm8, so the "fully visible" constant is 255, matching getFillColor's alpha.
@@ -108,17 +108,20 @@ export default class SDFMarkerLayer<
 		}
 	}
 
-	draw() {
-		const { radiusPixels, strokeWidthPixels, shape, flattenOpacity } = this.props;
+	draw({ shaderModuleProps }: { shaderModuleProps?: { picking?: { isActive?: unknown } } }) {
+		const { radiusPixels, shape, translucentGroup } = this.props;
 		const model = this.state.model!;
 		const sdfProps: SDFMarkerProps = {
 			radiusPixels,
-			strokeWidthPixels,
 			shapeType: SHAPE_TO_INT[shape!] ?? 0,
-			flattenOpacity,
+			strokeWidthPixels: 1,
 		};
 		model.shaderInputs.setProps({ sdfMarker: sdfProps });
-		model.draw(this.context.renderPass);
+		if (translucentGroup && !shaderModuleProps?.picking?.isActive) {
+			drawIntoGroup(this.context, translucentGroup, (pass) => model.draw(pass));
+		} else {
+			model.draw(this.context.renderPass);
+		}
 	}
 
 	protected _getModel() {

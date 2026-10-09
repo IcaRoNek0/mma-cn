@@ -1,17 +1,12 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
-import {
-	LocationFlag,
-	VIRTUAL_FLAGS,
-	createLocation,
-	isImportPreview,
-	isSeenPreview,
-} from "@/types";
+import { memo, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
+import type { Tag } from "@/types";
+import { createLocation, extraPatch, isImportPreview, isSeenPreview, setPinned } from "@/types";
+import { VIRTUAL_FLAGS } from "@/bindings.consts";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { Icon } from "@/components/primitives/Icon";
 import { Button } from "@/components/primitives/Button";
+import { AddTagForm } from "@/components/editor/tags/AddTagForm";
 import { mdiChevronLeft, mdiChevronRight } from "@mdi/js";
-import { storedZoom } from "@/lib/sv/constants";
-import type { Tag } from "@/bindings.gen";
 import {
 	useMapState,
 	updateLocations,
@@ -21,6 +16,7 @@ import {
 	createTags,
 	setActiveLocation,
 	getVisibleTags,
+	getTagCounts,
 } from "@/store/useMapStore";
 import { sortTagsByMode, tagColorFor, appendTagName } from "@/lib/util/util";
 import { TagPill, TagPillButton } from "@/components/primitives/TagPill";
@@ -33,6 +29,7 @@ import {
 	reviewDelete,
 	isAtStart,
 } from "@/lib/review/review";
+
 import {
 	useSettings,
 	useSetting,
@@ -43,13 +40,12 @@ import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { PluginLocationPanels } from "@/plugins/PluginPanels";
 import { relativeTime } from "@/lib/util/format";
-import { toast } from "@/lib/util/toast";
 import { FullscreenMiniMap } from "@/components/editor/location/FullscreenMiniMap";
 import { FullscreenTagBar } from "@/components/editor/location/FullscreenTagBar";
+import { PanoControls } from "./PanoControls";
 import { PsvControls } from "./PsvControls";
-import { seenUpdateGeo } from "@/lib/seen/seen";
-import { useReverseGeocode, type GeoDisplay } from "@/components/editor/location/useReverseGeocode";
-import { usePanoViewer, setPanoAltitude } from "./PanoViewerContext";
+import type { GeoDisplay } from "@/lib/geo/reverseGeocode";
+import { usePanoViewer } from "./PanoViewerContext";
 import {
 	usePanoFullscreen,
 	togglePanoFullscreen,
@@ -59,21 +55,17 @@ import {
 import { FullscreenMiniLocationPreview } from "./FullscreenMiniLocationPreview";
 import { getViewportLockInfo } from "@/lib/sv/viewportLock";
 import { useEvent } from "@/lib/events";
-import {
-	singletonPano,
-	singletonDiv,
-	getPanorama,
-	applyLocationPanorama,
-} from "@/lib/sv/panoSingleton";
+import { usePano } from "@/lib/hooks/usePano";
 import { PanoDatePicker } from "./PanoDatePicker";
+import { usePanoSession } from "./usePanoSession";
+import { useSeenFeed } from "./useSeenFeed";
+import { usePanoDisplay } from "./usePanoDisplay";
+import { usePendingTags } from "./usePendingTags";
+import { usePanoNavigation } from "./usePanoNavigation";
 import { useLocationHotkeys } from "./useLocationHotkeys";
+import { Flag } from "@/components/primitives/Flag";
 import { t } from "@/lib/i18n";
-
-/** Tags are staged by name, not ID, because some tags do not exist yet. */
-function idsToNames(ids: number[]): string[] {
-	const tags = getMapState().tags;
-	return ids.map((id) => tags[id]?.name).filter((n): n is string => n != null);
-}
+import { search } from "@/lib/search";
 
 /** Pending-tag chips + add form + suggestion pills. Memoized and self-subscribed
  *  so pano-switch churn in the parent doesn't re-render every pill. */
@@ -88,7 +80,7 @@ const TagEditor = memo(function TagEditor({
 }) {
 	const [tagInput, setTagInput] = useState("");
 	const visibleTags = useMapState(getVisibleTags);
-	const tagCounts = useMapState((s) => s.tagCounts);
+	const tagCounts = useMapState(() => getTagCounts());
 	const tagSortMode = useSetting("tagSortMode");
 	const suggestionLimit = useSetting("tagSuggestionLimit");
 
@@ -98,20 +90,16 @@ const TagEditor = memo(function TagEditor({
 	);
 	const suggestions = useMemo(() => {
 		const pendingLower = new Set(pendingTags.map((n) => n.toLowerCase()));
-		const available = allTags.filter((t) => !pendingLower.has(t.name.toLowerCase()));
-		const cap = suggestionLimit || available.length;
-		if (tagInput.trim()) {
-			const lower = tagInput.toLowerCase();
-			return available.filter((t) => t.name.toLowerCase().includes(lower)).slice(0, cap);
-		}
-		return available.slice(0, cap);
+		const available = search(allTags, tagInput, (t) => [t.name]).filter(
+			(t) => !pendingLower.has(t.name.toLowerCase()),
+		);
+		return available.slice(0, suggestionLimit || available.length);
 	}, [allTags, pendingTags, tagInput, suggestionLimit]);
 
 	const addPendingTag = (name: string) =>
 		onChangeTags((prev) => appendTagName(prev, name, getVisibleTags()));
 
-	const handleAddTag = (e: React.FormEvent) => {
-		e.preventDefault();
+	const handleAddTag = () => {
 		const name = tagInput.trim();
 		if (!name) return;
 		addPendingTag(name);
@@ -151,18 +139,7 @@ const TagEditor = memo(function TagEditor({
 					/>
 				))}
 				<li>
-					<form className="form-add-tag" onSubmit={handleAddTag}>
-						<button className="button form-add-tag__button" type="submit">
-							+
-						</button>
-						<input
-							className="form-add-tag__input"
-							type="text"
-							placeholder={t("Add a tag…")}
-							value={tagInput}
-							onChange={(e) => setTagInput(e.target.value)}
-						/>
-					</form>
+					<AddTagForm value={tagInput} onChange={setTagInput} onAdd={handleAddTag} />
 				</li>
 			</ul>
 			{suggestions.length > 0 && (
@@ -199,40 +176,17 @@ export function LocationPreview() {
 	const isReviewMode = reviewSession !== null;
 	const panoContainerRef = useRef<HTMLDivElement>(null);
 	const fullscreenContainerRef = useRef<HTMLDivElement>(null);
-	const {
-		currentPano,
-		setCurrentPano,
-		panoDates,
-		setPanoDates,
-		panoReady,
-		setPanoReady,
-		selectedPanoId,
-	} = usePanoViewer();
+	const { draft, defaultPano, edit, settled, geo, enriching } = usePanoViewer();
 	const isFullscreen = usePanoFullscreen();
-	const [pendingTags, setPendingTags] = useState<string[]>(() => idsToNames(location?.tags ?? []));
+	const [pendingTags, setPendingTags] = usePendingTags(location);
 	const visibleTags = useMapState(getVisibleTags);
-	const [panoGeo, setPanoGeo] = useState<GeoDisplay | null>(null);
 	const geocodeProvider = useSetting("geocodeProvider");
-	const geoResult = useReverseGeocode(
-		location?.lat ?? 0,
-		location?.lng ?? 0,
-		panoGeo,
-		location?.extra?.source,
-	);
-	const cancelTweenRef = useRef<(() => void) | null>(null);
-	useEffect(() => {
-		setPendingTags((prev) => {
-			const next = idsToNames(location?.tags ?? []);
-			return prev.length === next.length && prev.every((n, i) => n === next[i]) ? prev : next;
-		});
-		setPanoGeo(null);
-	}, [location?.id]);
-	useEffect(() => {
-		if (geoResult) seenUpdateGeo(geoResult);
-	}, [geoResult]);
 	const appSettings = useSettings();
-
 	const chipMode = appSettings.fullscreenMap && appSettings.showFullscreenMiniLocationPreview;
+	usePanoSession();
+	useSeenFeed();
+	usePanoDisplay(panoContainerRef, chipMode);
+
 	const bottomTrayRef = useRef<HTMLDivElement>(null);
 	// Written straight to the CSS var, not through state: the tray animates its height, so
 	// this fires every frame and a re-render per frame would leave the chrome lagging behind.
@@ -250,135 +204,79 @@ export function LocationPreview() {
 		obs.observe(el);
 		return () => obs.disconnect();
 	}, [isFullscreen, appSettings.showFullscreenTagbar, appSettings.showFullscreenDatePicker]);
+	const pano = usePano();
 	useEvent("viewport-lock:changed");
 	const lockInfo = getViewportLockInfo();
 
-	// Mount/unmount: move the persistent div in/out of the container.
-	// useLayoutEffect so appendChild runs before paint.
-	useLayoutEffect(() => {
-		const container = panoContainerRef.current;
-		if (!container) return;
-		container.appendChild(singletonDiv);
-		getPanorama().resize();
-		return () => {
-			if (container.contains(singletonDiv)) container.removeChild(singletonDiv);
-		};
-	}, [chipMode]);
-
-	useEffect(() => {
-		if (!location) return;
-		let cancelled = false;
-		const panorama = getPanorama();
-		const syncMetadata = () => {
-			if (cancelled) return;
-			const metadata = panorama.getMetadata();
-			const pos = panorama.getPosition();
-			if (!metadata || !pos) return;
-			setCurrentPano({ location: { pano: metadata.panoId, latLng: pos } });
-			setPanoDates(metadata.timeline.map((entry) => ({ pano: entry.panoId, date: entry.date })));
-			setPanoGeo({ address: metadata.address ?? "", countryCode: null });
-			setPanoAltitude(metadata.altitude ?? 0);
-			setPanoReady(true);
-		};
-		const panoListener = panorama.addListener("pano_changed", syncMetadata);
-		setCurrentPano(null);
-		setPanoDates([]);
-		setPanoReady(false);
-		applyLocationPanorama(location)
-			.then(syncMetadata)
-			.catch((error) => {
-				if (!cancelled)
-					toast(error instanceof Error ? error.message : t("Panorama failed to load"), 4000);
-			});
-
-		return () => {
-			cancelled = true;
-			panoListener.remove();
-		};
-	}, [location?.id]);
-
-	// Reads the active location at call time to stay referentially stable
-	// (it is a memo'd PanoDatePicker prop).
-	const handleDateChange = useCallback((panoId: string | null) => {
-		const loc = getMapState().activeLocation;
-		if (!singletonPano || !loc) return;
-		// updateLocation no-ops for staged (virtual) locations at the store level.
-		if (panoId == null) {
-			updateLocations([{ id: loc.id, patch: { flags: loc.flags & ~LocationFlag.LoadAsPanoId } }]);
-			if (loc.panoId) singletonPano.setPano(loc.panoId);
-		} else {
-			updateLocations([{ id: loc.id, patch: { flags: loc.flags | LocationFlag.LoadAsPanoId } }]);
-			singletonPano.setPano(panoId);
-		}
-	}, []);
+	// A chosen date pins the draft to that pano; Default floats it on the pano Google resolves for the position.
+	const handleDateChange = useCallback(
+		(selectedPanoId: string | null) => {
+			edit((d) => setPinned(d, selectedPanoId != null));
+			const target = selectedPanoId ?? defaultPano?.id;
+			if (target) pano.jump(target);
+		},
+		[pano, edit, defaultPano],
+	);
 
 	const handleSave = useCallback(async () => {
-		if (!location || !singletonPano) return;
-		// Staged (virtual) location: updateLocation no-ops, cursorId can't match a
-		// negative id, so this falls through to setActiveLocation(null) = close.
-		const pov = singletonPano.getPov();
-		const zoom = storedZoom(singletonPano.getZoom());
-		const pano = singletonPano.getPano();
-		const pos = singletonPano.getPosition();
+		if (!location || !pano.exists()) return;
 
-		const savedPanoId = selectedPanoId ?? pano ?? location.panoId;
+		// The draft as it stands, never waiting on enrichment; the camera is read live, it moves per frame.
+		const draft = await settled();
+		if (!draft) return;
+		const pov = pano.captureView();
 
 		if (isSeenPreview(location)) {
 			await addLocations([
 				createLocation({
-					lat: pos?.lat() ?? location.lat,
-					lng: pos?.lng() ?? location.lng,
-					heading: pov.heading,
-					pitch: pov.pitch,
-					zoom,
-					panoId: savedPanoId,
+					...draft,
+					...pov,
 					flags: location.flags & ~VIRTUAL_FLAGS, // keep LoadAsPanoId; drop the preview-kind bits
 					tags: (await createTags(pendingTags)).map((t) => t.id),
 				}),
 			]);
-			setActiveLocation(null);
+			void setActiveLocation(null);
 			return;
 		}
 
-		const panoChanged = savedPanoId !== location.panoId;
-		updateLocations([
+		void updateLocations([
 			{
 				id: location.id,
 				patch: {
-					heading: pov.heading,
-					pitch: pov.pitch,
-					zoom: zoom,
-					panoId: savedPanoId,
-					lat: pos?.lat() ?? location.lat,
-					lng: pos?.lng() ?? location.lng,
+					...pov,
+					lat: draft.lat,
+					lng: draft.lng,
+					panoId: draft.panoId,
+					flags: draft.flags,
 					tags: (await createTags(pendingTags)).map((t) => t.id),
-					extra: panoChanged ? {} : location.extra,
+					extra: extraPatch(location.extra, draft.extra),
 				},
 			},
 		]);
+
 		if (isReviewMode && reviewSession?.cursorId === location.id) {
-			reviewNext();
+			void reviewNext();
 		} else {
-			setActiveLocation(null);
+			void setActiveLocation(null);
 		}
-	}, [location, selectedPanoId, isReviewMode, reviewSession, pendingTags]);
+	}, [pano, location, settled, isReviewMode, reviewSession, pendingTags]);
 
 	const handleClose = useCallback(() => {
 		if (exitPanoFullscreen()) return;
 		if (exitFullscreenMap()) return;
 		if (isReviewMode) {
-			reviewNext();
+			void reviewNext();
 		} else {
-			setActiveLocation(null);
+			void setActiveLocation(null);
 		}
 	}, [isReviewMode]);
 
 	const handleDelete = useCallback(() => {
 		if (!location) return;
 		if (isReviewMode && reviewSession?.cursorId === location.id) {
-			reviewDelete();
+			void reviewDelete();
 		} else {
-			removeLocations(new Set([location.id]));
+			void removeLocations(new Set([location.id]));
 		}
 	}, [location, isReviewMode, reviewSession]);
 
@@ -386,10 +284,10 @@ export function LocationPreview() {
 	// stable (it is a memo'd PanoControls prop).
 	const handleReturnToSpawn = useCallback(async () => {
 		const loc = getMapState().activeLocation;
-		if (!loc || !singletonPano) return;
-		await applyLocationPanorama(loc);
-		updateLocations([{ id: loc.id, patch: { flags: loc.flags & ~LocationFlag.LoadAsPanoId } }]);
-	}, []);
+		if (!loc || !pano.exists()) return;
+		if ((await pano.show(loc)).status === "superseded") return;
+		edit((d) => setPinned(d, false));
+	}, [pano, edit]);
 
 	const handleFullscreen = useCallback(() => {
 		if (location) togglePanoFullscreen();
@@ -397,46 +295,7 @@ export function LocationPreview() {
 
 	useHotkey(useBinding("toggleFullscreen"), handleFullscreen);
 
-	useEffect(() => {
-		if (!chipMode) return;
-		const el = panoContainerRef.current;
-		if (!el) return;
-		const obs = new ResizeObserver(() => {
-			if (singletonPano) singletonPano.resize();
-		});
-		obs.observe(el);
-		return () => obs.disconnect();
-	}, [chipMode]);
-
-	useEffect(() => {
-		if (singletonPano) singletonPano.resize();
-	}, [appSettings.previewAspectRatio]);
-
-	useEffect(() => {
-		if (!singletonPano || appSettings.previewAspectRatio !== "free") return;
-		const el = fullscreenContainerRef.current;
-		if (!el) return;
-		let timer: ReturnType<typeof setTimeout>;
-		const obs = new ResizeObserver(() => {
-			clearTimeout(timer);
-			timer = setTimeout(() => {
-				if (singletonPano) singletonPano.resize();
-			}, 150);
-		});
-		obs.observe(el);
-		return () => {
-			obs.disconnect();
-			clearTimeout(timer);
-		};
-	}, [singletonPano, appSettings.previewAspectRatio]);
-
 	useLocationHotkeys({
-		location,
-		isReviewMode,
-		panoDates,
-		selectedPanoId,
-		currentPano,
-		cancelTweenRef,
 		pendingTags,
 		setPendingTags,
 		fullscreenContainerRef,
@@ -447,6 +306,8 @@ export function LocationPreview() {
 		handleReturnToSpawn,
 		handleDateChange,
 	});
+
+	usePanoNavigation(appSettings);
 
 	if (!location || !map) return null;
 
@@ -466,6 +327,7 @@ export function LocationPreview() {
 			<ReviewBar />
 			<section
 				className={`location-preview${appSettings.previewAspectRatio === "free" ? " free-resize" : ""}`}
+				data-enriching={enriching || undefined}
 			>
 				<div
 					className={`location-preview__panorama${isFullscreen ? " is-fullscreen" : ""}${appSettings.hidePanoUI ? " hide-pano-ui" : ""}`}
@@ -483,14 +345,26 @@ export function LocationPreview() {
 						{appSettings.defaultMovementMode === "nmpz" && (
 							<div style={{ position: "absolute", inset: 0, zIndex: 1 }} />
 						)}
-						{panoReady && singletonPano && (
-							<PsvControls
-								panorama={singletonPano}
-								isFullscreen={isFullscreen}
-								onFullscreen={handleFullscreen}
-								onReturnToSpawn={handleReturnToSpawn}
-							/>
-						)}
+						{draft &&
+							pano.exists() &&
+							(pano.psv() ? (
+								<PsvControls
+									panorama={pano.psv()!}
+									isFullscreen={isFullscreen}
+									onFullscreen={handleFullscreen}
+									onReturnToSpawn={() => {
+										void handleReturnToSpawn();
+									}}
+								/>
+							) : (
+								<PanoControls
+									isFullscreen={isFullscreen}
+									onFullscreen={handleFullscreen}
+									onReturnToSpawn={() => {
+										void handleReturnToSpawn();
+									}}
+								/>
+							))}
 						{lockInfo && (
 							<div className="viewport-lock-badge">
 								{t("VIEWPORT LOCK")} h{" "}
@@ -504,12 +378,11 @@ export function LocationPreview() {
 					{isFullscreen && (
 						<div className="fullscreen-topbar">
 							{appSettings.showFullscreenReviewBar && <ReviewBar />}
-							{appSettings.showFullscreenGeocode &&
-								(geoResult?.countryCode || geoResult?.address) && (
-									<div className="fullscreen-geocode">
-										<GeoSummary geo={geoResult} provider={geocodeProvider} />
-									</div>
-								)}
+							{appSettings.showFullscreenGeocode && (geo?.countryCode || geo?.address) && (
+								<div className="fullscreen-geocode">
+									<GeoSummary geo={geo} provider={geocodeProvider} />
+								</div>
+							)}
 						</div>
 					)}
 					{isFullscreen && (
@@ -531,8 +404,8 @@ export function LocationPreview() {
 				</div>
 				<div className="location-preview__meta">
 					<span className="location-preview__description">
-						<GeoSummary geo={geoResult} provider={geocodeProvider} />
-						{(geoResult?.address || geoResult?.countryCode) && (
+						<GeoSummary geo={geo} provider={geocodeProvider} />
+						{(geo?.address || geo?.countryCode) && (
 							<span className="location-preview__timestamp-sep"> · </span>
 						)}
 						<span className="location-preview__timestamps">
@@ -549,14 +422,14 @@ export function LocationPreview() {
 						<PanoDatePicker onChange={handleDateChange} />
 					</div>
 					<div className="location-preview__actions">
-						<Button variant="primary" onClick={handleSave} data-qa="location-save">
+						<Button variant="primary" onClick={() => void handleSave()} data-qa="location-save">
 							{isSeenPreview(location) ? t("Add to map") : t("Save")}
 						</Button>
 						{isReviewMode ? (
 							<div style={{ display: "flex", justifyContent: "space-around" }}>
 								<Tooltip content={t("Go to previous location (Control+Left)")}>
 									<Button
-										onClick={() => reviewPrev()}
+										onClick={() => void reviewPrev()}
 										disabled={reviewSession ? isAtStart(reviewSession) : true}
 										aria-label={t("Go to previous location (Control+Left)")}
 										data-qa="review-prev"
@@ -604,13 +477,7 @@ function GeoSummary({ geo, provider }: { geo: GeoDisplay | null; provider: Geoco
 			{geo.countryCode && (
 				<Tooltip content={t(GEOCODE_PROVIDER_LABELS[provider])}>
 					<span>
-						<img
-							height={15}
-							width={20}
-							src={`/flags/${geo.countryCode.toUpperCase()}.svg`}
-							alt={geo.countryCode}
-							style={{ borderRadius: "2px", verticalAlign: "middle" }}
-						/>
+						<Flag code={geo.countryCode} />
 					</span>
 				</Tooltip>
 			)}

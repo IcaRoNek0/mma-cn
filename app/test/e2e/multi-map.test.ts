@@ -78,7 +78,7 @@ describe("Multi-map isolation", () => {
 
 		await openMap(mapBId);
 		const hasTags = await withApi(async (api) => {
-			const tagNames = Object.values(api.getMapState().tags).map((t: any) => t.name);
+			const tagNames = Object.values(api.getTags()).map((t: any) => t.name);
 			return tagNames.includes("MapA-Only");
 		});
 		expect(hasTags).toBe(false);
@@ -151,18 +151,18 @@ describe("Multi-map metadata isolation", () => {
 
 	it("each map retains its own description", async () => {
 		await openMap(map1Id);
-		const desc1 = await withApi(async (api) => api.getMapState().map!.meta.description);
+		const desc1 = await withApi(async (api) => api.getMapState().map!.description);
 		expect(desc1).toBe("Description 1");
 		await closeMap();
 
 		await openMap(map2Id);
-		const desc2 = await withApi(async (api) => api.getMapState().map!.meta.description);
+		const desc2 = await withApi(async (api) => api.getMapState().map!.description);
 		expect(desc2).toBe("Description 2");
 		await closeMap();
 	});
 
 	it("renaming one map does not affect the other", async () => {
-		await withApi(async (api, id) => api.renameMap(id, "Renamed Map 1"), map1Id);
+		await withApi(async (api, id) => api.patchMapMeta(id, { name: "Renamed Map 1" }), map1Id);
 
 		const maps = await withApi(async (api) => api.cmd.storeListMaps());
 		const m1 = maps.find((m: any) => m.id === map1Id);

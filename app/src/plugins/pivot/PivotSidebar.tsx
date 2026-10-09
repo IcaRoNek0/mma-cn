@@ -1,19 +1,38 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import type { Selection, SelectionProps } from "@/bindings.gen";
+import { createFieldDef } from "@/types";
+import type { PartitionBucket, Selection, Selector } from "@/bindings.gen";
 import { NSelect } from "@/components/primitives/NSelect";
-import { Checkbox } from "@/components/primitives/Checkbox";
+import { SwitchRow } from "@/components/primitives/SwitchRow";
 import { useDebouncedCallback } from "@/lib/hooks/useDebouncedCallback";
-import { selectionDisplayName, buildSelection } from "@/store/selections";
-import { savedToSelectionProps, describeRule, type SavedSelection } from "@/store/savedSelections";
-import { Sidebar, Field, EmptyState, SegmentedControl } from "@/components/primitives/Sidebar";
-import type { ExtraFieldDef } from "@/bindings.gen";
-import { getFieldDef } from "@/lib/data/fieldDefRegistry";
-import { fieldValue } from "@/lib/data/fieldOps";
-import { useExtraFieldKeys } from "@/components/editor/map/FilterBuilder";
-import { useMapState } from "@/store/useMapStore";
-import { binNumeric, compareNatural } from "@/lib/util/util";
-import { usePluginState } from "@/plugins/registry";
 import {
+	all,
+	buildSelection,
+	selectionDisplayName,
+	tagSelector,
+	toggleSelection,
+	untaggedSelector,
+} from "@/store/selections";
+import {
+	applySelectionUpdate,
+	getActiveSelections,
+	getMapState,
+	getTags,
+	query,
+} from "@/store/useMapStore";
+import { subscribe } from "@/lib/events";
+import { Sidebar, Field, SegmentedControl } from "@/components/primitives/Sidebar";
+import { EmptyState } from "@/components/primitives/EmptyState";
+import type { FieldDef } from "@/bindings.gen";
+import { getFieldDef, getKnownFieldKeys } from "@/lib/data/fieldDefRegistry";
+import { subscribeMany, LOCATION_DATA_EVENTS } from "@/lib/events";
+import { useExtraFieldKeys } from "@/components/editor/map/FilterBuilder";
+import { compareNatural } from "@/lib/util/util";
+import { usePluginState } from "@/plugins/pluginStorage";
+import { SelectorPicker } from "@/components/primitives/SelectorPicker";
+import { useSelectorPick } from "@/store/selectorPick";
+import {
+	buildPivot,
+	crossCounts,
 	stripNa,
 	pivotCellValue,
 	formatPct,
@@ -22,194 +41,206 @@ import {
 	BUCKET_MIN_DISTINCT,
 	BUCKET_FORCE_DISTINCT,
 	DEFAULT_BUCKETS,
+	type PivotMember,
 	type PivotRow,
 	type PivotData,
+	type ResolvedAxis,
+	type Tally,
 	type ValueMode,
 } from "./pivotMath";
-import type { LocationStore } from "@/api";
 import "./pivot.css";
 
-let locStore: LocationStore | null = null;
-
-type RowSource = "all" | "active" | string; // "all", "active", or saved selection id
+type Axis =
+	| { kind: "all" }
+	| { kind: "active" }
+	| { kind: "field"; key: string; buckets: number | null };
 
 const TAGS_FIELD_KEY = "__tags__";
+const FIELD_PREFIX = "field:";
 
 import type { FieldEntry } from "@/components/editor/map/FilterBuilder";
 import { msg, t } from "@/lib/i18n";
+import { Swatch } from "@/components/primitives/Swatch";
 
-async function computePivot(
-	rowSource: RowSource,
-	fieldKey: string,
-	fieldDef: ExtraFieldDef | undefined,
-	bucketCount: number | null,
-): Promise<PivotData | null> {
-	const map = MMA.getMapState().map;
-	if (!map) return null;
-
-	if (!locStore) locStore = await MMA.createLocationStore();
-	const allLocs = [...locStore.locations.values()];
-
-	// Determine rows + resolve ID sets
-	let rowDefs: { label: string; color: [number, number, number] }[];
-	let idSets: Set<number>[];
-
-	if (rowSource === "all") {
-		const allIds = new Set(allLocs.map((l) => l.id));
-		rowDefs = [{ label: t("All locations"), color: [140, 140, 140] }];
-		idSets = [allIds];
-	} else if (rowSource === "active") {
-		const sels = MMA.getActiveSelections();
-		if (sels.length === 0) return null;
-		rowDefs = sels.map((s: Selection) => ({
-			label: selectionDisplayName(s),
-			color: s.color,
-		}));
-		idSets = await Promise.all(
-			sels.map((s: Selection) =>
-				MMA.cmd.storeResolveSelection(s.props).then((ids: number[]) => new Set(ids)),
-			),
-		);
-	} else {
-		const saved: SavedSelection[] = MMA.getSettings().savedSelections;
-		const entry = saved.find((s: SavedSelection) => s.id === rowSource);
-		if (!entry || entry.items.length === 0) return null;
-		const resolvedRows: {
-			label: string;
-			color: [number, number, number];
-			props: SelectionProps;
-		}[] = [];
-		for (const item of entry.items) {
-			const props = savedToSelectionProps(item.props);
-			if (!props) continue;
-			resolvedRows.push({ label: describeRule(item.props), color: item.color, props });
-		}
-		if (resolvedRows.length === 0) return null;
-		rowDefs = resolvedRows.map((r) => ({ label: r.label, color: r.color }));
-		idSets = await Promise.all(
-			resolvedRows.map((r) =>
-				MMA.cmd.storeResolveSelection(r.props).then((ids: number[]) => new Set(ids)),
-			),
-		);
-	}
-
-	const isTags = fieldKey === TAGS_FIELD_KEY;
-	const tagMap = MMA.getMapState().tags;
-	const isNumeric = !isTags && (fieldDef?.type === "number" || fieldDef?.type === "date");
-
-	// Numeric fields explode into one column per distinct value; bucket them into
-	// a fixed histogram of ranges. resolveBucketCount arbitrates between the
-	// user's choice and the field's cardinality.
-	const numericVals = isNumeric
-		? allLocs.flatMap((loc) => {
-				const v = fieldValue(loc, fieldKey);
-				const n = v == null ? NaN : Number(v);
-				return Number.isFinite(n) ? [n] : [];
-			})
-		: null;
-	const numericDistinct = numericVals ? new Set(numericVals).size : undefined;
-	const effectiveBuckets =
-		numericVals && numericDistinct != null
-			? resolveBucketCount(numericDistinct, bucketCount)
-			: null;
-	const buckets =
-		numericVals && effectiveBuckets
-			? binNumeric(numericVals, { by: "count", n: effectiveBuckets })
-			: null;
-
-	// Build field index: locId -> field value(s). Tags are multi-valued.
-	const fieldIndex = new Map<number, string[]>();
-	for (const loc of allLocs) {
-		if (isTags) {
-			if (loc.tags.length > 0) {
-				fieldIndex.set(
-					loc.id,
-					loc.tags.map((t) => String(t)),
-				);
-			}
-		} else {
-			const val = fieldValue(loc, fieldKey);
-			if (val == null) continue;
-			if (buckets) {
-				const n = Number(val);
-				if (Number.isFinite(n)) fieldIndex.set(loc.id, [buckets.labels[buckets.bucketIndex(n)]]);
-			} else {
-				fieldIndex.set(loc.id, [String(val)]);
-			}
-		}
-	}
-
-	// Discover columns
-	let columns: string[];
-	if (buckets) {
-		columns = [...buckets.labels];
-	} else if (!isTags && fieldDef?.values && fieldDef.values.length > 0) {
-		columns = [...fieldDef.values];
-	} else {
-		const seen = new Set<string>();
-		for (const idSet of idSets) {
-			for (const id of idSet) {
-				const vals = fieldIndex.get(id);
-				if (vals) for (const v of vals) seen.add(v);
-			}
-		}
-		columns = [...seen].sort(compareNatural);
-	}
-
-	let hasNa = false;
-
-	const pivotRows: PivotRow[] = rowDefs.map((row, i) => {
-		const counts = new Map<string, number>();
-		let total = 0;
-		let naCount = 0;
-		for (const id of idSets[i]) {
-			const vals = fieldIndex.get(id);
-			if (vals) {
-				for (const v of vals) {
-					counts.set(v, (counts.get(v) ?? 0) + 1);
-				}
-				total++;
-			} else {
-				naCount++;
-			}
-		}
-		if (naCount > 0) {
-			counts.set(NA_KEY, naCount);
-			hasNa = true;
-			total += naCount;
-		}
-		return { label: row.label, color: row.color, counts, total };
-	});
-
-	if (hasNa) columns.push(NA_KEY);
-
-	const columnTotals = columns.map((col) =>
-		pivotRows.reduce((sum, r) => sum + (r.counts.get(col) ?? 0), 0),
-	);
-
-	const extraLabels = fieldDef?.labels ?? {};
-	const columnLabels = columns.map((c) => {
-		if (c === NA_KEY) return t("N/A");
-		if (isTags) return tagMap[Number(c)]?.name ?? t("Tag {id}", { id: c });
-		return extraLabels[c] ?? c;
-	});
-
-	// Selection props per column (same shapes gradient emits): tag columns map to Tag
-	// selections, buckets to `between` filters, plain values to `eq` filters.
-	const columnProps: (SelectionProps | null)[] = columns.map((col, i) => {
-		if (col === NA_KEY) return null;
-		if (isTags) return { type: "Tag", tagId: Number(col) };
-		if (buckets) {
-			const [lo, hi] = buckets.bounds[i];
-			return { type: "Filter", field: fieldKey, op: "between", value: lo, value2: hi };
-		}
-		return { type: "Filter", field: fieldKey, op: "eq", value: col, value2: null };
-	});
-
-	return { rows: pivotRows, columns, columnLabels, columnTotals, numericDistinct, columnProps };
+async function selectionAxis(kind: "all" | "active", scope: Selector): Promise<ResolvedAxis> {
+	const members: PivotMember[] =
+		kind === "all"
+			? [
+					{
+						key: "__all__",
+						label: t("All locations"),
+						color: [140, 140, 140],
+						selector: scope,
+						pick: null,
+					},
+				]
+			: getActiveSelections().map((s: Selection) => ({
+					key: s.key,
+					label: selectionDisplayName(s),
+					color: s.color,
+					selector: all(scope, s.selector),
+					pick: null,
+				}));
+	const sizes = await Promise.all(members.map((m) => query(m.selector).count()));
+	return { members, sizes, tally: null, binned: false };
 }
 
-const TAGS_FIELD: FieldEntry = { key: TAGS_FIELD_KEY, label: msg("Tags"), def: { type: "enum" } };
+/** Tag histogram inside a selector: one tag column read, tallied over that selector alone. */
+async function tagCounts(selector: Selector): Promise<Tally> {
+	const [column] = await query(selector).columns(["tags"]);
+	const counts = new Map<string, number>();
+	let withValue = 0;
+	for (const cell of column) {
+		const ids = cell as number[] | null;
+		if (!ids || ids.length === 0) continue;
+		withValue++;
+		for (const tid of ids) {
+			const key = String(tid);
+			counts.set(key, (counts.get(key) ?? 0) + 1);
+		}
+	}
+	return { counts, withValue };
+}
+
+/** Counts over a shared set of numeric bins, which only a scope-wide partition can pin
+ *  down (bin edges follow the scoped data's range). */
+function binCounts(ids: number[], binOf: Map<number, string>): Tally {
+	const counts = new Map<string, number>();
+	let withValue = 0;
+	for (const id of ids) {
+		const key = binOf.get(id);
+		if (key == null) continue;
+		withValue++;
+		counts.set(key, (counts.get(key) ?? 0) + 1);
+	}
+	return { counts, withValue };
+}
+
+async function fieldAxis(
+	fieldKey: string,
+	fieldDef: FieldDef | undefined,
+	bucketCount: number | null,
+	scope: Selector,
+): Promise<ResolvedAxis> {
+	const isTags = fieldKey === TAGS_FIELD_KEY;
+	const isNumeric = !isTags && (fieldDef?.type === "number" || fieldDef?.type === "date");
+
+	// Numeric fields bucket into a histogram; resolveBucketCount arbitrates between the
+	// user's choice and the field's cardinality.
+	const numericDistinct = isNumeric ? (await query(scope).values(fieldKey)).length : undefined;
+	const effectiveBuckets =
+		numericDistinct != null ? resolveBucketCount(numericDistinct, bucketCount) : null;
+
+	let buckets: PartitionBucket[] | null = null;
+	let tally: (selector: Selector) => Promise<Tally>;
+	let whole: Tally;
+	if (isTags) {
+		tally = tagCounts;
+		whole = await tally(scope);
+	} else if (effectiveBuckets) {
+		const groups = await query(scope).partition(fieldKey, {
+			kind: "numericBin",
+			binning: { by: "count", n: effectiveBuckets },
+		});
+		const binOf = new Map<number, string>();
+		for (const g of groups) for (const id of g.ids) binOf.set(id, g.key);
+		buckets = groups;
+		tally = async (selector) => binCounts(await query(selector).ids(), binOf);
+		whole = {
+			counts: new Map(groups.map((g) => [g.key, g.ids.length])),
+			withValue: binOf.size,
+		};
+	} else {
+		tally = async (selector) => {
+			const [grouped] = await query(selector).countBy([fieldKey], { kind: "value" });
+			return { counts: new Map(grouped.counts), withValue: grouped.covered };
+		};
+		whole = await tally(scope);
+	}
+
+	let keys: string[];
+	if (buckets) {
+		keys = buckets.map((g) => g.key);
+	} else {
+		const declared = isTags ? [] : (fieldDef?.values ?? []).map((v) => v.value);
+		const declaredSet = new Set(declared);
+		const seen = [...whole.counts.keys()].filter((k) => !declaredSet.has(k)).sort(compareNatural);
+		keys = [...declared, ...seen];
+	}
+
+	const tagMap = getTags();
+	const extraLabels = Object.fromEntries(
+		(fieldDef?.values ?? []).flatMap((v) => (v.label ? [[v.value, v.label]] : [])),
+	);
+	// Selectors match the shapes gradient emits: tags are Tag selections, buckets `between`
+	// filters, plain values `eq` filters.
+	const member = (key: string, i: number): PivotMember => {
+		const bin = buckets?.[i]?.bin;
+		const pick: Selector = isTags
+			? tagSelector(Number(key))
+			: bin
+				? { type: "Filter", field: fieldKey, test: { op: "between", lo: bin[0], hi: bin[1] } }
+				: { type: "Filter", field: fieldKey, test: { op: "eq", value: key } };
+		return {
+			key,
+			label: isTags
+				? (tagMap[Number(key)]?.name ?? t("Tag {id}", { id: key }))
+				: (extraLabels[key] ?? key),
+			color: null,
+			selector: all(scope, pick),
+			pick,
+		};
+	};
+	const members = keys.map(member);
+	const sizes = keys.map((k) => whole.counts.get(k) ?? 0);
+
+	const naCount = (await query(scope).count()) - whole.withValue;
+	if (naCount > 0) {
+		const pick: Selector = isTags
+			? untaggedSelector()
+			: { type: "Filter", field: fieldKey, test: { op: "nothas" } };
+		members.push({
+			key: NA_KEY,
+			label: t("N/A"),
+			color: null,
+			selector: all(scope, pick),
+			pick,
+		});
+		sizes.push(naCount);
+	}
+
+	return { members, sizes, tally, binned: buckets != null, numericDistinct };
+}
+
+function resolveAxis(axis: Axis, scope: Selector, defOf: (key: string) => FieldDef | undefined) {
+	return axis.kind === "field"
+		? fieldAxis(axis.key, defOf(axis.key), axis.buckets, scope)
+		: selectionAxis(axis.kind, scope);
+}
+
+const countBoth = (a: Selector, b: Selector) =>
+	query({ type: "Intersection", selections: [buildSelection(a), buildSelection(b)] }).count();
+
+async function computePivot(
+	rows: Axis,
+	cols: Axis,
+	scope: Selector,
+	defOf: (key: string) => FieldDef | undefined,
+): Promise<PivotData | null> {
+	if (!getMapState().map) return null;
+	const [rowAxis, colAxis] = await Promise.all([
+		resolveAxis(rows, scope, defOf),
+		resolveAxis(cols, scope, defOf),
+	]);
+	if (rowAxis.members.length === 0 || colAxis.members.length === 0) return null;
+	return buildPivot(rowAxis, colAxis, await crossCounts(rowAxis, colAxis, countBoth));
+}
+
+const TAGS_FIELD: FieldEntry = {
+	key: TAGS_FIELD_KEY,
+	label: msg("Tags"),
+	def: createFieldDef("enum"),
+};
 
 // Fields the map actually carries, with a known definition.
 function pivotFields(all: FieldEntry[], knownKeys: ReadonlySet<string>): FieldEntry[] {
@@ -220,117 +251,165 @@ function defaultPivotField(fields: FieldEntry[]): string {
 	return (fields.find((f) => f.key === "cameraType") ?? fields[0])?.key ?? "";
 }
 
+// Persisted axes are global; a field this map lacks falls back to the default field.
+function axisOnMap(axis: Axis, fields: FieldEntry[]): Axis {
+	if (axis.kind !== "field" || fields.some((f) => f.key === axis.key)) return axis;
+	return { ...axis, key: defaultPivotField(fields) };
+}
+
+const axisValue = (axis: Axis) => (axis.kind === "field" ? FIELD_PREFIX + axis.key : axis.kind);
+
+function parseAxis(value: string, prev: Axis): Axis {
+	if (value === "all" || value === "active") return { kind: value };
+	const buckets = prev.kind === "field" ? prev.buckets : DEFAULT_BUCKETS;
+	return { kind: "field", key: value.slice(FIELD_PREFIX.length), buckets };
+}
+
+function AxisControls({
+	label,
+	axis,
+	onChange,
+	fields,
+	distinct,
+}: {
+	label: string;
+	axis: Axis;
+	onChange: (axis: Axis) => void;
+	fields: FieldEntry[];
+	distinct: number | undefined;
+}) {
+	const def = axis.kind === "field" ? fields.find((f) => f.key === axis.key)?.def : undefined;
+	const isNumericField = def?.type === "number" || def?.type === "date";
+	// Cardinality-aware bucketing (mirrors resolveBucketCount in fieldAxis):
+	// few distinct values -> no bucket control at all; too many -> "Off" disabled.
+	const bucketHidden = distinct != null && distinct < BUCKET_MIN_DISTINCT;
+	const bucketForced = distinct != null && distinct >= BUCKET_FORCE_DISTINCT;
+	return (
+		<>
+			<Field label={label}>
+				<NSelect
+					value={axisValue(axis)}
+					onChange={(e) => onChange(parseAxis(e.target.value, axis))}
+				>
+					<option value="all" className="pivot-sidebar__opt-builtin">
+						{t("All locations")}
+					</option>
+					<option value="active" className="pivot-sidebar__opt-builtin">
+						{t("Active selections")}
+					</option>
+					{fields.map((f) => (
+						<option key={f.key} value={FIELD_PREFIX + f.key}>
+							{f.label}
+						</option>
+					))}
+				</NSelect>
+			</Field>
+			{axis.kind === "field" && isNumericField && !bucketHidden && (
+				<Field label={t("Bucket numeric values")}>
+					<NSelect
+						value={bucketForced ? (axis.buckets ?? DEFAULT_BUCKETS) : (axis.buckets ?? "off")}
+						onChange={(e) =>
+							onChange({
+								...axis,
+								buckets: e.target.value === "off" ? null : Number(e.target.value),
+							})
+						}
+					>
+						<option value="off" disabled={bucketForced}>
+							{bucketForced ? t("Off (too many values)") : t("Off")}
+						</option>
+						{[5, 10, 15, 20].map((n) => (
+							<option key={n} value={n}>
+								{t({ one: "{n} bucket", other: "{n} buckets" }, { n })}
+							</option>
+						))}
+					</NSelect>
+				</Field>
+			)}
+		</>
+	);
+}
+
 export function PivotSidebar({ onClose }: { onClose: () => void }) {
-	const [rowSourceRaw, setRowSource] = usePluginState<RowSource>("pivot", "rowSource", "active");
-	// Empty resolves to nothing, so the effective field falls back to the default below.
-	const [fieldKeyRaw, setFieldKey] = usePluginState<string>("pivot", "fieldKey", "");
-	const [bucketCount, setBucketCount] = usePluginState<number | null>("pivot", "bucketCount", 10);
+	const [rowsRaw, setRows] = usePluginState<Axis>("pivot", "rows", { kind: "active" });
+	// Empty resolves to nothing, so the effective field falls back to the default.
+	const [colsRaw, setCols] = usePluginState<Axis>("pivot", "cols", {
+		kind: "field",
+		key: "",
+		buckets: DEFAULT_BUCKETS,
+	});
+	const scope = useSelectorPick({ pick: "all" });
 	const [valueMode, setValueMode] = usePluginState<ValueMode>("pivot", "valueMode", "count");
 	const [includeNa, setIncludeNa] = usePluginState<boolean>("pivot", "includeNa", true);
 	const [data, setData] = useState<PivotData | null>(null);
 	const [loading, setLoading] = useState(false);
 
 	const allFields = useExtraFieldKeys();
-	const knownKeys = useMapState((s) => s.knownFieldKeys);
+	const knownKeys = getKnownFieldKeys();
 	const fields = useMemo(() => pivotFields(allFields, knownKeys), [allFields, knownKeys]);
 
-	const savedSelections: SavedSelection[] = MMA.getSettings().savedSelections;
-
-	// Persisted values are global; fall back when they don't resolve on this map.
-	const rowSource: RowSource =
-		rowSourceRaw === "all" ||
-		rowSourceRaw === "active" ||
-		savedSelections.some((s) => s.id === rowSourceRaw)
-			? rowSourceRaw
-			: "active";
-	const fieldKey = fields.some((f) => f.key === fieldKeyRaw)
-		? fieldKeyRaw
-		: defaultPivotField(fields);
-
-	const currentDef = fields.find((f) => f.key === fieldKey)?.def;
-	const isNumericField = currentDef?.type === "number" || currentDef?.type === "date";
+	const rows = useMemo(() => axisOnMap(rowsRaw, fields), [rowsRaw, fields]);
+	const cols = useMemo(() => axisOnMap(colsRaw, fields), [colsRaw, fields]);
 
 	const recompute = useCallback(async () => {
-		if (!fieldKey) return;
-		const fieldDef = fields.find((f) => f.key === fieldKey)?.def;
 		setLoading(true);
 		try {
-			const result = await computePivot(rowSource, fieldKey, fieldDef, bucketCount);
-			setData(result);
+			setData(
+				await computePivot(
+					rows,
+					cols,
+					scope.selector,
+					(key) => fields.find((f) => f.key === key)?.def,
+				),
+			);
 		} finally {
 			setLoading(false);
 		}
-	}, [rowSource, fieldKey, fields, bucketCount]);
+	}, [rows, cols, scope.selector, fields]);
 
-	const debouncedRecompute = useDebouncedCallback(recompute, 150);
+	const debouncedRecompute = useDebouncedCallback(() => void recompute(), 150);
 
 	useEffect(() => {
-		recompute();
-		const unsubStore = locStore?.onChange(debouncedRecompute);
-		const unsubSel = MMA.on("selection:change", debouncedRecompute);
+		void recompute();
+		const unsubLoc = subscribeMany(LOCATION_DATA_EVENTS, debouncedRecompute);
+		const unsubSel = subscribe("selection:change", debouncedRecompute);
 		return () => {
-			unsubStore?.();
+			unsubLoc();
 			unsubSel();
-			locStore?.destroy();
-			locStore = null;
 		};
 	}, [recompute, debouncedRecompute]);
 
-	const hasNa = data?.columns.includes(NA_KEY) ?? false;
-
-	// Cardinality-aware bucketing (mirrors resolveBucketCount in computePivot):
-	// few distinct values -> no bucket control at all; too many -> "Off" disabled.
-	const distinct = isNumericField ? data?.numericDistinct : undefined;
-	const bucketHidden = distinct != null && distinct < BUCKET_MIN_DISTINCT;
-	const bucketForced = distinct != null && distinct >= BUCKET_FORCE_DISTINCT;
+	const hasNa =
+		!!data &&
+		(data.columns.some((c) => c.key === NA_KEY) || data.rows.some((r) => r.key === NA_KEY));
 
 	const view = useMemo(() => (data && !includeNa ? stripNa(data) : data), [data, includeNa]);
+
+	const rowLabel =
+		rows.kind === "field"
+			? (fields.find((f) => f.key === rows.key)?.label ?? rows.key)
+			: t("Selection");
 
 	return (
 		<Sidebar title={t("Pivot Table")} onBack={onClose} className="pivot-sidebar" flush>
 			<div className="pivot-sidebar__controls">
-				<Field label={t("Rows")}>
-					<NSelect value={rowSource} onChange={(e) => setRowSource(e.target.value)}>
-						<option value="all" className="pivot-sidebar__opt-builtin">
-							{t("All locations")}
-						</option>
-						<option value="active" className="pivot-sidebar__opt-builtin">
-							{t("Active selections")}
-						</option>
-						{savedSelections.map((s) => (
-							<option key={s.id} value={s.id}>
-								{s.name}
-							</option>
-						))}
-					</NSelect>
+				<AxisControls
+					label={t("Rows")}
+					axis={rows}
+					onChange={setRows}
+					fields={fields}
+					distinct={data?.numericDistinct.rows}
+				/>
+				<AxisControls
+					label={t("Columns")}
+					axis={cols}
+					onChange={setCols}
+					fields={fields}
+					distinct={data?.numericDistinct.cols}
+				/>
+				<Field label={t("Within")}>
+					<SelectorPicker ctl={scope} />
 				</Field>
-				<Field label={t("Column field")}>
-					<NSelect value={fieldKey} onChange={(e) => setFieldKey(e.target.value)}>
-						{fields.map((f) => (
-							<option key={f.key} value={f.key}>
-								{t(f.label)}
-							</option>
-						))}
-					</NSelect>
-				</Field>
-				{isNumericField && !bucketHidden && (
-					<Field label={t("Bucket numeric values")}>
-						<NSelect
-							value={bucketForced ? (bucketCount ?? DEFAULT_BUCKETS) : (bucketCount ?? "off")}
-							onChange={(e) =>
-								setBucketCount(e.target.value === "off" ? null : Number(e.target.value))
-							}
-						>
-							<option value="off" disabled={bucketForced}>
-								{bucketForced ? t("Off (too many values)") : t("Off")}
-							</option>
-							<option value="5">{t("5 buckets")}</option>
-							<option value="10">{t("10 buckets")}</option>
-							<option value="15">{t("15 buckets")}</option>
-							<option value="20">{t("20 buckets")}</option>
-						</NSelect>
-					</Field>
-				)}
 				<Field label={t("Values")}>
 					<SegmentedControl<ValueMode>
 						value={valueMode}
@@ -343,29 +422,20 @@ export function PivotSidebar({ onClose }: { onClose: () => void }) {
 					/>
 				</Field>
 				{hasNa && (
-					<label className="pivot-sidebar__check">
-						<Checkbox checked={includeNa} onChange={(e) => setIncludeNa(e.target.checked)} />
-
-						{t("Include N/A")}
-					</label>
+					<SwitchRow checked={includeNa} onChange={setIncludeNa} label={t("Include N/A")} />
 				)}
 			</div>
 
 			<div className="pivot-sidebar__body">
-				{fields.length === 0 && (
-					<EmptyState>{t("No extra fields on this map. Enrich locations first.")}</EmptyState>
-				)}
-				{fields.length > 0 && !data && !loading && (
+				{!data && !loading && (
 					<EmptyState>
-						{rowSource === "active"
+						{rows.kind === "active" || cols.kind === "active" || scope.choice.pick === "selection"
 							? t("No active selections. Add selections to see pivot data.")
-							: rowSource === "all"
-								? t("No locations on this map.")
-								: t("Saved selection could not be resolved.")}
+							: t("No locations on this map.")}
 					</EmptyState>
 				)}
 				{loading && !view && <EmptyState>{t("Computing...")}</EmptyState>}
-				{view && <PivotTable data={view} mode={valueMode} stale={loading} />}
+				{view && <PivotTable data={view} mode={valueMode} stale={loading} rowLabel={rowLabel} />}
 			</div>
 		</Sidebar>
 	);
@@ -373,31 +443,33 @@ export function PivotSidebar({ onClose }: { onClose: () => void }) {
 
 type SortKey = "label" | "total" | string; // column key or "label" or "total"
 
-function PivotTable({ data, mode, stale }: { data: PivotData; mode: ValueMode; stale?: boolean }) {
+function PivotTable({
+	data,
+	mode,
+	stale,
+	rowLabel,
+}: {
+	data: PivotData;
+	mode: ValueMode;
+	stale?: boolean;
+	rowLabel: string;
+}) {
 	const [sortKey, setSortKey] = useState<SortKey>("label");
 	const [sortAsc, setSortAsc] = useState(true);
 
-	// Deterministic selection key per column; parent recomputes on selection:change,
-	// so live-state highlighting stays in sync through the data prop.
-	const columnKeys = useMemo(
-		() => data.columnProps?.map((p) => (p ? buildSelection(p).key : null)),
+	// Deterministic selection key per selectable member; parent recomputes on
+	// selection:change, so live-state highlighting stays in sync through the data prop.
+	const selectionKeys = useMemo(
+		() =>
+			new Map<PivotMember, string>(
+				[...data.columns, ...data.rows].flatMap((m) =>
+					m.pick ? [[m, buildSelection(m.pick).key]] : [],
+				),
+			),
 		[data],
 	);
-	const liveKeys = new Set(MMA.getActiveSelections().map((s) => s.key));
-
-	const toggleColumnSelection = useCallback(
-		(i: number) => {
-			const props = data.columnProps?.[i];
-			if (!props) return;
-			const key = columnKeys?.[i];
-			if (key && MMA.getActiveSelections().some((s) => s.key === key)) {
-				MMA.removeSelections([key]);
-			} else {
-				MMA.addSelections([props]);
-			}
-		},
-		[data, columnKeys],
-	);
+	const listedKeys = new Set(getMapState().selectionList.map((r) => r.selection.key));
+	const isSelected = (m: PivotMember) => listedKeys.has(selectionKeys.get(m) ?? "");
 
 	const handleSort = useCallback((key: SortKey) => {
 		setSortKey((prev) => {
@@ -420,7 +492,7 @@ function PivotTable({ data, mode, stale }: { data: PivotData; mode: ValueMode; s
 		let max = 0;
 		for (const row of data.rows) {
 			for (const col of data.columns) {
-				const v = cellValue(row, col);
+				const v = cellValue(row, col.key);
 				if (v > max) max = v;
 			}
 		}
@@ -459,31 +531,29 @@ function PivotTable({ data, mode, stale }: { data: PivotData; mode: ValueMode; s
 							className="pivot-sidebar__th-corner pivot-sidebar__th-sort"
 							onClick={() => handleSort("label")}
 						>
-							{t("Selection")}
+							{rowLabel}
 							{arrow("label")}
 						</th>
-						{data.columnLabels.map((label, i) => {
-							const selectable = !!data.columnProps?.[i];
-							const selected = !!columnKeys?.[i] && liveKeys.has(columnKeys[i]!);
-							return (
-								<th
-									key={data.columns[i]}
-									className={`pivot-sidebar__th-sort${selected ? " pivot-sidebar__th-selected" : ""}`}
-									title={
-										selectable
-											? t("Click to sort. Ctrl+Click to select matching locations.")
-											: undefined
-									}
-									onClick={(e) => {
-										if ((e.ctrlKey || e.metaKey) && selectable) toggleColumnSelection(i);
-										else handleSort(data.columns[i]);
-									}}
-								>
-									{label}
-									{arrow(data.columns[i])}
-								</th>
-							);
-						})}
+						{data.columns.map((col) => (
+							<th
+								key={col.key}
+								className={`pivot-sidebar__th-sort${isSelected(col) ? " pivot-sidebar__th-selected" : ""}`}
+								title={
+									col.pick
+										? t("Click to sort. Ctrl+Click to select matching locations.")
+										: undefined
+								}
+								onClick={(e) => {
+									if ((e.ctrlKey || e.metaKey) && col.pick)
+										void applySelectionUpdate(toggleSelection(col.pick));
+									else handleSort(col.key);
+								}}
+							>
+								{col.color && <Swatch color={col.color} size="sm" />}
+								{col.label}
+								{arrow(col.key)}
+							</th>
+						))}
 						<th className="pivot-sidebar__th-sort" onClick={() => handleSort("total")}>
 							{t("Total")}
 							{arrow("total")}
@@ -494,24 +564,25 @@ function PivotTable({ data, mode, stale }: { data: PivotData; mode: ValueMode; s
 					{sortedIndices.map((idx) => {
 						const row = data.rows[idx];
 						return (
-							<tr key={idx}>
-								<td className="pivot-sidebar__row-label">
-									<span
-										className="pivot-sidebar__swatch"
-										style={{
-											background: `rgb(${row.color[0]},${row.color[1]},${row.color[2]})`,
-										}}
-									/>
+							<tr key={row.key}>
+								<td
+									className={`pivot-sidebar__row-label${isSelected(row) ? " pivot-sidebar__row-label--selected" : ""}`}
+									onClick={(e) => {
+										if ((e.ctrlKey || e.metaKey) && row.pick)
+											void applySelectionUpdate(toggleSelection(row.pick));
+									}}
+								>
+									{row.color && <Swatch color={row.color} size="sm" />}
 									<span className="pivot-sidebar__row-name" title={row.label}>
 										{row.label}
 									</span>
 								</td>
 								{data.columns.map((col) => {
-									const raw = row.counts.get(col) ?? 0;
-									const v = cellValue(row, col);
+									const raw = row.counts.get(col.key) ?? 0;
+									const v = cellValue(row, col.key);
 									return (
 										<td
-											key={col}
+											key={col.key}
 											className={raw === 0 ? "pivot-sidebar__cell--zero" : ""}
 											style={
 												raw > 0 && maxCellValue > 0
@@ -533,7 +604,7 @@ function PivotTable({ data, mode, stale }: { data: PivotData; mode: ValueMode; s
 					<tr>
 						<td className="pivot-sidebar__row-label">{t("Total")}</td>
 						{data.columnTotals.map((t, i) => (
-							<td key={data.columns[i]}>{t}</td>
+							<td key={data.columns[i].key}>{t}</td>
 						))}
 						<td className="pivot-sidebar__cell--total">
 							{data.columnTotals.reduce((a, b) => a + b, 0)}

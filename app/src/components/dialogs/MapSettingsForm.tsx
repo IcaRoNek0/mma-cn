@@ -1,0 +1,330 @@
+import { useEffect, useId, useMemo, useState } from "react";
+import { mdiRestore, mdiClose } from "@mdi/js";
+import { DEFAULT_DUPLICATE_SCORE } from "@/bindings.consts";
+import type { MapMeta } from "@/bindings.gen";
+import { patchMapMeta } from "@/store/useMapStore";
+import { deleteMap } from "@/store/mapList";
+import { cmd } from "@/lib/commands";
+import { useSetting, setSetting, getSettings } from "@/store/settings";
+import { labelColor, rgbToHex, hexToRgb } from "@/lib/util/color";
+import { exprErrorText } from "@/lib/util/format";
+import {
+	ConfirmDialog,
+	DialogActions,
+	DialogForm,
+	useCloseDialog,
+	type DialogProps,
+} from "@/components/primitives/Dialog";
+import { Hint, InfoButton } from "@/components/primitives/Hint";
+import { Icon } from "@/components/primitives/Icon";
+import { ColorPicker } from "@/components/primitives/ColorPicker";
+import { TextInput } from "@/components/primitives/TextInput";
+import { ScoreBoundsEditor } from "./ScoreBoundsEditor";
+import { t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
+
+/** Where the form is being shown. Both edit the same map; the list only cares about the
+ *  map as a catalogue entry, the editor also tunes how the open map behaves. */
+export type MapFormContext = "list" | "editor";
+
+interface SectionProps {
+	/** The map with its unsaved edits already applied. */
+	draft: MapMeta;
+	edit: (patch: Partial<MapMeta>) => void;
+	/** Hold Save while this section's input is unusable. */
+	block: (blocked: boolean) => void;
+}
+
+interface Section {
+	id: string;
+	/** Contexts this section appears in. Adding a section is one entry here; neither
+	 *  call site knows what the form contains. */
+	in: MapFormContext[];
+	Body: (props: SectionProps) => React.ReactNode;
+}
+
+function NameSection({ draft, edit, block }: SectionProps) {
+	const id = useId();
+	useEffect(() => block(draft.name.trim().length === 0), [draft.name, block]);
+	return (
+		<p className="edit-map-modal__name">
+			<label htmlFor={id}>{t("Map name:")}</label>
+			<TextInput
+				id={id}
+				type="text"
+				value={draft.name}
+				onChange={(e) => edit({ name: e.target.value })}
+				minLength={1}
+				maxLength={100}
+				autoFocus
+			/>
+		</p>
+	);
+}
+
+function DescriptionSection({ draft, edit }: SectionProps) {
+	const id = useId();
+	return (
+		<p className="edit-map-modal__name">
+			<label htmlFor={id}>{t("Description:")}</label>
+			<textarea
+				id={id}
+				className="text-input edit-map-modal__description"
+				value={draft.description}
+				onChange={(e) => edit({ description: e.target.value })}
+				rows={3}
+				maxLength={1000}
+			/>
+		</p>
+	);
+}
+
+function LabelsSection({ draft, edit }: SectionProps) {
+	const labelColors = useSetting("labelColors");
+	const [input, setInput] = useState("");
+	const labels = draft.labels;
+
+	const setLabelColor = (label: string, hex: string) =>
+		setSetting("labelColors", { ...getSettings().labelColors, [label.toLowerCase()]: hex });
+
+	const add = () => {
+		const val = input.trim().toLowerCase();
+		if (val && !labels.includes(val)) edit({ labels: [...labels, val] });
+		setInput("");
+	};
+
+	return (
+		<div className="map-edit-labels">
+			<div className="map-edit-labels__label">{t("Labels")}</div>
+			<div className="map-edit-labels__list">
+				{labels.map((l) => (
+					<span key={l} className="map-label map-label--editable">
+						<ColorPicker
+							color={hexToRgb(labelColor(l, labelColors))}
+							onChange={(rgb) => setLabelColor(l, rgbToHex(rgb))}
+							ariaLabel={t("Color for {label}", { label: l })}
+						/>
+						{l}
+						<button
+							type="button"
+							className="map-label__remove"
+							onClick={() => edit({ labels: labels.filter((x) => x !== l) })}
+						>
+							<Icon path={mdiClose} size={12} />
+						</button>
+					</span>
+				))}
+				<input
+					type="text"
+					className="map-edit-labels__input"
+					placeholder={t("Add label...")}
+					value={input}
+					onChange={(e) => setInput(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							add();
+						}
+						if (e.key === "Backspace" && !input && labels.length > 0) {
+							edit({ labels: labels.slice(0, -1) });
+						}
+					}}
+				/>
+			</div>
+		</div>
+	);
+}
+
+/** A `field_expr` input: validated as you type, blank meaning the map states no preference. */
+function ExprSection({
+	draft,
+	edit,
+	block,
+	setting,
+	label,
+	hint,
+	placeholder,
+}: SectionProps & {
+	setting: "duplicateScore" | "reviewOrder";
+	label: string;
+	hint: string;
+	placeholder?: string;
+}) {
+	const id = useId();
+	const value = draft.settings[setting] ?? "";
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (value.trim() === "") {
+			setError(null);
+			return;
+		}
+		let live = true;
+		void cmd.fieldExprError(value).then((err) => {
+			if (live) setError(err && exprErrorText(err));
+		});
+		return () => {
+			live = false;
+		};
+	}, [value]);
+	useEffect(() => block(error != null), [error, block]);
+
+	const setExpr = (v: string) =>
+		edit({ settings: { ...draft.settings, [setting]: v.trim() || null } });
+
+	return (
+		<>
+			<p className="edit-map-modal__name">
+				<span className="edit-map-modal__label">
+					<label htmlFor={id}>{label}</label>
+					<InfoButton text={hint} />
+				</span>
+				<span className="edit-map-modal__expr">
+					<TextInput
+						id={id}
+						type="text"
+						className="mono"
+						value={value}
+						onChange={(e) => setExpr(e.target.value)}
+						placeholder={placeholder}
+						spellCheck={false}
+					/>
+					<IconButton
+						icon={mdiRestore}
+						label={t("Reset to default")}
+						onClick={() => setExpr("")}
+						disabled={value === ""}
+					/>
+				</span>
+			</p>
+			{error && <Hint tone="error">{t("Invalid expression: {error}", { error })}</Hint>}
+		</>
+	);
+}
+
+function ScoringSection({ draft, edit }: SectionProps) {
+	return (
+		<ScoreBoundsEditor
+			value={draft.scoreBounds}
+			onChange={(scoreBounds) => edit({ scoreBounds })}
+		/>
+	);
+}
+
+const SECTIONS: Section[] = [
+	{ id: "name", in: ["list", "editor"], Body: NameSection },
+	{ id: "description", in: ["list", "editor"], Body: DescriptionSection },
+	{ id: "labels", in: ["list", "editor"], Body: LabelsSection },
+	{
+		id: "duplicates",
+		in: ["editor"],
+		Body: (p) => (
+			<ExprSection
+				{...p}
+				setting="duplicateScore"
+				placeholder={DEFAULT_DUPLICATE_SCORE}
+				label={t("Duplicate preference")}
+				hint={t(
+					"Scores every duplicate; the highest is the one kept when duplicates are merged or pruned. Merging keeps all tags either way, and ties go to the oldest.",
+				)}
+			/>
+		),
+	},
+	{
+		id: "reviewOrder",
+		in: ["editor"],
+		Body: (p) => (
+			<ExprSection
+				{...p}
+				setting="reviewOrder"
+				label={t("Review order")}
+				hint={t(
+					"Scores every location; a review pass walks them highest first. Blank reviews them in the order the selection resolved.",
+				)}
+			/>
+		),
+	},
+	{ id: "scoring", in: ["editor"], Body: ScoringSection },
+];
+
+export function DeleteMapDialog({
+	open,
+	onOpenChange,
+	mapId,
+	name,
+}: DialogProps & { mapId: string; name: string }) {
+	return (
+		<ConfirmDialog
+			open={open}
+			onOpenChange={onOpenChange}
+			title={t("Delete map")}
+			message={t("Delete “{name}”? This permanently removes the map and its history.", {
+				name: name || t("(unnamed)"),
+			})}
+			confirmLabel={t("Delete map")}
+			tone="destructive"
+			onConfirm={() => {
+				onOpenChange(false);
+				void deleteMap(mapId);
+			}}
+		/>
+	);
+}
+
+/** Edits one map's metadata. The same form in both windows; `context` decides which
+ *  sections it is made of. */
+export function MapSettingsForm({ map, context }: { map: MapMeta; context: MapFormContext }) {
+	const close = useCloseDialog();
+	const [deleting, setDeleting] = useState(false);
+	const [patch, setPatch] = useState<Partial<MapMeta>>({});
+	const [blocked, setBlocked] = useState<ReadonlySet<string>>(new Set());
+
+	const draft: MapMeta = { ...map, ...patch };
+	const sections = SECTIONS.filter((s) => s.in.includes(context));
+
+	// Stable per-section callbacks: sections put them in effect deps.
+	const handlers = useMemo(
+		() =>
+			new Map(
+				SECTIONS.map((s) => [
+					s.id,
+					{
+						edit: (p: Partial<MapMeta>) => setPatch((prev) => ({ ...prev, ...p })),
+						block: (v: boolean) =>
+							setBlocked((prev) => {
+								if (prev.has(s.id) === v) return prev;
+								const next = new Set(prev);
+								if (v) next.add(s.id);
+								else next.delete(s.id);
+								return next;
+							}),
+					},
+				]),
+			),
+		[],
+	);
+
+	return (
+		<>
+			<DialogForm
+				onSubmit={() => {
+					void patchMapMeta(map.id, patch);
+					close();
+				}}
+			>
+				{sections.map(({ id, Body }) => (
+					<Body key={id} draft={draft} {...handlers.get(id)!} />
+				))}
+				<DialogActions
+					destructive={
+						context === "editor"
+							? { label: t("Delete map"), onClick: () => setDeleting(true) }
+							: undefined
+					}
+					primary={{ label: t("Save"), disabled: blocked.size > 0 }}
+				/>
+			</DialogForm>
+			<DeleteMapDialog open={deleting} onOpenChange={setDeleting} mapId={map.id} name={map.name} />
+		</>
+	);
+}

@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from "vitest";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { mount as mountRoot } from "./fixtures/harness";
 import { emit } from "@/lib/events";
-import { useMapList, setCachedMapList } from "@/store/mapList";
-import type { MapMeta } from "@/bindings.gen";
-
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+import { useMapList, setCachedMapList, isReservedMap } from "@/store/mapList";
+import { SCRATCH_MAP_ID } from "@/bindings.consts";
+import { type MapMeta } from "@/bindings.gen";
 
 const meta = (id: string) => ({ id, name: id }) as MapMeta;
 
@@ -20,11 +19,7 @@ function Probe() {
 }
 
 function mount() {
-	const container = document.createElement("div");
-	document.body.appendChild(container);
-	const root = createRoot(container);
-	act(() => root.render(<Probe />));
-	return () => act(() => root.unmount());
+	return mountRoot(<Probe />).unmount;
 }
 
 beforeEach(() => {
@@ -58,5 +53,14 @@ describe("useMapList subscription granularity", () => {
 		});
 		expect(renders).toBe(1);
 		unmount();
+	});
+});
+
+describe("reserved maps", () => {
+	it("matches the reserved id, never a name that happens to look like one", () => {
+		expect(isReservedMap(SCRATCH_MAP_ID)).toBe(true);
+		// A user map merely named "scratch" is theirs, with a name and settings of its own.
+		expect(isReservedMap("some-uuid")).toBe(false);
+		expect(isReservedMap(null)).toBe(false);
 	});
 });

@@ -1,13 +1,19 @@
 {
 	"extends": "../tsconfig.app.json",
 	"compilerOptions": {
-		"types": ["vite/client", "google.maps", "node", "@wdio/globals/types", "@types/mocha"]
+		"types": ["vite/client", "google.maps", "node", "@wdio/globals/types", "@types/mocha"],
+		"allowJs": true,
+		"checkJs": false
 	},
 	"include": [
 		"e2e/**/*.ts",
+		"perf/**/*.ts",
 		"unit/**/*.ts",
 		"unit/**/*.tsx",
 		"../src/**/*.ts",
 		"../src/**/*.tsx"
-	]
+	],
+	// Reaches into an external plugin's source, whose SDK import re-declares the MMA globals
+	// that api.ts already declares in this program.
+	"exclude": ["unit/heatmapGradients.test.ts", "unit/heatmapProject.test.ts"]
 }

@@ -6,7 +6,7 @@ import { schemeBase } from "@/lib/util/util";
 // frontend asset resolver, which excludes this large binary from --serve builds.
 export const TENCENT_COVERAGE_ARCHIVE_URL = `${schemeBase("mma-tencent-archive")}range`;
 
-class BundledTencentCoverageSource implements Source {
+export class BundledTencentCoverageSource implements Source {
 	getKey(): string {
 		return TENCENT_COVERAGE_ARCHIVE_URL;
 	}

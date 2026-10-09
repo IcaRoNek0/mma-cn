@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
-import { Button } from "@/components/primitives/Button";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
+import { Dialog, DialogContent, DialogForm, DialogActions } from "@/components/primitives/Dialog";
 import { TextInput } from "@/components/primitives/TextInput";
 import { useT } from "@/lib/i18n";
 import { toast } from "@/lib/util/toast";
@@ -51,7 +50,7 @@ export function AddTagPanel({
 		if (!tagName || busy || locationIds.length === 0) return;
 		setBusy(true);
 		try {
-			await createTags([tagName], locationIds);
+			await createTags([tagName], { type: "Locations", locations: locationIds, name: null });
 			setRecent(rememberRecentTag(tagName));
 			toast(
 				locationIds.length === 1
@@ -79,10 +78,9 @@ export function AddTagPanel({
 			}}
 		>
 			<DialogContent title={title ?? t("Add tag")} className="gg-add-tag-dialog">
-				<form
+				<DialogForm
 					className="gg-add-tag-dialog__form"
-					onSubmit={(e) => {
-						e.preventDefault();
+					onSubmit={() => {
 						void applyTag(trimmed);
 					}}
 				>
@@ -134,15 +132,11 @@ export function AddTagPanel({
 						</div>
 					)}
 
-					<div className="gg-add-tag-dialog__actions">
-						<Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>
-							{t("Cancel")}
-						</Button>
-						<Button variant="primary" type="submit" disabled={!trimmed || busy}>
-							{t("Add tag")}
-						</Button>
-					</div>
-				</form>
+					<DialogActions
+						cancel={{ disabled: busy }}
+						primary={{ label: t("Add tag"), disabled: !trimmed || busy }}
+					/>
+				</DialogForm>
 			</DialogContent>
 		</Dialog>
 	);

@@ -1,36 +1,11 @@
 use super::*;
+use serde_json::value::RawValue;
+use std::collections::HashSet;
 
-// The delta sidecar / undo-blob field that actually hit the wire: Option<Option<RawExtra>>.
 type ExtraField = Option<Option<RawExtra>>;
 
 fn extra(json: &str) -> RawExtra {
-    RawExtra(serde_json::value::RawValue::from_string(json.to_owned()).unwrap())
-}
-
-#[test]
-fn binary_string_encoding_round_trips() {
-    let field: ExtraField = Some(Some(extra(r#"{"a":1,"b":"x"}"#)));
-    let bytes = rmp_serde::to_vec_named(&field).unwrap();
-    let back: ExtraField = rmp_serde::from_slice(&bytes).unwrap();
-    assert_eq!(back.unwrap().unwrap().as_str(), r#"{"a":1,"b":"x"}"#);
-}
-
-#[test]
-fn reads_legacy_map_encoded_blob() {
-    // What pre-RawExtra shipped builds wrote: extra as a real msgpack map.
-    let mut legacy = serde_json::Map::new();
-    legacy.insert("a".into(), serde_json::json!(1));
-    legacy.insert("b".into(), serde_json::json!("x"));
-    let legacy_field: Option<Option<serde_json::Map<String, serde_json::Value>>> =
-        Some(Some(legacy));
-    let bytes = rmp_serde::to_vec_named(&legacy_field).unwrap();
-
-    // The current reader must accept it, not fail with "expected a string".
-    let back: ExtraField = rmp_serde::from_slice(&bytes).unwrap();
-    assert_eq!(
-        back.unwrap().unwrap().to_map(),
-        extra(r#"{"a":1,"b":"x"}"#).to_map()
-    );
+    RawExtra::wrap(RawValue::from_string(json.to_owned()).unwrap())
 }
 
 #[test]
@@ -74,15 +49,6 @@ fn escaped_keys_are_canonicalized_on_ingest() {
     // IPC / on-disk JSON.
     let ipc: RawExtra = serde_json::from_str(&escaped).unwrap();
     assert_eq!(ipc.get("café"), Some(serde_json::json!("au lait")));
-
-    // Delta sidecar / undo blob (rmp string form).
-    let field: ExtraField = Some(Some(extra(&escaped)));
-    let bytes = rmp_serde::to_vec_named(&field).unwrap();
-    let back: ExtraField = rmp_serde::from_slice(&bytes).unwrap();
-    assert_eq!(
-        back.unwrap().unwrap().get("café"),
-        Some(serde_json::json!("au lait"))
-    );
 
     // Field discovery reports the decoded name, so it registers as one field.
     let mut keys: Vec<String> = Vec::new();
@@ -251,7 +217,7 @@ fn arb_location() -> impl Strategy<Value = Location> {
                     heading,
                     pitch,
                     zoom,
-                    pano_id,
+                    pano_id: pano_id.map(Into::into),
                     flags,
                     tags,
                     extra,
@@ -260,6 +226,37 @@ fn arb_location() -> impl Strategy<Value = Location> {
                 }
             },
         )
+}
+
+#[test]
+fn unstable_const_carries_the_tag_whatever_its_docs() {
+    let bare = TsConst::value(1).unstable().render("A");
+    assert!(bare.contains("/** @unstable */\nexport const A"));
+    let one = TsConst::value(1).with_doc(&["One."]).unstable().render("A");
+    assert!(one.contains("/** One. @unstable */\nexport const A"));
+    let many = TsConst::value(1)
+        .with_doc(&["One.", "Two."])
+        .unstable()
+        .render("A");
+    assert!(many.contains(" * Two.\n * @unstable\n */\nexport const A"));
+    assert!(!TsConst::value(1).render("A").contains("@unstable"));
+}
+
+// The wire strings are the contract `src/lib/util/format.ts` maps to messages; whatever follows
+// ": " is data the TS side parses.
+#[test]
+fn err_codes_are_unique_and_detail_separated() {
+    let mut seen = HashSet::new();
+    for code in ErrCode::ALL {
+        assert!(seen.insert(code.wire()), "duplicate code {}", code.wire());
+        assert!(
+            !code.wire().contains(": "),
+            "a code may not contain the detail separator: {}",
+            code.wire()
+        );
+        assert_eq!(code.err().0, code.wire());
+        assert_eq!(code.with(7).0, format!("{}: 7", code.wire()));
+    }
 }
 
 proptest! {

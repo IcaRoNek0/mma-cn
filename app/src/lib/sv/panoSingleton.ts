@@ -6,7 +6,7 @@ import {
 } from "@photo-sphere-viewer/equirectangular-tiles-adapter";
 import type { Location, SeenEntry } from "@/bindings.gen";
 import { createLocation } from "@/types";
-import { getMapState, setActiveLocation, addLocations, fetchLocation } from "@/store/useMapStore";
+import { getMapState, setActiveLocation, addLocations, resolveLocation } from "@/store/useMapStore";
 import {
 	getPanoramaProvider,
 	fallbackPanoramaMetadata,
@@ -18,7 +18,6 @@ import {
 	viewerYawToHeading,
 } from "@/lib/pano";
 import { movementCandidates, selectMoveLink, type PanoMoveDirection } from "@/lib/pano/movement";
-import { seenSkipNext } from "@/lib/seen/seen";
 import { getLocal } from "@/lib/hooks/useLocalStorage";
 import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
 import { getSettings, normalizeInputSensitivity } from "@/store/settings";
@@ -78,7 +77,10 @@ export const singletonDiv = (() => {
 })();
 
 export class PsvPanoramaController {
+	readonly container: HTMLDivElement;
 	private viewer: Viewer;
+	private location: Location | null = null;
+	private unsubscribeSettings: () => void;
 	private metadata: PanoramaMetadata | null = null;
 	private source: PanoSource = "baidu_pano";
 	private listeners = new Map<string, Set<() => void>>();
@@ -88,9 +90,10 @@ export class PsvPanoramaController {
 	private navigationHistory: string[] = [];
 	private navigationLoading = false;
 
-	constructor() {
+	constructor(container: HTMLDivElement = singletonDiv) {
+		this.container = container;
 		this.viewer = new Viewer({
-			container: singletonDiv,
+			container,
 			adapter: EquirectangularTilesAdapter,
 			moveSpeed:
 				PSV_BASE_MOVE_SPEED * normalizeInputSensitivity(getSettings().panoRotateSensitivity),
@@ -103,7 +106,7 @@ export class PsvPanoramaController {
 		adapter.queue.concurency = PSV_TILE_CONCURRENCY;
 		this.viewer.addEventListener(events.PositionUpdatedEvent.type, () => this.emit("pov_changed"));
 		this.viewer.addEventListener(events.ZoomUpdatedEvent.type, () => this.emit("zoom_changed"));
-		subscribe("settings:changed", () => {
+		this.unsubscribeSettings = subscribe("settings:changed", () => {
 			this.viewer.setOption(
 				"moveSpeed",
 				PSV_BASE_MOVE_SPEED * normalizeInputSensitivity(getSettings().panoRotateSensitivity),
@@ -170,12 +173,18 @@ export class PsvPanoramaController {
 		panoId = location.panoId,
 		options: { transition?: boolean; resetHistory?: boolean } = {},
 	): Promise<PanoramaMetadata> {
-		if (!panoId) throw new Error("This location does not have a panorama ID");
+		this.location = location;
+		const generation = ++this.generation;
 		const sourceValue = location.extra?.source;
 		if (!isPanoSource(sourceValue))
 			throw new Error("This location does not specify a Baidu/Tencent source");
 		this.source = sourceValue;
 		const provider = getPanoramaProvider(sourceValue);
+		if (!panoId) {
+			const nearest = await provider.findNearest({ lat: location.lat, lng: location.lng }, 18);
+			if (!nearest) throw new Error("No panorama found near this location");
+			panoId = nearest.panoId;
+		}
 		let metadata: PanoramaMetadata;
 		try {
 			metadata = await provider.getMetadata(panoId);
@@ -191,7 +200,7 @@ export class PsvPanoramaController {
 		// provider matching the resolved metadata for its tile URL contract.
 		const tileProvider =
 			metadata.source === sourceValue ? provider : getPanoramaProvider(metadata.source);
-		const generation = ++this.generation;
+		if (generation !== this.generation) return metadata;
 		this.progressiveCleanup();
 		const targetZoom = Math.max(0, Math.min(100, location.zoom * 20));
 		const tileLevels = viewerTileLevels(metadata);
@@ -249,7 +258,7 @@ export class PsvPanoramaController {
 	}
 
 	private currentLocationSnapshot(): Location | null {
-		const active = getMapState().activeLocation;
+		const active = this.location;
 		if (!active || !this.metadata) return null;
 		const pov = this.getPov();
 		return {
@@ -417,17 +426,37 @@ export class PsvPanoramaController {
 	}
 
 	setVisible(visible: boolean) {
-		singletonDiv.style.display = visible ? "block" : "none";
+		this.container.style.display = visible ? "block" : "none";
 		if (visible) this.viewer.autoSize();
 	}
 
 	setOptions() {}
 	focus() {
-		singletonDiv.focus();
+		this.container.focus();
 	}
 	resize() {
 		this.viewer.autoSize();
 		this.emit("size_changed");
+	}
+
+	setPosition(point: google.maps.LatLngLiteral) {
+		const source = this.metadata?.source ?? this.source;
+		const generation = ++this.generation;
+		void getPanoramaProvider(source)
+			.findNearest(point, 18)
+			.then((found) => {
+				if (found && generation === this.generation)
+					return this.load(createLocation({ ...point, panoId: found.panoId, extra: { source } }));
+			})
+			.catch(() => {});
+	}
+
+	destroy() {
+		this.generation++;
+		this.progressiveCleanup();
+		this.unsubscribeSettings();
+		this.viewer.destroy();
+		this.listeners.clear();
 	}
 }
 
@@ -451,11 +480,10 @@ export async function applyLocationPanorama(location: Location, panoId?: string)
 }
 
 export async function loadSeenPano(entry: SeenEntry) {
-	seenSkipNext(entry.panoId);
-	const fetched = entry.locationId != null ? await fetchLocation(entry.locationId) : null;
+	const fetched = entry.locationId != null ? await resolveLocation(entry.locationId) : null;
 	const existing = fetched && fetched.panoId === entry.panoId ? fetched : null;
 	if (existing) {
-		if (getMapState().activeLocation?.id !== existing.id) setActiveLocation(existing.id);
+		if (getMapState().activeLocation?.id !== existing.id) await setActiveLocation(existing.id);
 		return;
 	}
 	const provider = getLocal("mapEmbedPrefs", DEFAULT_PREFS).panoProvider ?? "baidu";

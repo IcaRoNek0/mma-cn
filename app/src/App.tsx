@@ -1,57 +1,60 @@
+import { subscribe } from "@/lib/events";
 import { useState, useEffect } from "react";
 import type { ComponentType, CSSProperties } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { invoke } from "@tauri-apps/api/core";
+
+import { appWindow, closeAndDestroy } from "@/lib/window";
 import { useMapState } from "@/store/useMapStore";
 import {
 	useTargetMapId,
 	useManualChapter,
 	closeManual,
 	gotoManualChapter,
-	goToList,
+	leaveToList,
 	openManual,
 } from "@/store/router";
 import { MapList, BulkActions } from "@/components/map-list/MapList";
-import { StatsForNerds } from "@/components/dialogs/StatsForNerds";
-import { SettingsPage } from "@/components/dialogs/SettingsPage";
+import { openScratchMap } from "@/store/mapList";
+import { SettingsPage, UnreadReplyDot } from "@/components/dialogs/SettingsPage";
 import { PluginMarketplace } from "@/components/dialogs/PluginMarketplace";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
-import { Manual } from "@/components/manual/Manual";
-import { ManualSearch } from "@/components/manual/ManualSearch";
+import { Dialog, DialogContent, type DialogProps } from "@/components/primitives/Dialog";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
-import { useSetting, useSettings, setSetting, CSS_VAR_SETTINGS } from "@/store/settings";
-import { useLocalStorage } from "@/lib/hooks/useLocalStorage";
-import { type MapEmbedPrefs, DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
-import "@/lib/render/renderStats"; // installs the window.__mmaPerf harness bridge
+import { useSetting, useSettings, CSS_VAR_SETTINGS } from "@/store/settings";
+import { useLocalStorage, persisted } from "@/lib/hooks/useLocalStorage";
+import { MAP_EMBED_PREFS } from "@/store/mapEmbedPrefs";
 import { applyAccentColor, resolveSvColorHex } from "@/lib/util/color";
 import { Icon, mdiDiscord } from "@/components/primitives/Icon";
-import { mdiCog, mdiPuzzle, mdiClose, mdiBookOpenPageVariantOutline } from "@mdi/js";
+import { IconButton } from "@/components/primitives/IconButton";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { mdiCog, mdiPuzzle, mdiClose, mdiBookOpenPageVariantOutline, mdiMapOutline } from "@mdi/js";
 import { ToastContainer } from "@/components/primitives/Toast";
+import { JobTray, JobExitDialog } from "@/components/primitives/JobTray";
 import { TooltipProvider } from "@/components/primitives/Tooltip";
-import { useUpdateState, dismissUpdate, installUpdate, relaunchApp } from "@/lib/util/updateCheck";
+import { useUpdateState, dismissUpdate, describeUpdate } from "@/lib/util/updateCheck";
+import { PrereleasePill } from "@/components/primitives/PrereleasePill";
 import { APP_NAME } from "@/lib/util/format";
+import { appVersion } from "@/lib/version";
 import { useDiscordPresence } from "@/lib/discord/presence";
 import { initRemoteHost } from "@/lib/remote/host";
 import { cmd } from "@/lib/commands";
 import { log } from "@/lib/util/log";
 import "@/plugins";
 import { t } from "@/lib/i18n";
-import { useEvent } from "@/lib/events";
+import { ReportDialog } from "@/components/dialogs/ReportDialog";
+import { useDialogState } from "@/store/dialogBus";
+import { Button } from "@/components/primitives/Button";
 
 // Dynamic import (deck.gl/luma.gl out of the initial bundle) WITHOUT React.lazy/Suspense —
 // a Suspense boundary makes React 19 render the editor in a low-priority lane (~260ms/open).
 // We preload the chunk in the background and render it as a plain component in the urgent lane.
 const mapEditorModule = import("@/components/editor/MapEditor");
 
-// A real Tauri sub-window for a single map (label "map-<id>"). Always false on web, where
-// every tab reports label "main" — there the URL (targetMapId) alone picks editor vs list.
-const isEditorWindow = getCurrentWindow().label.startsWith("map-");
+const manualModules = Promise.all([
+	import("@/components/manual/Manual"),
+	import("@/components/manual/ManualSearch"),
+]);
 
-// tauri-plugin-window-state StateFlags::all() — size|position|maximized|visible|decorations|fullscreen
-const WINDOW_STATE_ALL = 0b111111;
-
+const DISCORD_URL = "https://discord.gg/4wPNJTuzD8";
 const BLANK_STYLE: CSSProperties = { position: "fixed", inset: 0, background: "var(--surface-0)" };
 const Blank = () => <div style={BLANK_STYLE} />;
 
@@ -60,9 +63,7 @@ const Blank = () => <div style={BLANK_STYLE} />;
 export default function App() {
 	const targetMapId = useTargetMapId();
 	const manualOpen = useManualChapter() !== null;
-	// A Tauri map window whose map was backed out of: focus the list window, persist this
-	// window's geometry, then destroy it. Never true on web (no sub-window to close).
-	const closing = isEditorWindow && !targetMapId;
+	const closing = appWindow.type === "editor" && !targetMapId;
 
 	useSelfDestruct(closing);
 	useCustomCss();
@@ -96,7 +97,7 @@ function EditorRoot() {
 	const map = useMapState((s) => s.map);
 	const [MapEditor, setMapEditor] = useState<ComponentType | null>(null);
 	useEffect(() => {
-		mapEditorModule.then((m) => setMapEditor(() => m.MapEditor));
+		void mapEditorModule.then((m) => setMapEditor(() => m.MapEditor));
 	}, []);
 	if (!map || !MapEditor) return <Blank />;
 	return <MapEditor />;
@@ -110,135 +111,144 @@ function AppChrome() {
 	const manualChapter = useManualChapter();
 
 	const update = useUpdateState();
+	const updateView = describeUpdate(update);
 	const [showStats, setShowStats] = useState(false);
+
+	const [Stats, setStats] = useState<
+		typeof import("@/components/dialogs/StatsForNerds").StatsForNerds | null
+	>(null);
+	useEffect(() => {
+		if (!showStats || Stats) return;
+		void import("@/components/dialogs/StatsForNerds").then((m) => setStats(() => m.StatsForNerds));
+	}, [showStats, Stats]);
 	const [showSettings, setShowSettings] = useState(false);
+	useEffect(() => subscribe("settings:open", () => setShowSettings(true)), []);
+	const [feedbackOpen, setFeedbackOpen] = useDialogState("feedback");
 	const [showPlugins, setShowPlugins] = useState(false);
 	const [manualSearchOpen, setManualSearchOpen] = useState(false);
-	const settingsOpenVersion = useEvent("settings:open");
+
+	const [manual, setManual] = useState<{
+		Manual: typeof import("@/components/manual/Manual").Manual;
+		Search: typeof import("@/components/manual/ManualSearch").ManualSearch;
+	} | null>(null);
 	useEffect(() => {
-		if (settingsOpenVersion > 0) setShowSettings(true);
-	}, [settingsOpenVersion]);
+		void manualModules.then(([m, search]) =>
+			setManual({ Manual: m.Manual, Search: search.ManualSearch }),
+		);
+	}, []);
 
 	useHotkey(useBinding("toggleStats"), () => setShowStats((s) => !s));
 	useHotkey(useBinding("openManualSearch"), () => setManualSearchOpen((v) => !v));
+	useHotkey(useBinding("toggleSettings"), () => setShowSettings((v) => !v));
+	useHotkey(useBinding("togglePlugins"), () => setShowPlugins((v) => !v));
 	useHotkey(useBinding("closeMap"), () => {
-		if (map) goToList();
+		if (map) void leaveToList();
 	});
 
-	const hasSeenWelcome = useSetting("hasSeenWelcome");
+	const [welcomeSeen, setWelcomeSeen] = useLocalStorage(WELCOME_SEEN);
 	const fullscreenMap = useSetting("fullscreenMap");
 
 	return (
 		<>
 			{isMapList && !showSettings && !showPlugins && (
-				<div className="bottom-bar bottom-bar--left">
-					<a
-						className="settings-gear"
-						href="https://discord.gg/4wPNJTuzD8"
-						target="_blank"
-						rel="noopener noreferrer"
-						title={t("Join the Discord")}
-					>
-						<Icon path={mdiDiscord} />
-					</a>
-					<button className="settings-gear" onClick={() => openManual()} title={t("Manual")}>
-						<Icon path={mdiBookOpenPageVariantOutline} />
-					</button>
+				<div className="bottom-bar bottom-bar--left popover-surface">
+					<IconButton
+						icon={mdiDiscord}
+						size={18}
+						label={t("Join the Discord")}
+						onClick={() => void openExternal(DISCORD_URL)}
+					/>
+					<IconButton
+						icon={mdiBookOpenPageVariantOutline}
+						size={18}
+						label={t("Manual")}
+						onClick={() => openManual()}
+					/>
+					<IconButton
+						icon={mdiMapOutline}
+						size={18}
+						label={t("Scratch map")}
+						onClick={() => void openScratchMap()}
+					/>
 				</div>
 			)}
 			<WelcomeDialog
-				open={isMapList && !hasSeenWelcome}
-				onDismiss={() => setSetting("hasSeenWelcome", true)}
+				open={isMapList && !welcomeSeen}
+				onOpenChange={(open) => !open && setWelcomeSeen(true)}
 			/>
 			{!showSettings && !showPlugins && !(map && fullscreenMap) && (
-				<div className="bottom-bar">
-					{update.version && !update.dismissed && (
-						<div className="update-pill">
-							{update.phase === "available" && (
-								<>
-									<button className="update-pill__label" onClick={installUpdate}>
-										{t("v{version} - download update", { version: update.version ?? "" })}
-									</button>
-									<button
+				<div className="bottom-bar popover-surface">
+					<JobTray />
+					{update.version &&
+						!update.dismissed &&
+						(updateView.pending || update.phase === "error") && (
+							<div className="update-pill popover-surface" title={updateView.status}>
+								{update.phase === "downloading" ? (
+									<span className="update-pill__label">
+										{updateView.status} <span className="mono">{update.percent}%</span>
+									</span>
+								) : (
+									updateView.action && (
+										<button
+											className="update-pill__label"
+											onClick={() => void updateView.action?.run()}
+										>
+											v{update.version} - {updateView.action.label}
+										</button>
+									)
+								)}
+								{update.phase === "available" && update.prerelease && <PrereleasePill />}
+								{(update.phase === "available" || update.phase === "error") && (
+									<IconButton
 										className="update-pill__dismiss"
+										icon={mdiClose}
+										size={14}
+										label={t("Dismiss")}
 										onClick={dismissUpdate}
-										title={t("Dismiss")}
-									>
-										<Icon path={mdiClose} size={14} />
-									</button>
-								</>
-							)}
-							{update.phase === "downloading" && (
-								<span className="update-pill__label">
-									{t("Downloading")} {update.percent}%
-								</span>
-							)}
-							{update.phase === "ready" && (
-								<button className="update-pill__label" onClick={relaunchApp}>
-									{t("Restart to update")}
-								</button>
-							)}
-							{update.phase === "error" && (
-								<>
-									<button className="update-pill__label" onClick={installUpdate}>
-										{t("Update failed - retry")}
-									</button>
-									<button
-										className="update-pill__dismiss"
-										onClick={dismissUpdate}
-										title={t("Dismiss")}
-									>
-										<Icon path={mdiClose} size={14} />
-									</button>
-								</>
-							)}
-						</div>
-					)}
+									/>
+								)}
+							</div>
+						)}
 					{isMapList && <BulkActions />}
-					<button
-						className="settings-gear"
+					<IconButton
+						icon={mdiPuzzle}
+						size={18}
+						label={t("Plugins")}
 						onClick={() => setShowPlugins(true)}
-						title={t("Plugins")}
-					>
-						<Icon path={mdiPuzzle} />
-					</button>
-					<button
-						className="settings-gear"
+					/>
+					<IconButton
+						icon={mdiCog}
+						size={18}
+						label={t("Settings")}
 						onClick={() => setShowSettings(true)}
-						title={t("Settings")}
 					>
-						<Icon path={mdiCog} />
-					</button>
+						<UnreadReplyDot />
+					</IconButton>
 				</div>
 			)}
-			{showStats && <StatsForNerds onClose={() => setShowStats(false)} />}
+			<JobExitDialog />
+			{showStats && Stats && <Stats open onOpenChange={setShowStats} />}
 			<SettingsPage open={showSettings} onOpenChange={setShowSettings} />
+			{feedbackOpen && <ReportDialog open onOpenChange={setFeedbackOpen} />}
 			<PluginMarketplace open={showPlugins} onOpenChange={setShowPlugins} />
-			<ManualSearch open={manualSearchOpen} onOpenChange={setManualSearchOpen} />
-			{manualChapter !== null && (
-				<Manual chapterId={manualChapter} onNavigate={gotoManualChapter} onClose={closeManual} />
+			{manual && manualSearchOpen && (
+				<manual.Search open={manualSearchOpen} onOpenChange={setManualSearchOpen} />
+			)}
+			{manual && manualChapter !== null && (
+				<manual.Manual
+					chapterId={manualChapter}
+					onNavigate={gotoManualChapter}
+					onClose={closeManual}
+				/>
 			)}
 		</>
 	);
 }
 
-/** Tauri-only: a map sub-window persists its geometry and destroys itself once its map is
- *  backed out of. destroy() never fires CloseRequested, so the window-state plugin wouldn't
- *  save geometry — we save it explicitly first. */
 function useSelfDestruct(closing: boolean) {
 	useEffect(() => {
 		if (!closing) return;
-		WebviewWindow.getByLabel("main")
-			.then(async (main) => {
-				await main?.unminimize();
-				await main?.setFocus();
-			})
-			.finally(async () => {
-				await invoke("plugin:window-state|save_window_state", { flags: WINDOW_STATE_ALL }).catch(
-					() => {},
-				);
-				getCurrentWindow().destroy();
-			});
+		void closeAndDestroy();
 	}, [closing]);
 }
 
@@ -268,7 +278,7 @@ function useCssVarSettings() {
  *  the mapEmbedPrefs subscription so pref churn (opacity slider drags write prefs
  *  per tick) re-renders only this component, never the App tree. */
 function AccentSync() {
-	const [prefs] = useLocalStorage<MapEmbedPrefs>("mapEmbedPrefs", DEFAULT_PREFS);
+	const [prefs] = useLocalStorage(MAP_EMBED_PREFS);
 	useEffect(() => {
 		applyAccentColor(resolveSvColorHex(prefs.svColor));
 	}, [prefs.svColor]);
@@ -291,30 +301,27 @@ function useCustomCss() {
 	}, [customCss]);
 }
 
-declare const __APP_VERSION__: string;
+const WELCOME_SEEN = persisted("welcomeSeen", false);
 
-function WelcomeDialog({ open, onDismiss }: { open: boolean; onDismiss: () => void }) {
+function WelcomeDialog({ open, onOpenChange }: DialogProps) {
 	return (
-		<Dialog
-			open={open}
-			onOpenChange={(v) => {
-				if (!v) onDismiss();
-			}}
-		>
-			<DialogContent title={t("Welcome to {app}", { app: APP_NAME })} className="welcome-dialog">
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			<DialogContent
+				title={t("Welcome to {app}", { app: APP_NAME })}
+				className="welcome-dialog"
+				size="sm"
+			>
 				<div className="welcome-dialog__hero">
 					<img src="/icon-1024.png" alt="" width={80} height={80} draggable={false} />
 					<div className="welcome-dialog__name">{APP_NAME}</div>
-					<div className="welcome-dialog__version">
-						v{typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}
-					</div>
+					<div className="welcome-dialog__version">v{appVersion() ?? "dev"}</div>
 				</div>
 				<div className="welcome-dialog__links">
 					<button
 						type="button"
 						className="welcome-dialog__link"
 						onClick={() => {
-							onDismiss();
+							onOpenChange(false);
 							openManual();
 						}}
 					>
@@ -328,7 +335,7 @@ function WelcomeDialog({ open, onDismiss }: { open: boolean; onDismiss: () => vo
 					</button>
 					<a
 						className="welcome-dialog__link"
-						href="https://discord.gg/4wPNJTuzD8"
+						href={DISCORD_URL}
 						target="_blank"
 						rel="noopener noreferrer"
 					>
@@ -339,9 +346,13 @@ function WelcomeDialog({ open, onDismiss }: { open: boolean; onDismiss: () => vo
 						</span>
 					</a>
 				</div>
-				<button className="button button--primary welcome-dialog__cta" onClick={onDismiss}>
+				<Button
+					variant="primary"
+					className="welcome-dialog__cta"
+					onClick={() => onOpenChange(false)}
+				>
 					{t("Got it")}
-				</button>
+				</Button>
 			</DialogContent>
 		</Dialog>
 	);

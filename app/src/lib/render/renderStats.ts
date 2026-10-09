@@ -9,7 +9,7 @@ import { getLocal, setLocal } from "@/lib/hooks/useLocalStorage";
 import { MARKER_STYLE } from "@/lib/render/markerLayer";
 import { getMapHost } from "@/lib/map/mapState";
 import type { MapHost } from "@/lib/map/host";
-import { DEFAULT_PREFS, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { MAP_EMBED_PREFS, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 import type { Bounds, MarkerStyle } from "@/types";
 import {
 	startFrameMeter,
@@ -24,6 +24,7 @@ import {
 export interface DeckMetrics {
 	fps: number;
 	layersCount: number;
+	/** Draws in the latest screen pass; one logical layer can draw in multiple viewports. */
 	drawLayersCount: number;
 	framesRedrawn: number;
 	gpuTime: number;
@@ -101,7 +102,7 @@ export interface RenderStats {
 }
 
 function currentPrefs(): MapEmbedPrefs {
-	return getLocal("mapEmbedPrefs", DEFAULT_PREFS);
+	return getLocal(MAP_EMBED_PREFS);
 }
 
 export function computeRenderStats(): RenderStats | null {
@@ -169,13 +170,13 @@ if (typeof window !== "undefined") {
 		deck: getDeckMetrics,
 		host: getMapHost,
 		setMarkerStyle: (style) =>
-			setLocal("mapEmbedPrefs", {
-				...getLocal("mapEmbedPrefs", DEFAULT_PREFS),
+			setLocal(MAP_EMBED_PREFS, {
+				...getLocal(MAP_EMBED_PREFS),
 				markerStyle: style,
 			}),
 		setMarkerSize: (size) =>
-			setLocal("mapEmbedPrefs", {
-				...getLocal("mapEmbedPrefs", DEFAULT_PREFS),
+			setLocal(MAP_EMBED_PREFS, {
+				...getLocal(MAP_EMBED_PREFS),
 				markerSize: size,
 			}),
 		probe: (on) => {

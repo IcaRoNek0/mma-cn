@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo, useCallback, useEffectEvent } from "react";
-import { getCommands } from "@/store/commands";
+import { getCommands, runCommand } from "@/store/commands";
 import { getBinding } from "@/lib/util/hotkeys";
 
 const IS_MAC = /Mac|iPod|iPhone|iPad/i.test(navigator.platform);
@@ -31,6 +31,9 @@ function parseCombo(combo: string): ParsedKey {
 			parsed.shift = true;
 		} else if (lower === "plus") {
 			parsed.key = "+";
+		} else if (lower === "comma") {
+			// A bare "," would read as the alternative separator in parseHotkey.
+			parsed.key = ",";
 		} else {
 			parsed.key = lower;
 		}
@@ -47,24 +50,107 @@ export function parseHotkey(hotkeyStr: string): ParsedKey[][] {
 	);
 }
 
-/** Display form of a stored combo string (e.g. "Mod+k" -> "Ctrl+k" / "Cmd+k"). */
-export function formatBinding(binding: string): string {
+const MAC_GLYPHS = new Map([
+	["mod", "⌘"],
+	["meta", "⌘"],
+	["ctrl", "⌃"],
+	["control", "⌃"],
+	["alt", "⌥"],
+	["shift", "⇧"],
+	["arrowleft", "←"],
+	["arrowright", "→"],
+	["arrowup", "↑"],
+	["arrowdown", "↓"],
+]);
+const KEY_WORDS = new Map([
+	["mod", "Ctrl"],
+	["ctrl", "Ctrl"],
+	["control", "Ctrl"],
+	["meta", "Meta"],
+	["alt", "Alt"],
+	["shift", "Shift"],
+	["arrowleft", "Left"],
+	["arrowright", "Right"],
+	["arrowup", "Up"],
+	["arrowdown", "Down"],
+	["plus", "+"],
+	["comma", ","],
+	["space", "Space"],
+]);
+
+function keyLabel(part: string, mac: boolean): string {
+	const lower = part.toLowerCase();
+	const named = (mac && MAC_GLYPHS.get(lower)) || KEY_WORDS.get(lower);
+	if (named) return named;
+	return part.charAt(0).toUpperCase() + part.slice(1);
+}
+
+function comboKeys(combo: string): string[] {
+	if (combo === "+") return ["+"];
+	return combo.endsWith("++") ? [...combo.slice(0, -2).split("+"), "+"] : combo.split("+");
+}
+
+/** Display form of a stored binding: glyphs on Mac ("Mod+Shift+k" -> "⌘⇧K"), words
+ *  elsewhere ("Ctrl+Shift+K"). */
+export function formatBinding(binding: string, mac = IS_MAC): string {
 	return binding
-		.replace(/Mod/g, IS_MAC ? "Cmd" : "Ctrl")
-		.replace(/ArrowRight/g, "Right")
-		.replace(/ArrowLeft/g, "Left")
-		.replace(/ArrowUp/g, "Up")
-		.replace(/ArrowDown/g, "Down");
+		.split(",")
+		.map((alt) =>
+			alt
+				.trim()
+				.split(" ")
+				.map((combo) =>
+					comboKeys(combo.trim())
+						.map((key) => keyLabel(key, mac))
+						.join(mac ? "" : "+"),
+				)
+				.join(" "),
+		)
+		.join(", ");
 }
 
 // Number-row physical key. e.key here is shift-dependent (Shift+0 -> ")"), so we key
 // off e.code to speak in base digits and keep Shift explicit in the combo.
 const DIGIT_CODE = /^Digit([0-9])$/;
+const LETTER_CODE = /^Key([A-Z])$/;
+const US_PUNCTUATION_BY_CODE = new Map([
+	["Backquote", "`"],
+	["Minus", "-"],
+	["Equal", "="],
+	["BracketLeft", "["],
+	["BracketRight", "]"],
+	["Backslash", "\\"],
+	["Semicolon", ";"],
+	["Quote", "'"],
+	["Comma", ","],
+	["Period", "."],
+	["Slash", "/"],
+]);
+const LETTER = /^\p{L}$/u;
+const LATIN = /\p{Script=Latin}/u;
+
+// A non-Latin layout (Cyrillic, Greek, ...) types letters no binding can name, so those
+// keys fall back to where they sit on a US layout.
+function positionalKey(e: KeyboardEvent): string | undefined {
+	const digit = e.code?.match(DIGIT_CODE);
+	if (digit) return digit[1];
+	if (!LETTER.test(e.key) || LATIN.test(e.key)) return undefined;
+	const letter = e.code?.match(LETTER_CODE);
+	if (letter) return letter[1].toLowerCase();
+	return US_PUNCTUATION_BY_CODE.get(e.code);
+}
+
+/** The key name a binding uses for this event, before lowercasing. */
+export function eventKey(e: KeyboardEvent): string {
+	const key = positionalKey(e) ?? e.key;
+	if (key === " ") return "space";
+	if (key === "=") return "+";
+	return key;
+}
 
 /** Canonical combo string for a captured keydown, or null for a bare modifier. */
 export function buildComboString(e: KeyboardEvent): string | null {
-	const key = e.key;
-	if (["Control", "Alt", "Shift", "Meta"].includes(key)) return null;
+	if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
 
 	const parts: string[] = [];
 	if (e.ctrlKey && !IS_MAC) parts.push("Mod");
@@ -74,12 +160,9 @@ export function buildComboString(e: KeyboardEvent): string | null {
 	if (e.altKey) parts.push("Alt");
 	if (e.shiftKey) parts.push("Shift");
 
-	const digit = e.code?.match(DIGIT_CODE);
-	let keyName = key;
-	if (digit) keyName = digit[1];
-	else if (key === " ") keyName = "space";
-	else if (key === "=" && !e.shiftKey) keyName = "+";
-	else if (key.length === 1) keyName = key.toLowerCase();
+	let keyName = eventKey(e);
+	if (keyName === ",") keyName = "comma";
+	else if (keyName.length === 1) keyName = keyName.toLowerCase();
 
 	if (keyName === "+" && parts.length === 0) {
 		parts.push("plus");
@@ -103,14 +186,11 @@ export function matchesKey(
 	const alt = e.altKey;
 	const meta = e.metaKey;
 	const shift = e.shiftKey;
-	const digit = e.code?.match(DIGIT_CODE);
-	let key = e.key.toLowerCase();
-	if (digit) key = digit[1];
-	else if (key === " ") key = "space";
-	else if (key === "=") key = "+";
+	const key = eventKey(e).toLowerCase();
 
 	// Digit row keeps Shift explicit (key is normalized via e.code), so the implied-shift
 	// relaxation must not apply or Shift+1 would also match a bare "1" binding.
+	const digit = DIGIT_CODE.test(e.code ?? "");
 	const shiftImplied = !digit && (SHIFTED_CHARS.has(pk.key) || SHIFTED_CHARS.has(e.key));
 
 	return (
@@ -142,6 +222,14 @@ export function blockBrowserAccelerators(): void {
 	});
 }
 
+/** True while a plugin overlay owns the keyboard. `data-plugin-overlay` is
+ *  the same contract the CSS uses to hide the editor shell; every editor-level key handler
+ *  yields on it, whatever phase or target it listens on -- per-key suppression from inside
+ *  the overlay cannot reach listeners registered earlier or on window capture. */
+export function pluginOverlayOwnsInput(): boolean {
+	return document.querySelector("[data-plugin-overlay]") !== null;
+}
+
 export function isEditableElement(el: EventTarget | null): boolean {
 	if (!(el instanceof HTMLElement)) return false;
 	const tag = el.tagName.toLowerCase();
@@ -160,6 +248,17 @@ export function isEditableElement(el: EventTarget | null): boolean {
 	);
 }
 
+/** True when the element treats Enter/Space as its own activation (buttons, links, and
+ *  anything given a button role). Editor-level Enter handlers must yield to it. */
+export function isActivationElement(el: EventTarget | null): boolean {
+	if (!(el instanceof HTMLElement)) return false;
+	const tag = el.tagName.toLowerCase();
+	if (tag === "button" || tag === "summary") return true;
+	if (tag === "a" && el.hasAttribute("href")) return true;
+	const role = (el.getAttribute("role") ?? "").toLowerCase();
+	return role === "button" || role === "link" || role === "menuitem" || role === "tab";
+}
+
 export function useHotkey(
 	hotkey: string,
 	callback: (e: KeyboardEvent) => void,
@@ -174,6 +273,7 @@ export function useHotkey(
 
 	const onKey = useEffectEvent((e: KeyboardEvent) => {
 		if (e.defaultPrevented) return;
+		if (pluginOverlayOwnsInput()) return;
 		const editable = !options.enableInInputs && isEditableElement(e.target);
 
 		for (const alt of parsed) {
@@ -219,6 +319,7 @@ export function useCommandHotkeys() {
 	useEffect(() => {
 		function handler(e: KeyboardEvent) {
 			if (e.defaultPrevented) return;
+			if (pluginOverlayOwnsInput()) return;
 			const editable = isEditableElement(e.target);
 
 			for (const cmd of getCommands()) {
@@ -232,7 +333,7 @@ export function useCommandHotkeys() {
 						// Before the enabled check, or a disabled command leaks the key to the browser.
 						e.preventDefault();
 						if (cmd.enabled && !cmd.enabled()) return;
-						cmd.execute();
+						runCommand(cmd);
 						return;
 					}
 				}

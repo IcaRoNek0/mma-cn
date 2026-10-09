@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { Tag } from "@/types";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import {
 	mdiPin,
@@ -9,24 +10,25 @@ import {
 	mdiBookOpenVariant,
 	mdiBookOpenOutline,
 } from "@mdi/js";
-import type { Selection, Tag } from "@/bindings.gen";
-import { useMapState, getActiveSelections } from "@/store/useMapStore";
+import { useMapState, getTags } from "@/store/useMapStore";
+import { getSelectedTagIdsDeep } from "@/store/selectionActions";
 import {
 	parseDoclink,
 	loadSection,
 	evictDoc,
 	doclinkedTags,
-	openDocHref,
 	preloadSectionImages,
 	type DocSection,
 } from "@/lib/doclink";
+import { openHref } from "@/lib/map/mapClick";
 import { useAsync } from "@/lib/hooks/useAsync";
-import { Icon } from "@/components/primitives/Icon";
-import { Tooltip } from "@/components/primitives/Tooltip";
+import { usePointerDrag } from "@/lib/hooks/usePointerDrag";
+import { Spinner } from "@/components/primitives/Spinner";
 import { clamp, range } from "@/types/util";
 import { DocRenderer } from "@/components/editor/doclink/DocRenderer";
 import "./doclink.css";
 import { t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
 
 const WIDTH_RANGE = range([280, 900]);
 
@@ -47,7 +49,7 @@ function ShadowHtml({ css, html }: { css: string; html: string }) {
 		if (!el) return;
 		const root = el.shadowRoot ?? el.attachShadow({ mode: "open" });
 		// Sanitized by the doclink provider (scripts/handlers stripped); shadow root isolates the doc CSS.
-		// eslint-disable-next-line no-restricted-syntax
+		// eslint-disable-next-line local/restricted-syntax
 		root.innerHTML = `<style>${css}</style><style>${OVERRIDE_CSS}</style><div class="doclink-doc">${html}</div>`;
 	}, [css, html]);
 
@@ -57,7 +59,7 @@ function ShadowHtml({ css, html }: { css: string; html: string }) {
 			.find((n): n is HTMLAnchorElement => n instanceof HTMLAnchorElement && !!n.href);
 		if (!a) return;
 		e.preventDefault();
-		void openDocHref(a.href);
+		void openHref(a.href);
 	}, []);
 
 	return <div ref={hostRef} onClick={onClick} />;
@@ -69,18 +71,9 @@ export interface DoclinkPanelProps {
 	onClose: () => void;
 }
 
-/** Tag ids of every Tag leaf in the selection tree, in list order (composites included). */
-function collectSelectedTagIds(sels: Selection[], out: number[] = []): number[] {
-	for (const s of sels) {
-		if (s.props.type === "Tag") out.push(s.props.tagId);
-		if ("selections" in s.props) collectSelectedTagIds(s.props.selections, out);
-	}
-	return out;
-}
-
 export function DoclinkPanel({ width, onWidthChange, onClose }: DoclinkPanelProps) {
-	const tagMap = useMapState((s) => s.tags);
-	const selections = useMapState(getActiveSelections);
+	const tagMap = useMapState(() => getTags());
+	const selectedTagIds = useMapState(getSelectedTagIdsDeep);
 	const tags: Tag[] = doclinkedTags(tagMap);
 	const [pinned, setPinned] = useState(false);
 	const [sel, setSel] = useState<{ tagId: number; idx: number } | null>(null);
@@ -88,9 +81,7 @@ export function DoclinkPanel({ width, onWidthChange, onClose }: DoclinkPanelProp
 
 	// Follow tag selections: the newest selected tag with doclinks wins; keep the
 	// current one while it stays selected.
-	const candidates = collectSelectedTagIds(selections).filter(
-		(id) => (tagMap[id]?.doclinks?.length ?? 0) > 0,
-	);
+	const candidates = selectedTagIds.filter((id) => (tagMap[id]?.doclinks?.length ?? 0) > 0);
 	const candidateKey = candidates.join(",");
 	useEffect(() => {
 		if (pinned || candidates.length === 0) return;
@@ -146,23 +137,12 @@ export function DoclinkPanel({ width, onWidthChange, onClose }: DoclinkPanelProp
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [section]);
 
-	const onResizeDown = useCallback(
-		(e: React.PointerEvent) => {
-			e.preventDefault();
-			const el = e.currentTarget as HTMLElement;
-			el.setPointerCapture(e.pointerId);
-			const onMove = (ev: PointerEvent) => {
-				const rect = panelRef.current?.getBoundingClientRect();
-				if (!rect) return;
-				onWidthChange(Math.round(clamp(rect.right - ev.clientX, WIDTH_RANGE)));
-			};
-			const ac = new AbortController();
-			const onUp = () => ac.abort();
-			el.addEventListener("pointermove", onMove, { signal: ac.signal });
-			el.addEventListener("pointerup", onUp, { signal: ac.signal });
+	const onResizeDown = usePointerDrag(() => ({
+		onMove: (ev) => {
+			const rect = panelRef.current?.getBoundingClientRect();
+			if (rect) onWidthChange(Math.round(clamp(rect.right - ev.clientX, WIDTH_RANGE)));
 		},
-		[onWidthChange],
-	);
+	}));
 
 	const title = shown?.docTitle ?? selTag?.name ?? t("Doclink");
 
@@ -170,68 +150,45 @@ export function DoclinkPanel({ width, onWidthChange, onClose }: DoclinkPanelProp
 		<aside className="doclink-panel" style={{ width }} ref={panelRef}>
 			<div className="doclink-panel__resize" onPointerDown={onResizeDown} />
 			<div className="doclink-panel__header">
-				<span className="doclink-panel__title" title={title}>
+				<span className="doclink-panel__title truncate" title={title}>
 					{title}
 				</span>
-				<Tooltip content={t("Re-fetch document (bypass cache)")} side="bottom">
-					<button
-						className="icon-button"
-						type="button"
-						aria-label={t("Refresh document")}
-						disabled={!url || loading}
-						onClick={onRefresh}
-					>
-						<Icon path={mdiRefresh} />
-					</button>
-				</Tooltip>
-				<Tooltip
-					content={wholeDoc ? t("Show linked section only") : t("Show whole document")}
-					side="bottom"
-				>
-					<button
-						className="icon-button"
-						type="button"
-						aria-label={t("Toggle whole document")}
-						disabled={!docRef?.anchor}
-						onClick={() => setWholeDoc((w) => !w)}
-					>
-						<Icon path={wholeDoc ? mdiBookOpenVariant : mdiBookOpenOutline} />
-					</button>
-				</Tooltip>
-				<Tooltip
-					content={pinned ? t("Unpin (follow selected tags)") : t("Pin current section")}
-					side="bottom"
-				>
-					<button
-						className="icon-button"
-						type="button"
-						aria-label={t("Pin section")}
-						onClick={() => setPinned((p) => !p)}
-					>
-						<Icon path={pinned ? mdiPin : mdiPinOutline} />
-					</button>
-				</Tooltip>
-				<Tooltip content={t("Open in browser")} side="bottom">
-					<button
-						className="icon-button"
-						type="button"
-						aria-label={t("Open in browser")}
-						disabled={!url}
-						onClick={() => url && void openExternal(url)}
-					>
-						<Icon path={mdiOpenInNew} />
-					</button>
-				</Tooltip>
-				<Tooltip content={t("Close")} side="bottom">
-					<button
-						className="icon-button"
-						type="button"
-						aria-label={t("Close doclink panel")}
-						onClick={onClose}
-					>
-						<Icon path={mdiClose} />
-					</button>
-				</Tooltip>
+				<IconButton
+					icon={mdiRefresh}
+					label={t("Refresh document")}
+					tooltipSide="bottom"
+					disabled={!url || loading}
+					onClick={onRefresh}
+				/>
+				<IconButton
+					icon={wholeDoc ? mdiBookOpenVariant : mdiBookOpenOutline}
+					label={t("Toggle whole document")}
+					tooltip={wholeDoc ? t("Show linked section only") : t("Show whole document")}
+					tooltipSide="bottom"
+					disabled={!docRef?.anchor}
+					onClick={() => setWholeDoc((w) => !w)}
+				/>
+				<IconButton
+					icon={pinned ? mdiPin : mdiPinOutline}
+					label={t("Pin section")}
+					tooltip={pinned ? t("Unpin (follow selected tags)") : t("Pin current section")}
+					tooltipSide="bottom"
+					onClick={() => setPinned((p) => !p)}
+				/>
+				<IconButton
+					icon={mdiOpenInNew}
+					label={t("Open in browser")}
+					tooltipSide="bottom"
+					disabled={!url}
+					onClick={() => url && void openExternal(url)}
+				/>
+				<IconButton
+					icon={mdiClose}
+					label={t("Close doclink panel")}
+					tooltip={t("Close")}
+					tooltipSide="bottom"
+					onClick={onClose}
+				/>
 			</div>
 			{/* Present whenever ANY tag in the map pages (fixed height, may be empty) --
 			    mounting it per-tag shifts the doc body on every section switch. */}
@@ -256,7 +213,7 @@ export function DoclinkPanel({ width, onWidthChange, onClose }: DoclinkPanelProp
 			>
 				{loading && shown && (
 					<div className="doclink-panel__loading">
-						<span className="doclink-spinner" />
+						<Spinner />
 					</div>
 				)}
 				{tags.length === 0 ? (
@@ -288,7 +245,7 @@ export function DoclinkPanel({ width, onWidthChange, onClose }: DoclinkPanelProp
 					<ShadowHtml css={shown.css} html={shown.html} />
 				) : loading ? (
 					<div className="doclink-panel__status doclink-panel__status--center">
-						<span className="doclink-spinner" />
+						<Spinner />
 					</div>
 				) : null}
 			</div>

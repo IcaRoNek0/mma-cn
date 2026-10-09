@@ -1,125 +1,34 @@
 import type { Location } from "@/bindings.gen";
 import { cmd } from "@/lib/commands";
-import { resolvePanoIds, svThumbnailUrl } from "@/lib/sv/lookup";
-import { fetchSvMetadata, fetchSvMetadataBatched } from "@/lib/sv/svMeta";
-import type { PanoData } from "@/lib/sv/svRunner";
+import { svThumbnailUrl } from "@/lib/sv/lookup";
+import { svMetadata } from "@/lib/sv/query";
+import type { Pano } from "@/bindings.gen";
+import { panoResolveProvider } from "@/lib/sv/providers";
+import { runProcedure, type BatchOutcome, type BulkOpts } from "@/lib/data/procedures";
 import { runConcurrent } from "@/lib/util/concurrent";
+import { fileTimestamp } from "@/lib/util/format";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
-import { clamp } from "@/types/util";
-import { mmaBufUrl, downloadBlob } from "@/lib/util/util";
+import { mmaBufUrl, downloadBlob, schemeBase } from "@/lib/util/util";
 
 export type PanoRenderMode = "equirectangular" | "perspective" | "thumbnail" | "tile";
 
-// --- Tile fetch and stitching ---
-
-/** Street View tiles are a fixed 512px pitch in `worldSize` space */
-const SV_TILE = 512;
-
-/** Number of tiles and the cropped content size for a pano at a given zoom.
- *  The tile grid rounds up to a power of two; the real image only spans
- *  `worldSize`. Scale the content down to the requested zoom and crop to it.
- *  Zoom is clamped to the pano's max (derived from its real width). Falls back
- *  to the full grid when metadata is unavailable. */
-export function panoTileLayout(
-	zoom: number,
-	worldSize?: google.maps.Size,
-): { zoom: number; cols: number; rows: number; width: number; height: number; tile: number } {
-	let z = zoom;
-	let width: number;
-	let height: number;
-	if (worldSize?.width && worldSize?.height) {
-		const maxZoom = Math.ceil(Math.log2(worldSize.width / SV_TILE));
-		z = clamp(zoom, 0, maxZoom);
-		const scale = 2 ** (maxZoom - z);
-		width = Math.round(worldSize.width / scale);
-		height = Math.round(worldSize.height / scale);
-	} else {
-		width = 2 ** zoom * SV_TILE;
-		height = 2 ** (zoom - 1) * SV_TILE;
-	}
-	return {
-		zoom: z,
-		cols: Math.ceil(width / SV_TILE),
-		rows: Math.ceil(height / SV_TILE),
-		width,
-		height,
-		tile: SV_TILE,
-	};
+/** A panorama stitched at `zoom` and cropped to its imagery, as a JPEG. */
+function panoUrl(panoId: string, zoom: number): string {
+	return `${schemeBase("pano")}${panoId}/${zoom}`;
 }
 
-export function panoTileUrl(panoId: string, x: number, y: number, z: number): string {
-	return `https://geo0.ggpht.com/cbk?cb_client=apiv3&panoid=${panoId}&output=tile&zoom=${z}&x=${x}&y=${y}`;
+function panoTileUrl(panoId: string, zoom: number, x: number, y: number): string {
+	return `${panoUrl(panoId, zoom)}/${x}/${y}`;
 }
 
-async function fetchPanoTile(
-	panoId: string,
-	x: number,
-	y: number,
-	z: number,
-	signal?: AbortSignal,
-): Promise<ImageBitmap | null> {
-	const url = panoTileUrl(panoId, x, y, z);
-	for (let attempt = 0; attempt < 2 && !signal?.aborted; attempt++) {
-		try {
-			const resp = await fetch(url, { signal });
-			if (!resp.ok) continue;
-			return await createImageBitmap(await resp.blob());
-		} catch {
-			// retry
-		}
-	}
-	return null;
-}
-
-/** Stitch a panorama's tiles onto a canvas at the given zoom. Null if no tiles loaded. */
-export async function stitchPano(
-	panoId: string,
-	meta: PanoData | null | undefined,
-	zoom: number,
-	signal?: AbortSignal,
-): Promise<HTMLCanvasElement | null> {
-	const { zoom: z, cols, rows, width, height, tile } = panoTileLayout(zoom, meta?.tiles?.worldSize);
-
-	const canvas = document.createElement("canvas");
-	canvas.width = width;
-	canvas.height = height;
-	const ctx = canvas.getContext("2d");
-	if (!ctx) return null;
-
-	let loaded = 0;
-	const loads: Promise<void>[] = [];
-	for (let y = 0; y < rows; y++) {
-		for (let x = 0; x < cols; x++) {
-			loads.push(
-				(async () => {
-					const bmp = await fetchPanoTile(panoId, x, y, z, signal);
-					if (!bmp) return;
-					ctx.drawImage(bmp, x * tile, y * tile);
-					bmp.close();
-					loaded++;
-				})(),
-			);
-		}
-	}
-	await Promise.all(loads);
-	signal?.throwIfAborted();
-	return loaded > 0 ? canvas : null;
-}
-
-/** Download the full panorama as a single stitched JPEG at max quality. Toasts on success/failure. */
+/** Download the full panorama as a single stitched JPEG. Toasts on success/failure. */
 export async function downloadPano(panoId: string, zoom = 5): Promise<void> {
-	try {
-		const [meta] = await fetchSvMetadata([panoId]);
-		const canvas = await stitchPano(panoId, meta, zoom);
-		if (!canvas) throw new Error("no tiles loaded");
-
-		const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.95));
-		if (!blob) throw new Error("encode failed");
-
+	const blob = await fetchImage(panoUrl(panoId, zoom));
+	if (blob) {
 		downloadBlob(blob, `${panoId}.jpg`);
 		toast(t("Panorama downloaded"));
-	} catch {
+	} else {
 		toast(t("Panorama download failed"));
 	}
 }
@@ -131,16 +40,11 @@ export interface PanoDownloadConfig {
 	tileY: number;
 }
 
-export interface BulkDownloadResult {
-	succeeded: number[];
-	failed: number[];
+export interface BulkDownloadResult extends BatchOutcome {
 	/** Temp file (single image or ZIP) ready for the export save dialog; null when nothing downloaded. */
-	outputPath: string | null;
-	suggestedName: string | null;
-	fileCount: number;
+	output: { path: string; name: string } | null;
 }
 
-const META_BATCH = 200;
 const DOWNLOAD_CONCURRENCY = 4;
 
 // --- Equirectangular -> perspective reprojection ---
@@ -179,8 +83,17 @@ function multiplyMatrices(a: number[][], b: number[][]): number[][] {
 	return result;
 }
 
+function pixelsOf(bitmap: ImageBitmap): ImageData {
+	const canvas = document.createElement("canvas");
+	canvas.width = bitmap.width;
+	canvas.height = bitmap.height;
+	const ctx = canvas.getContext("2d")!;
+	ctx.drawImage(bitmap, 0, 0);
+	return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
 function generatePerspective(
-	canvas: HTMLCanvasElement,
+	input: ImageData,
 	fov: number,
 	theta: number,
 	phi: number,
@@ -196,9 +109,7 @@ function generatePerspective(
 	const cx = outputWidth / 2;
 	const cy = outputHeight / 2;
 
-	const inputWidth = canvas.width;
-	const inputHeight = canvas.height;
-	const inputImageData = canvas.getContext("2d")!.getImageData(0, 0, inputWidth, inputHeight);
+	const { width: inputWidth, height: inputHeight, data: inputData } = input;
 
 	const outputImageData = perspectiveCtx.createImageData(outputWidth, outputHeight);
 	const outputData = outputImageData.data;
@@ -224,9 +135,9 @@ function generatePerspective(
 			if (u >= 0 && u < inputWidth && v >= 0 && v < inputHeight) {
 				const srcOffset = (v * inputWidth + u) * 4;
 				const destOffset = (y * outputWidth + x) * 4;
-				outputData[destOffset] = inputImageData.data[srcOffset];
-				outputData[destOffset + 1] = inputImageData.data[srcOffset + 1];
-				outputData[destOffset + 2] = inputImageData.data[srcOffset + 2];
+				outputData[destOffset] = inputData[srcOffset];
+				outputData[destOffset + 1] = inputData[srcOffset + 1];
+				outputData[destOffset + 2] = inputData[srcOffset + 2];
 				outputData[destOffset + 3] = 255;
 			}
 		}
@@ -264,7 +175,7 @@ async function fetchImage(url: string, signal?: AbortSignal): Promise<Blob | nul
 async function renderLocationImage(
 	loc: Location,
 	panoId: string,
-	meta: PanoData | null,
+	meta: Pano | null,
 	config: PanoDownloadConfig,
 	signal?: AbortSignal,
 ): Promise<RenderedImage | null> {
@@ -279,7 +190,7 @@ async function renderLocationImage(
 
 	if (config.mode === "tile") {
 		const blob = await fetchImage(
-			panoTileUrl(panoId, config.tileX, config.tileY, config.zoom),
+			panoTileUrl(panoId, config.zoom, config.tileX, config.tileY),
 			signal,
 		);
 		return blob
@@ -287,25 +198,22 @@ async function renderLocationImage(
 			: null;
 	}
 
-	const canvas = await stitchPano(panoId, meta, config.zoom, signal);
-	if (!canvas) return null;
+	const pano = await fetchImage(panoUrl(panoId, config.zoom), signal);
+	if (!pano) return null;
+	if (config.mode === "equirectangular") return { blob: pano, fileName: `${name}.jpg` };
 
-	if (config.mode === "perspective") {
-		const centerHeading = meta?.extra?.drivingDirection ?? 0;
-		const perspective = generatePerspective(
-			canvas,
-			125,
-			loc.heading - centerHeading,
-			loc.pitch,
-			1920,
-			1080,
-		);
-		const blob = await canvasToBlob(perspective, "image/png");
-		return blob ? { blob, fileName: `${name}.png` } : null;
-	}
-
-	const blob = await canvasToBlob(canvas, "image/jpeg", 0.95);
-	return blob ? { blob, fileName: `${name}.jpg` } : null;
+	const bitmap = await createImageBitmap(pano);
+	const perspective = generatePerspective(
+		pixelsOf(bitmap),
+		125,
+		loc.heading - (meta ? meta.centerHeading : 0),
+		loc.pitch,
+		1920,
+		1080,
+	);
+	bitmap.close();
+	const blob = await canvasToBlob(perspective, "image/png");
+	return blob ? { blob, fileName: `${name}.png` } : null;
 }
 
 // --- Bulk orchestration ---
@@ -313,10 +221,10 @@ async function renderLocationImage(
 async function fetchMetadataMap(
 	panoIds: string[],
 	signal?: AbortSignal,
-): Promise<Map<string, PanoData>> {
+): Promise<Map<string, Pano>> {
 	const unique = [...new Set(panoIds)];
-	const datas = await fetchSvMetadataBatched(unique, { batchSize: META_BATCH, signal });
-	const out = new Map<string, PanoData>();
+	const datas = await svMetadata(unique, signal);
+	const out = new Map<string, Pano>();
 	datas.forEach((d, i) => {
 		if (d) out.set(unique[i], d);
 	});
@@ -328,25 +236,37 @@ async function fetchMetadataMap(
 export async function bulkDownloadPanoramas(
 	locations: Location[],
 	config: PanoDownloadConfig,
-	opts: {
-		signal?: AbortSignal;
-		onProgress?: (done: number, total: number, label?: string) => void;
-	} = {},
+	opts: BulkOpts = {},
 ): Promise<BulkDownloadResult> {
 	const { signal, onProgress } = opts;
-	const succeeded: number[] = [];
+	const saved: number[] = [];
 	const failed: number[] = [];
+	// A hand-run of sequential phases: the bar resets per phase, one part names it.
+	const report = (label: string) => (done: number, total: number) =>
+		onProgress?.(done, total, [{ label, done, total, failed: 0, finished: false }]);
 
 	const needResolve = locations.filter((l) => !l.panoId);
 	const resolvedMap = new Map<number, string>();
 	if (needResolve.length > 0) {
-		onProgress?.(0, needResolve.length, t("Resolving pano IDs"));
-		const res = await resolvePanoIds(needResolve, {
-			signal,
-			onProgress: (d, total) => onProgress?.(d, total, t("Resolving pano IDs")),
-		});
-		for (const r of res.resolved) resolvedMap.set(r.id, r.panoId);
-		failed.push(...res.failed);
+		const resolving = report(t("Resolving pano IDs"));
+		resolving(0, needResolve.length);
+		// The same procedure enrichment runs, borrowed for its answers: a download must
+		// not move the panorama the user's location points at.
+		const run = await runProcedure(
+			panoResolveProvider.procedure,
+			{ type: "Locations", locations: needResolve.map((l) => l.id), name: null },
+			{
+				id: "panoResolve",
+				sink: "collect",
+				signal,
+				onProgress: (d, total) => resolving(d, total),
+			},
+		);
+		for (const { id, value } of run.collected ?? []) {
+			const panoId = value?.panoId;
+			if (typeof panoId === "string" && panoId) resolvedMap.set(id, panoId);
+		}
+		failed.push(...needResolve.filter((l) => !resolvedMap.has(l.id)).map((l) => l.id));
 	}
 
 	const pending = locations.flatMap((loc) => {
@@ -354,13 +274,13 @@ export async function bulkDownloadPanoramas(
 		return panoId ? [{ loc, panoId }] : [];
 	});
 	if (pending.length === 0) {
-		return { succeeded, failed, outputPath: null, suggestedName: null, fileCount: 0 };
+		return { succeeded: saved.length, failed, output: null };
 	}
 
-	// Metadata drives tile layout and center heading; thumbnail/tile modes need neither.
-	let metaMap = new Map<string, PanoData>();
-	if (config.mode === "equirectangular" || config.mode === "perspective") {
-		onProgress?.(0, pending.length, t("Fetching metadata"));
+	// A perspective view turns by its pano's center heading; no other mode reads metadata.
+	let metaMap = new Map<string, Pano>();
+	if (config.mode === "perspective") {
+		report(t("Fetching metadata"))(0, pending.length);
 		metaMap = await fetchMetadataMap(
 			pending.map((p) => p.panoId),
 			signal,
@@ -388,7 +308,8 @@ export async function bulkDownloadPanoramas(
 	};
 
 	try {
-		onProgress?.(0, pending.length, t("Downloading"));
+		const downloading = report(t("Downloading"));
+		downloading(0, pending.length);
 		await runConcurrent(
 			pending,
 			async ({ loc, panoId }) => {
@@ -409,9 +330,9 @@ export async function bulkDownloadPanoramas(
 					ok = res.ok;
 					if (ok) singleName = fileName;
 				}
-				(ok ? succeeded : failed).push(loc.id);
+				(ok ? saved : failed).push(loc.id);
 				done++;
-				onProgress?.(done, pending.length, t("Downloading"));
+				downloading(done, pending.length);
 			},
 			{ concurrency: DOWNLOAD_CONCURRENCY, signal },
 		);
@@ -420,14 +341,13 @@ export async function bulkDownloadPanoramas(
 		throw e;
 	}
 
-	if (succeeded.length === 0) {
+	if (saved.length === 0) {
 		await cmd.storeUploadAbort(session).catch(() => {});
-		return { succeeded, failed, outputPath: null, suggestedName: null, fileCount: 0 };
+		return { succeeded: saved.length, failed, output: null };
 	}
 
-	const outputPath = await cmd.storeUploadFinish(session);
-	const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-	const suggestedName =
-		succeeded.length === 1 && singleName ? singleName : `panoramas-${stamp}.zip`;
-	return { succeeded, failed, outputPath, suggestedName, fileCount: succeeded.length };
+	const path = await cmd.storeUploadFinish(session);
+	const stamp = fileTimestamp();
+	const name = saved.length === 1 && singleName ? singleName : `panoramas-${stamp}.zip`;
+	return { succeeded: saved.length, failed, output: { path, name } };
 }

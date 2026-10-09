@@ -1,21 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { mount as mountRoot } from "./fixtures/harness";
 
-const pano = vi.hoisted(() => ({
-	move: vi.fn(async () => true),
-	setPano: vi.fn(),
-	setPov: vi.fn(),
-	getPov: () => ({ heading: 0, pitch: 0, zoom: 1 }),
-	getLinks: () => [{ heading: 10, pano: "next" }],
+const viewer = vi.hoisted(() => ({
+	exists: () => true,
+	nudge: vi.fn(),
+	step: vi.fn(() => true),
 }));
-vi.mock("@/lib/sv/panoSingleton", () => ({ singletonPano: pano }));
+vi.mock("@/lib/hooks/usePano", () => ({ usePano: () => viewer }));
 
 import { usePanoNavigation } from "@/components/editor/location/usePanoNavigation";
 import { getSettings, type MovementMode } from "@/store/settings";
-
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 function Harness({ mode }: { mode: MovementMode }) {
 	usePanoNavigation({ ...getSettings(), defaultMovementMode: mode });
@@ -23,14 +19,7 @@ function Harness({ mode }: { mode: MovementMode }) {
 }
 
 function mount(mode: MovementMode) {
-	const container = document.createElement("div");
-	document.body.appendChild(container);
-	const root = createRoot(container);
-	act(() => root.render(<Harness mode={mode} />));
-	return () => {
-		act(() => root.unmount());
-		container.remove();
-	};
+	return mountRoot(<Harness mode={mode} />).unmount;
 }
 
 const press = (key: string, init: KeyboardEventInit = {}) =>
@@ -45,30 +34,29 @@ const waitFrames = async (n: number) => {
 };
 
 beforeEach(() => {
-	pano.move.mockClear();
-	pano.setPano.mockClear();
-	pano.setPov.mockClear();
+	viewer.step.mockClear();
+	viewer.nudge.mockClear();
 });
 
 describe("usePanoNavigation movement-mode gates", () => {
 	it("move hotkey navigates in moving mode", () => {
 		const unmount = mount("moving");
 		press("ArrowUp", { shiftKey: true });
-		expect(pano.move).toHaveBeenCalledWith("forward");
+		expect(viewer.step).toHaveBeenCalledWith("forward");
 		unmount();
 	});
 
 	it("move hotkey is a no-op in no-move mode", () => {
 		const unmount = mount("no-move");
 		press("ArrowUp", { shiftKey: true });
-		expect(pano.move).not.toHaveBeenCalled();
+		expect(viewer.step).not.toHaveBeenCalled();
 		unmount();
 	});
 
 	it("move hotkey is a no-op in nmpz mode", () => {
 		const unmount = mount("nmpz");
 		press("ArrowUp", { shiftKey: true });
-		expect(pano.move).not.toHaveBeenCalled();
+		expect(viewer.step).not.toHaveBeenCalled();
 		unmount();
 	});
 
@@ -76,7 +64,7 @@ describe("usePanoNavigation movement-mode gates", () => {
 		const unmount = mount("no-move");
 		press("ArrowLeft");
 		await waitFrames(2);
-		expect(pano.setPov).toHaveBeenCalled();
+		expect(viewer.nudge).toHaveBeenCalled();
 		unmount();
 	});
 
@@ -84,7 +72,7 @@ describe("usePanoNavigation movement-mode gates", () => {
 		const unmount = mount("nmpz");
 		press("ArrowLeft");
 		await waitFrames(2);
-		expect(pano.setPov).not.toHaveBeenCalled();
+		expect(viewer.nudge).not.toHaveBeenCalled();
 		unmount();
 	});
 });

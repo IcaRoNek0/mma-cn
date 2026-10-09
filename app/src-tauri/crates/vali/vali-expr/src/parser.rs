@@ -9,27 +9,29 @@ pub fn parse(tokens: &[Token], original: &str) -> Result<Node, ExprError> {
     let result = parse_logical_or(tokens, &mut pos, original)?;
     if tokens[pos].kind != TokenKind::EndOfExpression {
         let t = &tokens[pos];
-        return Err(
-            ExprError::new(
-                original,
-                t.position,
-                t.length,
-                format!("Unexpected token '{}' at position {}.", t.value, t.position),
-            ),
-        );
+        return Err(ExprError::new(
+            original,
+            t.position,
+            t.length,
+            format!("Unexpected token '{}' at position {}.", t.value, t.position),
+        ));
     }
     Ok(result)
 }
-fn parse_logical_or(
+type Level = fn(&[Token], &mut usize, &str) -> Result<Node, ExprError>;
+/// A left-associative chain of `next` operands joined by any of `ops`.
+fn binary_level(
     tokens: &[Token],
     pos: &mut usize,
     expr: &str,
+    ops: &[TokenKind],
+    next: Level,
 ) -> Result<Node, ExprError> {
-    let mut left = parse_logical_and(tokens, pos, expr)?;
-    while tokens[*pos].kind == TokenKind::Or {
+    let mut left = next(tokens, pos, expr)?;
+    while ops.contains(&tokens[*pos].kind) {
         let op = tokens[*pos].clone();
         *pos += 1;
-        let right = parse_logical_and(tokens, pos, expr)?;
+        let right = next(tokens, pos, expr)?;
         left = Node::Binary {
             left: Box::new(left),
             op,
@@ -38,34 +40,23 @@ fn parse_logical_or(
     }
     Ok(left)
 }
-fn parse_logical_and(
-    tokens: &[Token],
-    pos: &mut usize,
-    expr: &str,
-) -> Result<Node, ExprError> {
-    let mut left = parse_comparison(tokens, pos, expr)?;
-    while tokens[*pos].kind == TokenKind::And {
-        let op = tokens[*pos].clone();
-        *pos += 1;
-        let right = parse_comparison(tokens, pos, expr)?;
-        left = Node::Binary {
-            left: Box::new(left),
-            op,
-            right: Box::new(right),
-        };
-    }
-    Ok(left)
+fn parse_logical_or(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
+    binary_level(tokens, pos, expr, &[TokenKind::Or], parse_logical_and)
 }
-fn parse_comparison(
-    tokens: &[Token],
-    pos: &mut usize,
-    expr: &str,
-) -> Result<Node, ExprError> {
+fn parse_logical_and(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
+    binary_level(tokens, pos, expr, &[TokenKind::And], parse_comparison)
+}
+fn parse_comparison(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
     let mut left = parse_addition(tokens, pos, expr)?;
     let kind = tokens[*pos].kind;
     if matches!(
-        kind, TokenKind::Eq | TokenKind::Neq | TokenKind::Lt | TokenKind::Lte |
-        TokenKind::Gt | TokenKind::Gte
+        kind,
+        TokenKind::Eq
+            | TokenKind::Neq
+            | TokenKind::Lt
+            | TokenKind::Lte
+            | TokenKind::Gt
+            | TokenKind::Gte
     ) {
         let op = tokens[*pos].clone();
         *pos += 1;
@@ -79,35 +70,34 @@ fn parse_comparison(
         *pos += 1;
         if tokens[*pos].kind != TokenKind::OpenBracket {
             let t = &tokens[*pos];
-            return Err(
-                ExprError::new(
-                    expr,
-                    t.position,
-                    t.length,
-                    format!("Expected '[' after 'in' at position {}.", t.position),
-                ),
-            );
+            return Err(ExprError::new(
+                expr,
+                t.position,
+                t.length,
+                format!("Expected '[' after 'in' at position {}.", t.position),
+            ));
         }
         *pos += 1;
         let mut values: Vec<Token> = Vec::new();
         loop {
             let t = &tokens[*pos];
             if !matches!(
-                t.kind, TokenKind::IntegerLiteral | TokenKind::DecimalLiteral |
-                TokenKind::StringLiteral | TokenKind::BooleanLiteral |
-                TokenKind::NullLiteral
+                t.kind,
+                TokenKind::IntegerLiteral
+                    | TokenKind::DecimalLiteral
+                    | TokenKind::StringLiteral
+                    | TokenKind::BooleanLiteral
+                    | TokenKind::NullLiteral
             ) {
-                return Err(
-                    ExprError::new(
-                        expr,
-                        t.position,
-                        t.length,
-                        format!(
-                            "Expected a literal value in 'in' list at position {}.", t
-                            .position
-                        ),
+                return Err(ExprError::new(
+                    expr,
+                    t.position,
+                    t.length,
+                    format!(
+                        "Expected a literal value in 'in' list at position {}.",
+                        t.position
                     ),
-                );
+                ));
             }
             *pos += 1;
             values.push(t.clone());
@@ -119,16 +109,15 @@ fn parse_comparison(
         }
         if tokens[*pos].kind != TokenKind::CloseBracket {
             let t = &tokens[*pos];
-            return Err(
-                ExprError::new(
-                    expr,
-                    t.position,
-                    t.length,
-                    format!(
-                        "Expected ']' to close 'in' list at position {}.", t.position
-                    ),
+            return Err(ExprError::new(
+                expr,
+                t.position,
+                t.length,
+                format!(
+                    "Expected ']' to close 'in' list at position {}.",
+                    t.position
                 ),
-            );
+            ));
         }
         let close_pos = tokens[*pos].position;
         *pos += 1;
@@ -144,49 +133,25 @@ fn parse_comparison(
     }
     Ok(left)
 }
-fn parse_addition(
-    tokens: &[Token],
-    pos: &mut usize,
-    expr: &str,
-) -> Result<Node, ExprError> {
-    let mut left = parse_multiplication(tokens, pos, expr)?;
-    while matches!(tokens[* pos].kind, TokenKind::Plus | TokenKind::Minus) {
-        let op = tokens[*pos].clone();
-        *pos += 1;
-        let right = parse_multiplication(tokens, pos, expr)?;
-        left = Node::Binary {
-            left: Box::new(left),
-            op,
-            right: Box::new(right),
-        };
-    }
-    Ok(left)
+fn parse_addition(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
+    binary_level(
+        tokens,
+        pos,
+        expr,
+        &[TokenKind::Plus, TokenKind::Minus],
+        parse_multiplication,
+    )
 }
-fn parse_multiplication(
-    tokens: &[Token],
-    pos: &mut usize,
-    expr: &str,
-) -> Result<Node, ExprError> {
-    let mut left = parse_unary(tokens, pos, expr)?;
-    while matches!(
-        tokens[* pos].kind, TokenKind::Multiply | TokenKind::Divide | TokenKind::Modulo
-    ) {
-        let op = tokens[*pos].clone();
-        *pos += 1;
-        let right = parse_unary(tokens, pos, expr)?;
-        left = Node::Binary {
-            left: Box::new(left),
-            op,
-            right: Box::new(right),
-        };
-    }
-    Ok(left)
+fn parse_multiplication(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
+    binary_level(
+        tokens,
+        pos,
+        expr,
+        &[TokenKind::Multiply, TokenKind::Divide, TokenKind::Modulo],
+        parse_unary,
+    )
 }
-fn parse_unary(
-    tokens: &[Token],
-    pos: &mut usize,
-    expr: &str,
-) -> Result<Node, ExprError> {
+fn parse_unary(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
     if tokens[*pos].kind == TokenKind::Minus {
         let op = tokens[*pos].clone();
         *pos += 1;
@@ -198,11 +163,7 @@ fn parse_unary(
     }
     parse_primary(tokens, pos, expr)
 }
-fn parse_primary(
-    tokens: &[Token],
-    pos: &mut usize,
-    expr: &str,
-) -> Result<Node, ExprError> {
+fn parse_primary(tokens: &[Token], pos: &mut usize, expr: &str) -> Result<Node, ExprError> {
     let token = tokens[*pos].clone();
     match token.kind {
         TokenKind::OpenParen => {
@@ -210,14 +171,12 @@ fn parse_primary(
             *pos += 1;
             let inner = parse_logical_or(tokens, pos, expr)?;
             if tokens[*pos].kind != TokenKind::CloseParen {
-                return Err(
-                    ExprError::new(
-                        expr,
-                        open_pos,
-                        1,
-                        format!("Unmatched '(' at position {open_pos}."),
-                    ),
-                );
+                return Err(ExprError::new(
+                    expr,
+                    open_pos,
+                    1,
+                    format!("Unmatched '(' at position {open_pos}."),
+                ));
             }
             let close = tokens[*pos].clone();
             *pos += 1;
@@ -246,34 +205,27 @@ fn parse_primary(
         TokenKind::ExternalProperty => {
             *pos += 1;
             let key = token.value["external:".len()..].to_string();
-            Ok(Node::ExternalProperty {
-                token,
-                key,
-            })
+            Ok(Node::ExternalProperty { token, key })
         }
         TokenKind::ParentProperty => {
             *pos += 1;
             let name = token.value["current:".len()..].to_string();
-            Ok(Node::ParentProperty {
-                token,
-                name,
-            })
+            Ok(Node::ParentProperty { token, name })
         }
-        TokenKind::EndOfExpression => {
-            Err(ExprError::new(expr, token.position, 1, "Unexpected end of expression."))
-        }
-        _ => {
-            Err(
-                ExprError::new(
-                    expr,
-                    token.position,
-                    token.length,
-                    format!(
-                        "Expected operand but found '{}' at position {}.", token.value,
-                        token.position
-                    ),
-                ),
-            )
-        }
+        TokenKind::EndOfExpression => Err(ExprError::new(
+            expr,
+            token.position,
+            1,
+            "Unexpected end of expression.",
+        )),
+        _ => Err(ExprError::new(
+            expr,
+            token.position,
+            token.length,
+            format!(
+                "Expected operand but found '{}' at position {}.",
+                token.value, token.position
+            ),
+        )),
     }
 }

@@ -2,12 +2,14 @@ import type { Layer } from "@deck.gl/core";
 import SDFMarkerLayer from "@/lib/render/sdf-marker-layer/SDFMarkerLayer";
 import type { MarkerStyle } from "@/types";
 import type { CellManager } from "@/lib/render/CellManager";
+import type { RGBA } from "@/lib/util/color";
+import { translucentGroup } from "@/lib/render/translucentGroup";
 
 /** Colour source for a marker layer. The base cells are all one colour and vary only in
  *  whether each marker is hidden, so they pass a constant plus a visibility byte; the
  *  selection overlay genuinely varies per marker and passes RGBA. */
 export type MarkerColors =
-	| { kind: "constant"; color: [number, number, number, number]; visible: Uint8Array }
+	| { kind: "constant"; color: RGBA; visible: Uint8Array }
 	| { kind: "perMarker"; colors: Uint8Array };
 
 export type MarkerBuf = {
@@ -16,22 +18,9 @@ export type MarkerBuf = {
 	color: MarkerColors;
 };
 
-// Layer-level translucency: markers composite against each other at full alpha
-// (the SDF shader outputs premultiplied color pre-scaled by the target opacity),
-// while the constant alpha blend factor caps the canvas alpha at that opacity.
-// Overlap then reads uniformly instead of stacking back to opaque. blendColor is
-// the legacy-style key luma needs to supply the 'constant' factor's value.
-function flattenParameters(op: number) {
-	return {
-		blend: true,
-		blendColorOperation: "add",
-		blendColorSrcFactor: "one",
-		blendColorDstFactor: "one-minus-src-alpha",
-		blendAlphaOperation: "add",
-		blendAlphaSrcFactor: "constant",
-		blendAlphaDstFactor: "one-minus-src-alpha",
-		blendColor: [0, 0, 0, op],
-	} as Record<string, unknown>;
+/** Round each lat/lng to the same float precision. */
+export function renderPos(lng: number, lat: number): [number, number] {
+	return [Math.fround(lng), Math.fround(lat)];
 }
 
 export const MARKER_STYLE = {
@@ -47,10 +36,9 @@ export function buildMarkerLayer(
 	buf: MarkerBuf,
 	colorVer: number,
 	posVer: number,
-	opacity?: number,
+	group: string | null,
 	sizeScale = 1,
 ): Layer {
-	const flatten = opacity != null && opacity > 0 && opacity < 1;
 	const s = MARKER_STYLE[markerStyle];
 	const attributes: Record<string, unknown> = {
 		getPosition: { value: buf.positions, size: 2 },
@@ -64,8 +52,6 @@ export function buildMarkerLayer(
 	}
 	if (s.angle) attributes.getAngle = { value: buf.angles, size: 1 };
 	const LayerClass = SDFMarkerLayer as unknown as new (props: Record<string, unknown>) => Layer;
-	// Same gamma deck applies to its own opacity prop, so the slider feels identical.
-	const flatOpacity = flatten ? Math.pow(opacity, 1 / 2.2) : 0;
 	return new LayerClass({
 		id: idBase,
 		data: { length: count, attributes },
@@ -74,11 +60,7 @@ export function buildMarkerLayer(
 		strokeWidthPixels: Math.min(2.25, Math.max(1.25, 1.5 * sizeScale)),
 		pickable: true,
 		...props,
-		...(flatten
-			? { flattenOpacity: flatOpacity, parameters: flattenParameters(flatOpacity) }
-			: opacity != null
-				? { opacity }
-				: {}),
+		translucentGroup: group,
 		updateTriggers: {
 			getFillColor: [colorVer],
 			getVisible: [colorVer],
@@ -88,34 +70,60 @@ export function buildMarkerLayer(
 	});
 }
 
-// One marker layer per non-empty cell.
+// One marker layer per non-empty cell, drawn as one translucent group.
 export function baseMarkerLayers(
 	cm: CellManager,
 	markerStyle: MarkerStyle,
-	markerColor: [number, number, number, number],
+	markerColor: RGBA,
 	markerOpacity: number,
 	markerSize = 1,
 ): Layer[] {
-	if (markerOpacity <= 0 || cm.totalCount === 0) return [];
-	const out: Layer[] = [];
-	for (const [cellKey, cell] of cm.cells) {
-		if (cell.count === 0) continue;
-		out.push(
-			buildMarkerLayer(
-				markerStyle,
-				`cell:${cellKey}`,
-				cell.count,
-				{
-					positions: cell.positions,
-					angles: cell.angles,
-					color: { kind: "constant", color: markerColor, visible: cell.visible },
-				},
-				cell.colorVersion,
-				cell.positionVersion,
-				markerOpacity,
-				markerSize,
+	return translucentGroup("cells", markerOpacity, (group) =>
+		[...cm.cells]
+			.filter(([, cell]) => cell.count > 0)
+			.map(([cellKey, cell]) =>
+				buildMarkerLayer(
+					markerStyle,
+					`cell:${cellKey}`,
+					cell.count,
+					{
+						positions: cell.positions,
+						angles: cell.angles,
+						color: { kind: "constant", color: markerColor, visible: cell.visible },
+					},
+					cell.colorVersion,
+					cell.positionVersion,
+					group,
+					markerSize,
+				),
 			),
-		);
-	}
-	return out;
+	);
+}
+
+// Selected markers ride on top as their own pickable layer; otherwise clicks fall through to
+// the cell layer where selected markers have no z-priority, and an overlapping neighbor gets
+// picked instead of the marker on top.
+export function selectedMarkerLayers(
+	cm: CellManager,
+	markerStyle: MarkerStyle,
+	opacity: number,
+	markerSize = 1,
+): Layer[] {
+	if (cm.overlay.count === 0) return [];
+	return translucentGroup("selected", opacity, (group) => [
+		buildMarkerLayer(
+			markerStyle,
+			"sel-overlay",
+			cm.overlay.count,
+			{
+				positions: cm.overlay.positions,
+				angles: cm.overlay.angles,
+				color: { kind: "perMarker", colors: cm.overlay.colors },
+			},
+			cm.overlay.version,
+			cm.overlay.version,
+			group,
+			markerSize,
+		),
+	]);
 }

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { cycleMarkerOpacity } from "@/store/mapEmbedPrefs";
+import { useEffect, useRef, useCallback, useState, type CSSProperties } from "react";
 import { ContextMenu } from "@base-ui-components/react/context-menu";
 import {
 	mdiGoogleStreetView,
@@ -11,56 +12,64 @@ import {
 import { startSceneEngine, loadScene, clearScene, recolorScene } from "@/lib/render/sceneStore";
 import { useMapSurface } from "@/lib/render/useMapSurface";
 import { Icon } from "@/components/primitives/Icon";
-import { Tooltip } from "@/components/primitives/Tooltip";
-import { cmd } from "@/lib/commands";
+import { svThumbnailUrl, svSearchRadius } from "@/lib/sv/lookup";
+import { PanoType } from "@/bindings.consts";
+import { panosAt } from "@/lib/sv/query";
 import { log } from "@/lib/util/log";
 import { getSettings, useSetting } from "@/store/settings";
 import { useMeasure, useMeasureInteraction } from "@/lib/sv/measure";
 import { MeasurementBar } from "@/components/primitives/MeasurementBar";
 import { MapContextMenuContent } from "@/components/editor/map/MapContextMenu";
-import { useMapState, addSelections, mapOpen } from "@/store/useMapStore";
+import {
+	applySelectionUpdate,
+	currentSelection,
+	getActiveSelections,
+	query,
+	useMapState,
+} from "@/store/useMapStore";
+import { addSelection, displayColor } from "@/store/selections";
+import { rgbCss } from "@/lib/util/color";
+import { mapOpen } from "@/lib/util/debug";
+import { loadOpenSV, google } from "@/lib/sv/opensv";
 import { setMapHost, tryInterceptDraw } from "@/lib/map/mapState";
 import { createMapHost, hostKindForMapType, type MapHost } from "@/lib/map/host";
 import { mountSearchRadiusCursor } from "@/lib/map/searchRadiusCursor";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { useLocalStorage } from "@/lib/hooks/useLocalStorage";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
-import { Button } from "@/components/primitives/Button";
+import { Dialog, DialogActions, DialogContent, DialogForm } from "@/components/primitives/Dialog";
+import { Hint } from "@/components/primitives/Hint";
+import { ConfirmButton } from "@/components/primitives/ConfirmButton";
 import { TextInput } from "@/components/primitives/TextInput";
 import { Slider } from "@/components/primitives/Slider";
 import { PolygonTools } from "@/components/editor/PolygonTools";
 
 import { SearchControl } from "@/components/editor/map/SearchControl";
-import type { ParsedLocation } from "@/lib/data/importExport";
+import type { ParsedLocation } from "@/bindings.gen";
 import { MapTypeDropdown, MapSettingsDropdown } from "@/components/editor/map/MapSettingsPanel";
 import { CUSTOM_STYLES_KEY, type CustomStyle } from "@/lib/geo/mapStack";
 import {
+	MAP_EMBED_PREFS,
+	toggledLayer,
+	layerOpacity,
 	type MapEmbedPrefs,
-	DEFAULT_PREFS,
-	cycleMarkerOpacity,
-	MARKER_OPACITY_STEPS,
-	toggledOpacity,
+	type OpacityLayer,
 } from "@/store/mapEmbedPrefs";
 import { FpsCounter } from "@/components/editor/map/FpsCounter";
-import { t } from "@/lib/i18n";
+import { msg, t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
 
-// The supplied sprites have slightly asymmetric transparent bounds. Keep the
-// image box centered, then optically center each sprite inside it.
-const MARKER_OPACITY_ICONS = [
-	{
-		src: "https://map-making.app/static/markers-opaque-CzZg3t36.png",
-		offset: "translate(0.5px, 1px)",
-	},
-	{
-		src: "https://map-making.app/static/markers-transparent-BUmKMsK1.png",
-		offset: "translate(0.5px, 1px)",
-	},
-	{
-		src: "https://map-making.app/static/markers-hidden-CIsWWreP.png",
-		offset: "translate(-3px, 4px)",
-	},
-] as const;
+const OPACITY_TARGET_ICONS: Record<OpacityLayer, string> = {
+	sv: mdiGoogleStreetView,
+	marker: mdiMapMarker,
+	selected: mdiMapMarker,
+};
+
+const OPACITY_TARGET_LABELS: Record<OpacityLayer, string> = {
+	sv: msg("Street View layer opacity"),
+	marker: msg("Unselected marker opacity"),
+	selected: msg("Selected marker opacity"),
+};
 
 /** Live zoom text with its own zoom subscription, so zooming doesn't re-render MapEmbed. */
 function ZoomReadout({ host }: { host: MapHost | null }) {
@@ -83,41 +92,49 @@ export function MapEmbed({
 	const [host, setHost] = useState<MapHost | null>(null);
 	const hostRef = useRef<MapHost | null>(null);
 
-	const [prefs, setPrefs] = useLocalStorage<MapEmbedPrefs>("mapEmbedPrefs", DEFAULT_PREFS);
+	const [prefs, setPrefs] = useLocalStorage(MAP_EMBED_PREFS);
 	const pref =
 		<K extends keyof MapEmbedPrefs>(k: K) =>
 		(v: MapEmbedPrefs[K]) =>
 			setPrefs((p) => ({ ...p, [k]: v }));
-	const { svOpacity, mapType, markerStyle, markerOpacity, showSearchRadiusCursor, showPreviews } =
-		prefs;
-	const markerOpacityIndex = Math.max(
-		0,
-		MARKER_OPACITY_STEPS.findIndex((value) => value === markerOpacity),
-	);
-	const markerOpacityPercent = Math.round(MARKER_OPACITY_STEPS[markerOpacityIndex] * 100);
-	const markerOpacityLabel = `${t("Adjusting marker opacity")} (${markerOpacityPercent}%)`;
-	// Where each layer's opacity sat while visible, so the toggle hotkeys can restore it.
-	const lastOpacityRef = useRef({
-		svOpacity: DEFAULT_PREFS.svOpacity,
-		markerOpacity: DEFAULT_PREFS.markerOpacity,
-	});
-	if (svOpacity > 0) lastOpacityRef.current.svOpacity = svOpacity;
-	if (markerOpacity > 0) lastOpacityRef.current.markerOpacity = markerOpacity;
-	const toggleOpacity = (key: "svOpacity" | "markerOpacity") =>
+	const { mapType, markerOpacity, markerStyle, showSearchRadiusCursor, showPreviews } = prefs;
+	const toggleLayer = (layer: OpacityLayer) =>
+		setPrefs((p) => {
+			const next = toggledLayer(
+				p[`${layer}Opacity`],
+				p[`${layer}Visible`],
+				getSettings().opacityToggleMode,
+			);
+			return { ...p, [`${layer}Opacity`]: next.opacity, [`${layer}Visible`]: next.visible };
+		});
+	// The slider drives the effective opacity: dragging to 0 hides the layer without losing its value.
+	const setLayerOpacity = (layer: OpacityLayer, v: number) =>
 		setPrefs((p) => ({
 			...p,
-			[key]: toggledOpacity(p[key], lastOpacityRef.current[key], getSettings().opacityToggleMode),
+			[`${layer}Visible`]: v > 0,
+			...(v > 0 ? { [`${layer}Opacity`]: v } : {}),
 		}));
 	const coordDisplayRef = useRef<HTMLSpanElement>(null);
 
 	const [customStyles, setCustomStyles] = useLocalStorage<CustomStyle[]>(CUSTOM_STYLES_KEY, []);
 	const [showStylesDialog, setShowStylesDialog] = useState(false);
+	const styleFormRef = useRef<HTMLFormElement>(null);
 	const [svPreview, setSvPreview] = useState<{
 		url: string;
 		date?: string;
 	} | null>(null);
 	const previewAbortRef = useRef<AbortController | null>(null);
-	const [opacityTarget, setOpacityTarget] = useState<"sv" | "markers">("sv");
+	const [pickedOpacityTarget, setOpacityTarget] = useState<OpacityLayer>("sv");
+	const selectionTint = useMapState(() => {
+		const active = getActiveSelections();
+		return active.length > 0 ? rgbCss(displayColor(active[0])) : null;
+	});
+	const opacityTargets: OpacityLayer[] = selectionTint
+		? ["sv", "marker", "selected"]
+		: ["sv", "marker"];
+	const opacityTarget = opacityTargets.includes(pickedOpacityTarget)
+		? pickedOpacityTarget
+		: "marker";
 	const freehandPathRef = useRef<number[][] | null>(null);
 	const polygonVerticesRef = useRef<number[][] | null>(null);
 	const contextTriggerRef = useRef<HTMLSpanElement>(null);
@@ -167,8 +184,11 @@ export function MapEmbed({
 		let created: MapHost | null = null;
 		let hostDiv: HTMLDivElement | null = null;
 
-		void (async () => {
+		// opensv always loads: the Google host renders with it, and every host needs
+		// the SV services (click lookup, previews, pano).
+		void loadOpenSV().then(async () => {
 			if (cancelled || !containerRef.current) return;
+			if (hostKind === "google" && !google?.maps) return;
 
 			const first = !savedCameraRef.current;
 			hostDiv = document.createElement("div");
@@ -200,15 +220,19 @@ export function MapEmbed({
 			if (first) {
 				mapOpen.mark("map-ready");
 				created.once("tilesloaded", () => mapOpen.mark("tiles"));
-				if (map.meta.locationCount > 0) {
-					cmd.storeBounds(false).then((bounds) => {
-						if (cancelled || !hostRef.current || !bounds) return;
-						const [west, south, east, north] = bounds;
-						hostRef.current.fitBounds({ west, south, east, north }, undefined, { snap: true });
-					});
+				if (map.locationCount > 0) {
+					void query({ type: "Everything" })
+						.bounds()
+						.then((bounds) => {
+							if (cancelled || !hostRef.current || !bounds) return;
+							const [west, south, east, north] = bounds;
+							hostRef.current.fitBounds({ west, south, east, north }, undefined, {
+								snap: true,
+							});
+						});
 				}
 			}
-		})();
+		});
 
 		return () => {
 			cancelled = true;
@@ -226,7 +250,7 @@ export function MapEmbed({
 		};
 	}, [hostKind]);
 
-	// The editor map drives the single scene engine (delta/selection/active subscriptions)
+	// The editor map drives the single scene engine.
 	useEffect(() => startSceneEngine(), []);
 
 	// Full (re)load on open and on marker-style change; clear when the map isn't ready.
@@ -250,16 +274,43 @@ export function MapEmbed({
 			setSvPreview(null);
 			return;
 		}
-		const offMove = host.on("mousemove", async (ll) => {
-			setSvPreview(null);
-			previewAbortRef.current?.abort();
-			const ac = new AbortController();
-			previewAbortRef.current = ac;
+		if (!google?.maps) return;
 
-			await new Promise((r) => setTimeout(r, 300));
-			if (ac.signal.aborted) return;
-			void ll;
-		});
+		const offMove = host.on(
+			"mousemove",
+			(ll) =>
+				void (async () => {
+					setSvPreview(null);
+					previewAbortRef.current?.abort();
+					const ac = new AbortController();
+					previewAbortRef.current = ac;
+
+					const { lat, lng } = ll;
+					const zoom = host.getZoom();
+
+					await new Promise((r) => setTimeout(r, 300));
+					if (ac.signal.aborted) return;
+
+					try {
+						const [pano] = await panosAt(
+							[{ lat, lng }],
+							svSearchRadius(lat, zoom),
+							{ sources: [PanoType.Official] },
+							ac.signal,
+						);
+						if (!pano || ac.signal.aborted) return;
+						const res = await fetch(svThumbnailUrl(pano.id, pano.centerHeading), {
+							signal: ac.signal,
+						});
+						if (!res.ok || ac.signal.aborted) return;
+						const blob = await res.blob();
+						if (ac.signal.aborted) return;
+						setSvPreview({ url: URL.createObjectURL(blob) });
+					} catch {
+						// ignored
+					}
+				})(),
+		);
 
 		const offOut = host.on("mouseout", () => {
 			previewAbortRef.current?.abort();
@@ -306,32 +357,37 @@ export function MapEmbed({
 	});
 
 	useHotkey(useBinding("toggleSelectOnly"), () => {
-		setPrefs((p) => ({ ...p, selectOnly: !p.selectOnly }));
+		setPrefs((p) => ({ ...p, clickMode: p.clickMode === "selectOnly" ? "default" : "selectOnly" }));
 	});
-	useHotkey(useBinding("toggleSvOpacity"), () => toggleOpacity("svOpacity"));
-	useHotkey(useBinding("toggleMarkerOpacity"), () => toggleOpacity("markerOpacity"));
+	useHotkey(useBinding("toggleSvOpacity"), () => toggleLayer("sv"));
+	useHotkey(useBinding("toggleMarkerOpacity"), () => toggleLayer("marker"));
 	useHotkey(useBinding("mapZoomBounds"), () => {
-		cmd.storeBounds(false).then((bounds) => {
-			if (!hostRef.current || !bounds) return;
-			const [west, south, east, north] = bounds;
-			hostRef.current.fitBounds({ west, south, east, north }, undefined, { snap: true });
-		});
+		void query({ type: "Everything" })
+			.bounds()
+			.then((bounds) => {
+				if (!hostRef.current || !bounds) return;
+				const [west, south, east, north] = bounds;
+				hostRef.current.fitBounds({ west, south, east, north }, undefined, { snap: true });
+			});
 	});
 
 	useHotkey(useBinding("mapZoomSelection"), () => {
-		cmd.storeBounds(true).then((bounds) => {
-			if (!hostRef.current || !bounds) return;
-			const [west, south, east, north] = bounds;
-			hostRef.current.fitBounds({ west, south, east, north }, undefined, { snap: true });
-		});
+		void query(currentSelection())
+			.bounds()
+			.then((bounds) => {
+				if (!hostRef.current || !bounds) return;
+				const [west, south, east, north] = bounds;
+				hostRef.current.fitBounds({ west, south, east, north }, undefined, { snap: true });
+			});
 	});
 
 	return (
 		<ContextMenu.Root>
 			<div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 			<div className="embed-controls">
+				{/* TopLeft: Map dropdown, Search */}
 				<div
-					className="embed-controls__control embed-controls__map-type"
+					className="embed-controls__control"
 					style={{ top: 0, left: 0, display: "flex", alignItems: "flex-start" }}
 				>
 					<MapTypeDropdown
@@ -345,31 +401,22 @@ export function MapEmbed({
 							onManageStyles: () => setShowStylesDialog(true),
 						}}
 					/>
-				</div>
-				<div
-					className="embed-controls__control embed-controls__search"
-					style={{ top: "52px", left: 0 }}
-				>
 					<SearchControl onResult={handleSearchResult} onAddLocation={onAddLocation} />
 				</div>
 				{/* LeftTop: polygon/rectangle drawing tools */}
 				{host && (
-					<div
-						className="embed-controls__control embed-controls__polygon"
-						style={{ left: 0, top: "104px" }}
-					>
+					<div className="embed-controls__control" style={{ left: 0, top: "52px" }}>
 						<PolygonTools
 							host={host}
 							onDraw={(rings) => {
 								if (rings.length === 0) return;
 								if (tryInterceptDraw(rings)) return;
-								addSelections([
-									{
+								void applySelectionUpdate(
+									addSelection({
 										type: "Polygon",
-										polygon: { coordinates: rings as [number, number][][] },
-										includeInformational: false,
-									},
-								]);
+										polygon: { coordinates: rings as [number, number][][], extraPolygons: null },
+									}),
+								);
 							}}
 							freehandPathRef={freehandPathRef}
 							polygonVerticesRef={polygonVerticesRef}
@@ -377,8 +424,9 @@ export function MapEmbed({
 						/>
 					</div>
 				)}
+				{/* TopRight: Map settings, SV opacity slider */}
 				<div
-					className="embed-controls__control embed-controls__settings"
+					className="embed-controls__control"
 					style={{
 						top: 0,
 						right: 0,
@@ -386,62 +434,54 @@ export function MapEmbed({
 						alignItems: "flex-start",
 					}}
 				>
-					<div className="map-control map-control--button white marker-opacity-control">
-						<Tooltip content={markerOpacityLabel} side="left">
-							<button
-								type="button"
-								className="marker-opacity-control__button"
-								onClick={() => pref("markerOpacity")(cycleMarkerOpacity(markerOpacity))}
-								aria-label={markerOpacityLabel}
-							>
-								<img
-									className="marker-opacity-control__icon"
-									src={MARKER_OPACITY_ICONS[markerOpacityIndex].src}
-									style={{ transform: MARKER_OPACITY_ICONS[markerOpacityIndex].offset }}
-									alt=""
-									aria-hidden="true"
-									draggable={false}
-								/>
-							</button>
-						</Tooltip>
+					<div className="map-control map-control--button white">
+						<button
+							aria-label={`${t("Adjusting marker opacity")} (${Math.round(markerOpacity * 100)}%)`}
+							onClick={() =>
+								setPrefs((p) => ({
+									...p,
+									markerOpacity: cycleMarkerOpacity(p.markerOpacity),
+									markerVisible: true,
+								}))
+							}
+						>
+							{Math.round(markerOpacity * 100)}%
+						</button>
 					</div>
 					<MapSettingsDropdown prefs={prefs} setPref={pref} />
-				</div>
-				<div
-					className="embed-controls__control embed-controls__opacity"
-					style={{ top: "52px", right: 0 }}
-				>
 					<div className="map-control sv-opacity-control">
-						<Tooltip
-							content={
-								opacityTarget === "sv"
-									? t("Adjusting Street View opacity")
-									: t("Adjusting marker opacity")
-							}
-							side="left"
-						>
-							<button
-								className="opacity-target-toggle"
-								onClick={() => setOpacityTarget((t) => (t === "sv" ? "markers" : "sv"))}
-							>
-								<Icon
-									path={opacityTarget === "sv" ? mdiGoogleStreetView : mdiMapMarker}
-									size={20}
-								/>
-							</button>
-						</Tooltip>
+						<div className="opacity-targets">
+							{opacityTargets.map((layer) => {
+								const opacity = layerOpacity(prefs, layer);
+								return (
+									<IconButton
+										key={layer}
+										icon={OPACITY_TARGET_ICONS[layer]}
+										size={20}
+										label={t(OPACITY_TARGET_LABELS[layer])}
+										tooltipSide="bottom"
+										className="opacity-target"
+										active={layer === opacityTarget}
+										data-hidden={opacity === 0 || undefined}
+										style={
+											{
+												"--layer-opacity": opacity,
+												...(layer === "selected" && selectionTint ? { color: selectionTint } : {}),
+											} as CSSProperties
+										}
+										onClick={() => setOpacityTarget(layer)}
+									/>
+								);
+							})}
+						</div>
 						<Slider
 							className="sv-opacity-control__slider"
 							min={0}
 							max={1}
 							step={0.05}
-							value={opacityTarget === "sv" ? svOpacity : markerOpacity}
-							onChange={(e) =>
-								pref(opacityTarget === "sv" ? "svOpacity" : "markerOpacity")(Number(e.target.value))
-							}
-							title={
-								opacityTarget === "sv" ? t("Street View layer opacity") : t("Marker layer opacity")
-							}
+							value={layerOpacity(prefs, opacityTarget)}
+							onChange={(e) => setLayerOpacity(opacityTarget, Number(e.target.value))}
+							title={t(OPACITY_TARGET_LABELS[opacityTarget])}
 						/>
 					</div>
 				</div>
@@ -450,16 +490,20 @@ export function MapEmbed({
 					style={fullscreenMap ? { left: 0, bottom: 10 } : { right: 0, bottom: 10 }}
 				>
 					<div className="map-control map-control--button white">
-						<Tooltip content={t("Zoom in")} side="left">
-							<button onClick={zoomIn} aria-label={t("Zoom in")}>
-								<Icon path={mdiPlus} size={18} />
-							</button>
-						</Tooltip>
-						<Tooltip content={t("Zoom out")} side="left">
-							<button onClick={zoomOut} aria-label={t("Zoom out")}>
-								<Icon path={mdiMinus} size={18} />
-							</button>
-						</Tooltip>
+						<IconButton
+							icon={mdiPlus}
+							size={18}
+							label={t("Zoom in")}
+							tooltipSide="left"
+							onClick={zoomIn}
+						/>
+						<IconButton
+							icon={mdiMinus}
+							size={18}
+							label={t("Zoom out")}
+							tooltipSide="left"
+							onClick={zoomOut}
+						/>
 					</div>
 				</div>
 				{svPreview && (
@@ -492,27 +536,25 @@ export function MapEmbed({
 			</div>
 			{showStylesDialog && (
 				<Dialog open onOpenChange={(open) => !open && setShowStylesDialog(false)}>
-					<DialogContent title={t("Manage map styles")} className="map-styles-modal">
+					<DialogContent title={t("Manage map styles")} size="lg">
 						{customStyles.length > 0 && (
 							<ul className="map-style-list">
 								{customStyles.map((s) => (
 									<li key={s.name} className="map-style-thumb">
 										<span className="map-style-thumb__name">{s.name}</span>
 										<div className="map-style-thumb__actions">
-											<button
-												className="icon-button"
-												style={{ color: "var(--text-2)" }}
+											<IconButton
+												icon={mdiContentCopy}
+												size={20}
+												label={t("Copy JSON")}
 												onClick={() => {
-													navigator.clipboard.writeText(JSON.stringify(s.style, null, 2));
+													void navigator.clipboard.writeText(JSON.stringify(s.style, null, 2));
 												}}
-												aria-label={t("Copy JSON")}
-											>
-												<Icon path={mdiContentCopy} size={20} />
-											</button>
-											<button
-												className="icon-button"
-												style={{ color: "var(--text-2)" }}
-												onClick={() => {
+											/>
+											<ConfirmButton
+												small
+												variant="ghost"
+												onConfirm={() => {
 													const next = customStyles.filter((c) => c.name !== s.name);
 													setCustomStyles(next);
 													if (prefs.mapStyleName === s.name) pref("mapStyleName")("default");
@@ -520,18 +562,18 @@ export function MapEmbed({
 												aria-label={t("Delete style")}
 											>
 												<Icon path={mdiDelete} size={20} />
-											</button>
+											</ConfirmButton>
 										</div>
 									</li>
 								))}
 							</ul>
 						)}
-						<strong>{t("New style")}</strong>
-						<p style={{ margin: 0 }}>{t("Paste a Google Maps style JSON array below.")}</p>
-						<form
-							onSubmit={(ev) => {
-								ev.preventDefault();
-								const fd = new FormData(ev.currentTarget);
+						<DialogForm
+							ref={styleFormRef}
+							onSubmit={() => {
+								const form = styleFormRef.current;
+								if (!form) return;
+								const fd = new FormData(form);
 								const name = (fd.get("name") as string)?.trim();
 								const raw = (fd.get("style") as string)?.trim();
 								if (!name || !raw) return;
@@ -540,47 +582,29 @@ export function MapEmbed({
 									if (!Array.isArray(style)) return;
 									const next = [...customStyles.filter((s) => s.name !== name), { name, style }];
 									setCustomStyles(next);
-									ev.currentTarget.reset();
+									form.reset();
 								} catch {
 									// ignored
 								}
 							}}
 						>
-							<p>
-								<TextInput
-									name="name"
-									placeholder={t("Style name")}
-									required
-									style={{ width: "100%" }}
-								/>
-							</p>
-							<p>
-								<textarea
-									name="style"
-									className="text-input"
-									placeholder='[{"featureType":"water","stylers":[{"color":"#ff0000"}]}]'
-									rows={5}
-									style={{
-										width: "100%",
-										fontFamily: "monospace",
-										fontSize: "0.8rem",
-									}}
-									required
-								/>
-							</p>
-							<p>
-								<Button variant="primary" type="submit">
-									{t("Upload")}
-								</Button>
-							</p>
-						</form>
+							<strong>{t("New style")}</strong>
+							<Hint>{t("Paste a Google Maps style JSON array below.")}</Hint>
+							<TextInput name="name" placeholder={t("Style name")} required />
+							<textarea
+								name="style"
+								className="text-input mono"
+								placeholder='[{"featureType":"water","stylers":[{"color":"#ff0000"}]}]'
+								rows={5}
+								required
+							/>
+							<DialogActions cancel={{ label: t("Close") }} primary={{ label: t("Upload") }} />
+						</DialogForm>
 					</DialogContent>
 				</Dialog>
 			)}
 			<ContextMenu.Trigger render={<span ref={contextTriggerRef} title={t("Context menu")} />} />
-			<ContextMenu.Portal>
-				<MapContextMenuContent />
-			</ContextMenu.Portal>
+			<MapContextMenuContent />
 		</ContextMenu.Root>
 	);
 }

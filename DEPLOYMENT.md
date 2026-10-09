@@ -559,3 +559,27 @@ cargo build --manifest-path src-tauri/Cargo.toml --features web-serve --release
 ```
 
 关闭旧的 `map-making-app.exe` 后，再启动新的 release 程序。只修改 React/TS/CSS 或 `VITE_*` 配置时，也必须重新执行 `npm run build` 和 Cargo 构建；仅重启程序不够。
+
+## 迁移到 v0.11.6
+
+使用 Node 26 和 Rust stable。首次构建前执行：
+
+```bash
+git submodule update --init --recursive
+git lfs pull
+```
+
+腾讯覆盖资源 `app/src-tauri/resources/tencent-lines.pmtiles` 应为约 120 MiB 的真实 PMTiles 文件。运行时也可通过 `MMA_TENCENT_COVERAGE_PATH` 指定其绝对路径。
+
+百度详细地址查询使用进程环境变量 `MMA_BAIDU_REVERSE_AK`，请提供自己的 key；缺省使用离线城市表。不要把 key 写入源码。
+
+macOS Apple Silicon 构建：
+
+```bash
+cd app
+npm ci
+npm exec tauri build -- --bundles app --features web-serve
+open src-tauri/target/release/bundle/macos/MMA-CN.app
+```
+
+首次使用新版本前备份旧应用数据和导出题库。Linux/Termux 浏览器服务继续使用本文的 `map-making-app --serve` 启动方式。

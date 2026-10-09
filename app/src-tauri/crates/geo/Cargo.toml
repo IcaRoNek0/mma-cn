@@ -2,3 +2,6 @@
 name = "mma-geo"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+i_overlay = "9.0"

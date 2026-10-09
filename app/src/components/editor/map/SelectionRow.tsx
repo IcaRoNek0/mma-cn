@@ -1,41 +1,43 @@
-import { memo, useState, useEffect, useCallback, useRef } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import {
-	useMapState,
-	selectInverse,
-	setPolygonName,
-	setSelectionColors,
+	applySelectionUpdate,
 	createTags,
-	fetchLocationsByIds,
-	reorderSelection,
-	composeSelections,
-	decomposeChild,
-	removeChildFromSelection,
-	removeSelections,
-	toggleGhostSelection,
-	isolateSelection,
-	updateFilterSelection,
-	pruneDuplicates,
 	getVisibleTags,
+	pruneDuplicates,
+	query,
+	useMapState,
 } from "@/store/useMapStore";
+import { useItemDrag } from "@/lib/hooks/useItemDrag";
+import {
+	composeSelections,
+	displayColor,
+	filterIsLocalTime,
+	isolateGhost,
+	moveSelection,
+	removeSelectionAt,
+	replaceSelection,
+	selectionDisplayName,
+	type SelectionPath,
+	setPolygonName,
+	setSelectionColor,
+	tagIdOf,
+	toggleGhost,
+	toggleInvert,
+} from "@/store/selections";
 import { toast } from "@/lib/util/toast";
 import { downloadBlob } from "@/lib/util/util";
-import { stepFilterWindow } from "@/lib/data/fieldOps";
-import { cmd } from "@/lib/commands";
-import { RgbColorPicker } from "react-colorful";
-import { useDebouncedCallback } from "@/lib/hooks/useDebouncedCallback";
+import { polygonFeature } from "@/lib/util/geojson";
+import { stepFilterWindow } from "@/lib/util/date";
 import type { RGB } from "@/lib/util/color";
 import type { Selection } from "@/bindings.gen";
-import { selectionDisplayName } from "@/store/selections";
 import {
 	FilterForm,
 	filterPropsToSeed,
 	useExtraFieldKeys,
 } from "@/components/editor/map/FilterBuilder";
 import { beginReview } from "@/lib/review/review";
-import { Dialog, DialogContent } from "@/components/primitives/Dialog";
-import { Icon } from "@/components/primitives/Icon";
-import { Button } from "@/components/primitives/Button";
-import { TextInput } from "@/components/primitives/TextInput";
+import { PromptDialog } from "@/components/primitives/Dialog";
+import { RgbPicker } from "@/components/primitives/ColorPicker";
 import {
 	mdiClose,
 	mdiChevronLeft,
@@ -48,21 +50,19 @@ import { Menu } from "@base-ui-components/react/menu";
 import { fmt } from "@/lib/util/format";
 import { rgbCss } from "@/lib/util/color";
 import { getMapHost } from "@/lib/map/mapState";
-import { boundsOfCoords, type MapHost } from "@/lib/map/host";
+import type { MapHost } from "@/lib/map/host";
+import { cmd } from "@/lib/commands";
 import { t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
+import { MenuPopup, MenuItem, MenuSeparator } from "@/components/primitives/Menu";
+import { Swatch } from "@/components/primitives/Swatch";
 
 async function fitSelectionBounds(host: MapHost, selection: Selection) {
-	if (selection.props.type === "Polygon") {
-		const coords = selection.props.polygon.coordinates.flat();
-		const bounds = boundsOfCoords(coords.map(([lng, lat]) => ({ lat, lng })));
-		if (bounds) host.fitBounds(bounds, 100);
-		return;
-	}
-	const ids = await cmd.storeResolveSelection(selection.props);
-	if (ids.length === 0) return;
-	const locs = await fetchLocationsByIds(ids);
-	const bounds = boundsOfCoords(locs);
-	if (bounds) host.fitBounds(bounds, 100);
+	const box =
+		selection.selector.type === "Polygon"
+			? await cmd.polygonBounds(selection.selector.polygon)
+			: await query(selection.selector).bounds();
+	if (box) host.fitBounds({ west: box[0], south: box[1], east: box[2], north: box[3] }, 100);
 }
 
 function uniqueTagName(base: string, existing: Set<string>): string {
@@ -74,10 +74,10 @@ function uniqueTagName(base: string, existing: Set<string>): string {
 }
 
 function pruneDistance(selection: Selection): number | null {
-	if (selection.props.type === "Duplicates") return selection.props.distance;
-	if (selection.props.type === "Intersection") {
-		for (const child of selection.props.selections) {
-			if (child.props.type === "Duplicates") return child.props.distance;
+	if (selection.selector.type === "Duplicates") return selection.selector.distance;
+	if (selection.selector.type === "Intersection") {
+		for (const child of selection.selector.selections) {
+			if (child.selector.type === "Duplicates") return child.selector.distance;
 		}
 	}
 	return null;
@@ -85,8 +85,7 @@ function pruneDistance(selection: Selection): number | null {
 
 // --- Mouse-based drag system (HTML5 DnD is broken in Tauri webview) ---
 interface DragState {
-	key: string;
-	parentKey: string | null;
+	path: SelectionPath;
 	startY: number;
 	altKey: boolean;
 }
@@ -111,168 +110,109 @@ function useDragState() {
 
 /** An Invert wraps exactly one selection; its row renders the wrapped one. */
 function innerOf(selection: Selection): Selection {
-	return selection.props.type === "Invert" ? selection.props.selections[0] : selection;
+	return selection.selector.type === "Invert" ? selection.selector.selections[0] : selection;
 }
 
 export const SelectionRow = memo(function SelectionRow({
 	selection,
+	path,
 	depth = 0,
-	parentKey,
-	inheritedGhost = false,
+	ghosted,
 }: {
 	selection: Selection;
+	path: SelectionPath;
 	depth?: number;
-	parentKey?: string | null;
-	inheritedGhost?: boolean;
+	ghosted: boolean;
 }) {
 	const map = useMapState((s) => s.map);
-	const tagColor = useMapState((s) => {
-		const i = innerOf(selection);
-		return i.props.type === "Tag" ? s.tags[i.props.tagId]?.color : undefined;
-	});
+	const colorBlockCss = useMapState(() => rgbCss(displayColor(selection)));
 	const count = useMapState((s) => s.selectionCounts[selection.key] ?? 0);
 	const isTopLevel = depth === 0;
-	const ghosted = useMapState(
-		(s) => inheritedGhost || (depth === 0 && s.ghostedSelections.has(selection.key)),
-	);
-	const onRemove = parentKey
-		? () => removeChildFromSelection(parentKey, selection.key)
-		: () => removeSelections([selection.key]);
+	const onRemove = () => void applySelectionUpdate(removeSelectionAt(path));
 	const [view, setView] = useState<"contextmenu" | "color">("contextmenu");
 	const [dropZone, setDropZone] = useState<"before" | "on" | "after" | null>(null);
 	const [editingFilter, setEditingFilter] = useState(false);
 	const [savingTag, setSavingTag] = useState(false);
 	const [tagName, setTagName] = useState("");
+	const [renaming, setRenaming] = useState(false);
+	const [renameDraft, setRenameDraft] = useState("");
 	const rowRef = useRef<HTMLDivElement>(null);
 	const drag = useDragState();
-	const isDragging = drag?.key === selection.key;
-	const isDropTarget = drag != null && drag.key !== selection.key;
-	const handleColorChange = useDebouncedCallback(
-		useCallback(
-			(c: RGB) => {
-				setSelectionColors([{ key: selection.key, color: [c.r, c.g, c.b] }]);
-			},
-			[selection.key],
-		),
-		60,
-		{ flush: true },
-	);
+	const isDragging = drag?.path.join() === path.join();
+	const isDropTarget = drag != null && !isDragging;
+	const handleColorChange = (color: RGB) =>
+		void applySelectionUpdate(setSelectionColor(path, color));
 
 	const fieldEntries = useExtraFieldKeys();
+
+	const handleMouseDown = useItemDrag((e) => {
+		if ((e.target as HTMLElement).closest("button, [role='menu']")) return null;
+		const startY = e.clientY;
+		const setAlt = (altKey: boolean) => {
+			if (activeDrag) activeDrag = { ...activeDrag, altKey };
+			notifyDragListeners();
+		};
+		return {
+			onStart: (ev) => {
+				activeDrag = { path, startY, altKey: ev.altKey };
+				notifyDragListeners();
+			},
+			onMove: (ev) => setAlt(ev.altKey),
+			onKey: (ev) => setAlt(ev.altKey),
+			onEnd: () => {
+				activeDrag = null;
+				notifyDragListeners();
+			},
+		};
+	});
 
 	if (!map) return null;
 	const inner = innerOf(selection);
 	const stepFilter = (() => {
-		const p = selection.props;
+		const p = selection.selector;
 		if (p.type !== "Filter") return null;
 		const ft = fieldEntries.find((f) => f.key === p.field)?.def.type;
-		const wallClock = p.tzLocal ?? false;
-		if (stepFilterWindow(ft, p.op, p.value, p.value2, 1, wallClock) == null) return null;
+		const wallClock = filterIsLocalTime(p.test);
+		if (stepFilterWindow(ft, p.test, 1, wallClock) == null) return null;
 		return (dir: 1 | -1) => {
-			const next = stepFilterWindow(ft, p.op, p.value, p.value2, dir, wallClock);
+			const next = stepFilterWindow(ft, p.test, dir, wallClock);
 			if (next) {
-				updateFilterSelection(selection.key, {
-					type: "Filter",
-					field: p.field,
-					op: p.op,
-					tzLocal: p.tzLocal,
-					value: next.value,
-					value2: next.value2,
-				});
+				void applySelectionUpdate(
+					replaceSelection(path, { type: "Filter", field: p.field, test: next }),
+				);
 			}
 		};
 	})();
-	const showChildren = inner.props.type === "Intersection" || inner.props.type === "Union";
-	const isPoly = selection.props.type === "Polygon";
-	const colorBlockCss =
-		inner.props.type === "Tag" ? (tagColor ?? rgbCss(selection.color)) : rgbCss(selection.color);
+	const showChildren = inner.selector.type === "Intersection" || inner.selector.type === "Union";
+	const isPoly = selection.selector.type === "Polygon";
 
 	const handleRename = () => {
-		if (selection.props.type !== "Polygon") return;
-		const current = selection.props.polygon.properties?.name ?? "";
-		const next = window.prompt(t("Polygon name"), current);
-		if (next != null) setPolygonName(selection.key, next);
+		if (selection.selector.type !== "Polygon") return;
+		setRenameDraft(selection.selector.polygon.properties?.name ?? "");
+		setRenaming(true);
+	};
+
+	const submitRename = () => {
+		void applySelectionUpdate(setPolygonName(path, renameDraft));
+		setRenaming(false);
 	};
 
 	const handleSaveAsTag = async () => {
 		const name = tagName.trim();
-		if (!name) return;
-		const ids = await cmd.storeResolveSelection(selection.props);
-		if (ids.length === 0) return;
-		await createTags([name], ids);
+		if (!name || count === 0) return;
+		await createTags([name], selection.selector);
 		setSavingTag(false);
 		setTagName("");
 	};
 
 	const handleDownloadGeoJSON = () => {
-		if (selection.props.type !== "Polygon") return;
-		const poly = selection.props.polygon;
+		if (selection.selector.type !== "Polygon") return;
+		const poly = selection.selector.polygon;
 		const name = poly.properties?.name ?? "polygon";
-		const fc = {
-			type: "Feature",
-			properties: poly.properties ?? {},
-			geometry: { type: "Polygon", coordinates: poly.coordinates },
-		};
 		downloadBlob(
-			new Blob([JSON.stringify(fc)], { type: "application/geo+json" }),
+			new Blob([JSON.stringify(polygonFeature(poly))], { type: "application/geo+json" }),
 			`${name}.geojson`,
 		);
-	};
-
-	const handleMouseDown = (e: React.MouseEvent) => {
-		if (e.button !== 0) return;
-		if ((e.target as HTMLElement).closest("button, [role='menu']")) return;
-		e.preventDefault();
-		const startY = e.clientY;
-		const key = selection.key;
-		const pk = parentKey ?? null;
-		let started = false;
-
-		const onMove = (me: MouseEvent) => {
-			if (!started && Math.abs(me.clientY - startY) > 4) {
-				started = true;
-				activeDrag = { key, parentKey: pk, startY, altKey: me.altKey };
-				notifyDragListeners();
-			}
-			if (started && activeDrag) {
-				activeDrag = { ...activeDrag, altKey: me.altKey };
-				notifyDragListeners();
-			}
-		};
-
-		const ac = new AbortController();
-		const onUp = () => {
-			ac.abort();
-			if (started) {
-				activeDrag = null;
-				notifyDragListeners();
-			}
-		};
-
-		const onKey = (ke: KeyboardEvent) => {
-			if (ke.key === "Escape") {
-				activeDrag = null;
-				notifyDragListeners();
-				onUp();
-				return;
-			}
-			if (activeDrag) {
-				activeDrag = { ...activeDrag, altKey: ke.altKey };
-				notifyDragListeners();
-			}
-		};
-		const onKeyUp = (ke: KeyboardEvent) => {
-			if (activeDrag) {
-				activeDrag = { ...activeDrag, altKey: ke.altKey };
-				notifyDragListeners();
-			}
-		};
-
-		const { signal } = ac;
-		window.addEventListener("mousemove", onMove, { signal });
-		window.addEventListener("mouseup", onUp, { signal });
-		window.addEventListener("keydown", onKey, { signal });
-		window.addEventListener("keyup", onKeyUp, { signal });
 	};
 
 	const handleMouseMove = (e: React.MouseEvent) => {
@@ -290,16 +230,11 @@ export const SelectionRow = memo(function SelectionRow({
 	const handleMouseUp = () => {
 		if (!isDropTarget || !drag || !dropZone) return;
 		if (dropZone === "on") {
-			composeSelections(
-				drag.key,
-				selection.key,
-				drag.altKey ? "Union" : "Intersection",
-				drag.parentKey,
-				parentKey ?? null,
+			void applySelectionUpdate(
+				composeSelections(drag.path, path, drag.altKey ? "Union" : "Intersection"),
 			);
 		} else {
-			if (drag.parentKey) decomposeChild(drag.parentKey, drag.key);
-			reorderSelection(drag.key, selection.key, dropZone);
+			void applySelectionUpdate(moveSelection(drag.path, path, dropZone));
 		}
 		setDropZone(null);
 	};
@@ -316,16 +251,15 @@ export const SelectionRow = memo(function SelectionRow({
 				onMouseUp={handleMouseUp}
 			>
 				<span
-					className="selection-row__label"
+					className="selection-row__label truncate"
 					style={{ paddingLeft: `${depth * 2}rem` }}
 					onClick={() => {
 						if (drag) return;
 						const host = getMapHost();
-						if (host && map) fitSelectionBounds(host, selection);
+						if (host && map) void fitSelectionBounds(host, selection);
 					}}
 				>
-					<span className="color-block" style={{ backgroundColor: colorBlockCss }} />{" "}
-					{selectionDisplayName(selection)}
+					<Swatch color={colorBlockCss} /> {selectionDisplayName(selection)}
 				</span>
 				{isDropTarget && dropZone === "on" && (
 					<span className="selection-row__drop-hint">{drag?.altKey ? t("OR") : t("AND")}</span>
@@ -334,226 +268,160 @@ export const SelectionRow = memo(function SelectionRow({
 				<span className="selection-row__actions">
 					{stepFilter && (
 						<>
-							<button
-								className="icon-button"
-								type="button"
-								aria-label={t("Previous period")}
+							<IconButton
+								icon={mdiChevronLeft}
+								size={18}
+								label={t("Previous period")}
 								onClick={() => stepFilter(-1)}
-							>
-								<Icon path={mdiChevronLeft} size={18} />
-							</button>
-							<button
-								className="icon-button"
-								type="button"
-								aria-label={t("Next period")}
+							/>
+							<IconButton
+								icon={mdiChevronRight}
+								size={18}
+								label={t("Next period")}
 								onClick={() => stepFilter(1)}
-							>
-								<Icon path={mdiChevronRight} size={18} />
-							</button>
+							/>
 						</>
 					)}
-					<Menu.Root onOpenChange={(open) => !open && setView("contextmenu")}>
+					<Menu.Root modal={false} onOpenChange={(open) => !open && setView("contextmenu")}>
 						<Menu.Trigger
-							render={
-								<button className="icon-button" type="button" aria-label={t("Selection options")}>
-									<Icon path={mdiDotsVertical} />
-								</button>
-							}
+							render={<IconButton icon={mdiDotsVertical} label={t("Selection options")} />}
 						/>
-						<Menu.Portal>
-							<Menu.Positioner className="menu-positioner" align="end">
-								<Menu.Popup className="context-menu">
-									{view === "color" ? (
-										<div style={{ padding: "0.5rem", width: "14rem" }}>
-											<RgbColorPicker
-												color={{
-													r: selection.color[0],
-													g: selection.color[1],
-													b: selection.color[2],
-												}}
-												onChange={handleColorChange}
-											/>
-										</div>
-									) : (
+						<MenuPopup align="end">
+							{view === "color" ? (
+								<div style={{ padding: "0.5rem", width: "14rem" }}>
+									<RgbPicker color={selection.color} onChange={handleColorChange} />
+								</div>
+							) : (
+								<>
+									<MenuItem onClick={() => void applySelectionUpdate(toggleInvert(path))}>
+										{t("Invert selection")}
+									</MenuItem>
+									{selection.selector.type === "Filter" && (
+										<MenuItem onClick={() => setEditingFilter(true)}>{t("Edit filter")}</MenuItem>
+									)}
+									<MenuItem
+										disabled={count === 0}
+										onClick={() =>
+											void (async () => {
+												const ids = await query(selection.selector).ids();
+												void beginReview(ids, selection);
+											})()
+										}
+									>
+										{t("Review selection")}
+									</MenuItem>
+									{tagIdOf(selection.selector) == null && (
+										<MenuItem
+											disabled={count === 0}
+											onClick={() => {
+												const names = new Set(getVisibleTags().map((t) => t.name));
+												setTagName(uniqueTagName(selectionDisplayName(selection), names));
+												setSavingTag(true);
+											}}
+										>
+											{t("Save as tag")}
+										</MenuItem>
+									)}
+									{pruneDistance(selection) != null && (
+										<MenuItem
+											disabled={count === 0}
+											onClick={() =>
+												void (async () => {
+													const n = await pruneDuplicates(
+														selection.selector,
+														pruneDistance(selection)!,
+													);
+													toast(
+														t(
+															{
+																one: "Pruned {n} duplicate",
+																other: "Pruned {n} duplicates",
+															},
+															{ n },
+														),
+													);
+												})()
+											}
+										>
+											{t("Prune duplicates")}
+										</MenuItem>
+									)}
+									{tagIdOf(selection.selector) == null && (
+										<MenuItem closeOnClick={false} onClick={() => setView("color")}>
+											{t("Change color")}
+										</MenuItem>
+									)}
+									{isPoly && (
 										<>
-											<Menu.Item
-												className="context-menu__item"
-												onClick={() => selectInverse([selection.key])}
-											>
-												{t("Invert selection")}
-											</Menu.Item>
-											{selection.props.type === "Filter" && (
-												<Menu.Item
-													className="context-menu__item"
-													onClick={() => setEditingFilter(true)}
-												>
-													{t("Edit filter")}
-												</Menu.Item>
-											)}
-											<Menu.Item
-												className="context-menu__item"
-												disabled={count === 0}
-												onClick={async () => {
-													const ids = await cmd.storeResolveSelection(selection.props);
-													beginReview(ids, selection);
-												}}
-											>
-												{t("Review selection")}
-											</Menu.Item>
-											{selection.props.type !== "Tag" && (
-												<Menu.Item
-													className="context-menu__item"
-													disabled={count === 0}
-													onClick={() => {
-														const names = new Set(getVisibleTags().map((t) => t.name));
-														setTagName(uniqueTagName(selectionDisplayName(selection), names));
-														setSavingTag(true);
-													}}
-												>
-													{t("Save as tag")}
-												</Menu.Item>
-											)}
-											{pruneDistance(selection) != null && (
-												<Menu.Item
-													className="context-menu__item"
-													disabled={count === 0}
-													onClick={async () => {
-														const n = await pruneDuplicates(
-															selection.props,
-															pruneDistance(selection)!,
-														);
-														toast(
-															t(
-																{
-																	one: "Pruned {n} duplicate",
-																	other: "Pruned {n} duplicates",
-																},
-																{ n },
-															),
-														);
-													}}
-												>
-													{t("Prune duplicates")}
-												</Menu.Item>
-											)}
-											{selection.props.type !== "Tag" && (
-												<Menu.Item
-													className="context-menu__item"
-													closeOnClick={false}
-													onClick={() => setView("color")}
-												>
-													{t("Change color")}
-												</Menu.Item>
-											)}
-											{isPoly && (
-												<>
-													<Menu.Separator className="context-menu__separator" />
-													<Menu.Item className="context-menu__item" onClick={handleDownloadGeoJSON}>
-														{t("Download GeoJSON")}
-													</Menu.Item>
-													<Menu.Item className="context-menu__item" onClick={handleRename}>
-														{t("Rename")}
-													</Menu.Item>
-												</>
-											)}
-											<Menu.Separator className="context-menu__separator" />
-											<Menu.Item className="context-menu__item" onClick={onRemove}>
-												{t("Deselect")}
-											</Menu.Item>
+											<MenuSeparator />
+											<MenuItem onClick={handleDownloadGeoJSON}>{t("Download GeoJSON")}</MenuItem>
+											<MenuItem onClick={handleRename}>{t("Rename")}</MenuItem>
 										</>
 									)}
-								</Menu.Popup>
-							</Menu.Positioner>
-						</Menu.Portal>
+									<MenuSeparator />
+									<MenuItem onClick={onRemove}>{t("Deselect")}</MenuItem>
+								</>
+							)}
+						</MenuPopup>
 					</Menu.Root>
 					{isTopLevel && (
-						<button
-							className="icon-button"
-							type="button"
-							aria-label={ghosted ? t("Un-ghost selection") : t("Ghost selection")}
-							title={t("Ghost selection (Alt-click to isolate)")}
+						<IconButton
+							icon={ghosted ? mdiGhost : mdiGhostOutline}
+							label={ghosted ? t("Un-ghost selection") : t("Ghost selection")}
+							tooltip={t("Ghost selection (Alt-click to isolate)")}
 							onClick={(e) =>
-								e.altKey ? isolateSelection(selection.key) : toggleGhostSelection(selection.key)
+								void applySelectionUpdate(e.altKey ? isolateGhost(path[0]) : toggleGhost(path[0]))
 							}
-						>
-							<Icon path={ghosted ? mdiGhost : mdiGhostOutline} />
-						</button>
+						/>
 					)}
-					<button
-						className="icon-button"
-						type="button"
-						onClick={onRemove}
-						aria-label={t("Deselect")}
-					>
-						<Icon path={mdiClose} />
-					</button>
+					<IconButton icon={mdiClose} label={t("Deselect")} onClick={onRemove} />
 				</span>
 			</div>
-			{editingFilter && selection.props.type === "Filter" && (
+			{editingFilter && selection.selector.type === "Filter" && (
 				<FilterForm
-					initial={filterPropsToSeed(selection.props)}
+					initial={filterPropsToSeed(selection.selector)}
 					submitLabel={t("Update filter")}
-					onSubmit={(field, op, value, value2, tzLocal) =>
-						updateFilterSelection(selection.key, {
-							type: "Filter",
-							field,
-							op,
-							value,
-							value2,
-							tzLocal,
-						})
+					onSubmit={(field, test) =>
+						void applySelectionUpdate(replaceSelection(path, { type: "Filter", field, test }))
 					}
 					onClose={() => setEditingFilter(false)}
 				/>
 			)}
-			<Dialog
+			<PromptDialog
+				open={renaming}
+				onOpenChange={setRenaming}
+				title={t("Polygon name")}
+				value={renameDraft}
+				onChange={setRenameDraft}
+				selectOnFocus
+				canSubmit
+				submitLabel={t("Rename")}
+				onSubmit={submitRename}
+			/>
+			<PromptDialog
 				open={savingTag}
 				onOpenChange={(v) => {
 					setSavingTag(v);
 					if (!v) setTagName("");
 				}}
-			>
-				<DialogContent title={t("Save selection as tag")}>
-					<form
-						onSubmit={(e) => {
-							e.preventDefault();
-							handleSaveAsTag();
-						}}
-						style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginTop: 4 }}
-					>
-						<TextInput
-							value={tagName}
-							onChange={(e) => setTagName(e.target.value)}
-							onFocus={(e) => e.currentTarget.select()}
-							placeholder={t("Tag name...")}
-							autoFocus
-						/>
-						<div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-							<Button
-								onClick={() => {
-									setSavingTag(false);
-									setTagName("");
-								}}
-							>
-								{t("Cancel")}
-							</Button>
-							<Button variant="primary" type="submit" disabled={!tagName.trim()}>
-								{t("Create tag")}
-							</Button>
-						</div>
-					</form>
-				</DialogContent>
-			</Dialog>
+				title={t("Save selection as tag")}
+				value={tagName}
+				onChange={setTagName}
+				placeholder={t("Tag name...")}
+				selectOnFocus
+				submitLabel={t("Create tag")}
+				onSubmit={() => void handleSaveAsTag()}
+			/>
 			{showChildren &&
 				(
-					inner.props as Extract<Selection["props"], { type: "Intersection" | "Union" }>
-				).selections.map((child) => (
+					inner.selector as Extract<Selection["selector"], { type: "Intersection" | "Union" }>
+				).selections.map((child, i) => (
 					<SelectionRow
 						key={child.key}
 						selection={child}
+						path={selection === inner ? [...path, i] : [...path, 0, i]}
 						depth={depth + 1}
-						parentKey={selection.key}
-						inheritedGhost={ghosted}
+						ghosted={ghosted}
 					/>
 				))}
 		</>

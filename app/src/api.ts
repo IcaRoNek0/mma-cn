@@ -1,325 +1,231 @@
-// eslint-disable-next-line @typescript-eslint/triple-slash-reference
-/// <reference path="./types/google-maps.d.ts" />
+export type * from "@/bindings.consts";
+export type * from "@/bindings.gen";
+export type { ProcedureHost, ProcedureRequest, ProcedureResponse } from "@/lib/data/procedureHost";
 
-/**
- * Unified MMA API — the single public surface for plugins, tests, and app code.
- * Exposed as `window.MMA` (and the global `MMA`).
- */
-
+import * as consts from "@/bindings.consts";
 import * as store from "@/store/useMapStore";
+import * as selectionOps from "@/store/selections";
+import * as selectionActions from "@/store/selectionActions";
+import * as savedSelections from "@/store/savedSelections";
+import * as settings from "@/store/settings";
 import * as importStaging from "@/store/importStaging";
 import * as commitDiff from "@/store/commitDiff";
-import * as scope from "@/store/scope";
+import * as picker from "@/store/selectorPick";
 import * as mapList from "@/store/mapList";
 import * as review from "@/lib/review/review";
-import { events, type Scope, type Location } from "@/bindings.gen";
-import { cmd as commands, type Cmd } from "@/lib/commands";
-import { createLocation, applyLocationPatch } from "@/types";
-import { registerPlugin, createPluginStorage, usePluginState } from "@/plugins/registry";
-import { trackDisposable } from "@/plugins/scope";
-import {
-	Sidebar,
-	Section,
-	Field,
-	EmptyState,
-	SegmentedControl,
-} from "@/components/primitives/Sidebar";
-import { ScopeSelector } from "@/components/primitives/ScopeSelector";
-import { toast } from "@/lib/util/toast";
-import { preloadModules, getAvailableExternals } from "@/plugins/externals";
-import { registerEnrichFields, registerEnrichmentProvider } from "@/lib/data/fieldDefs";
-import { getFieldDef, getAllFieldDefs } from "@/lib/data/fieldDefRegistry";
-import { invoke } from "@tauri-apps/api/core";
-import { Command } from "@tauri-apps/plugin-shell";
-import { open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
-import { subscribe, type EditorEvent, type EventHandler } from "@/lib/events";
-import { setSetting, getSettings } from "@/store/settings";
-import { getSavedSelections, savedToSelectionProps, describeRule } from "@/store/savedSelections";
-import { getSeenEntries, getSeenCount, clearSeen } from "@/lib/seen/seen";
-import { loadSeenPano } from "@/lib/sv/panoSingleton";
-import { enrichAll, needsEnrichment } from "@/lib/sv/enrich";
-import { bulkPinToPano } from "@/lib/sv/pinPano";
-import { validateLocations } from "@/lib/sv/validate";
-import { fetchSvMetadata } from "@/lib/sv/svMeta";
-import { mmaBufUrl } from "@/lib/util/util";
-import { getMapHost, waitForMapHost } from "@/lib/map/mapState";
+import * as commands from "@/lib/commands";
+import * as tauri from "@/lib/tauri";
+import * as registry from "@/plugins/registry";
+import * as pluginHost from "@/plugins/pluginHost";
+import * as marketplace from "@/plugins/marketplace";
+import * as pluginStorage from "@/plugins/pluginStorage";
+import * as scope from "@/plugins/scope";
+import * as pluginEvents from "@/plugins/pluginEvents";
+import * as externals from "@/plugins/externals";
+import * as sidecar from "@/plugins/sidecar";
+import * as uiSurface from "@/components/primitives/ui";
+import * as fieldDefs from "@/lib/data/fieldDefs";
+import * as fieldDefRegistry from "@/lib/data/fieldDefRegistry";
+import * as fieldProjections from "@/lib/data/fieldProjections";
+import * as procedures from "@/lib/data/procedures";
+import * as seen from "@/lib/seen/seen";
+import * as seenRecorder from "@/lib/seen/seenRecorder";
+import * as panoSurface from "@/lib/sv/pano";
+import * as enrich from "@/lib/sv/enrich";
+import * as providers from "@/lib/sv/providers";
+import * as pinPano from "@/lib/sv/pinPano";
+import * as validate from "@/lib/sv/validate";
+import * as validationCategories from "@/lib/sv/validationCategories";
+import * as query from "@/lib/sv/query";
+import * as mapState from "@/lib/map/mapState";
+import * as sceneStore from "@/lib/render/sceneStore";
+import * as scenePositions from "@/lib/render/scenePositions";
+import * as colorUtils from "@/lib/util/color";
+import * as toast from "@/lib/util/toast";
+import * as jobs from "@/lib/jobs";
+import * as useJob from "@/lib/hooks/useJob";
 import * as legacy from "@/legacy";
-import * as testApi from "@/testApi";
+import * as testSurface from "@/testSurface";
+import * as types from "@/types";
+import * as util from "@/lib/util/util";
 
-export interface LocationStore {
-	locations: Map<number, Location>;
-	/** The materialized locations narrowed to a scope (defaults to all). */
-	get(scope?: Scope): Location[];
-	onChange(cb: () => void): () => void;
-	destroy(): void;
-}
-
-/** A live id-to-Location map of the whole map, kept in sync via store events.
- *  Call `destroy()` when done. */
-async function createLocationStore(): Promise<LocationStore> {
-	const locs = new Map<number, Location>();
-	for (const l of await store.fetchAllLocations()) locs.set(l.id, l);
-
-	const listeners = new Set<() => void>();
-	const notify = () => {
-		for (const cb of listeners) cb();
-	};
-
-	const unsubs = [
-		subscribe("location:add", (added) => {
-			for (const l of added) locs.set(l.id, l);
-			notify();
-		}),
-		subscribe("location:remove", (ids) => {
-			for (const id of ids) locs.delete(id);
-			notify();
-		}),
-		subscribe("location:update", (updates) => {
-			for (const u of updates) {
-				const existing = locs.get(u.id);
-				if (existing) locs.set(u.id, applyLocationPatch(existing, u.patch));
-			}
-			notify();
-		}),
-	];
-
-	return {
-		locations: locs,
-		get(s = { kind: "all" }) {
-			return scope.applyScope(s, [...locs.values()]);
-		},
-		onChange(cb) {
-			listeners.add(cb);
-			return () => {
-				listeners.delete(cb);
-			};
-		},
-		destroy() {
-			unsubs.forEach((fn) => fn());
-			listeners.clear();
-			locs.clear();
-		},
-	};
-}
-
-// --- Sidecar requests ---
-// One set of listeners for every request, demultiplexed by request id. Events can
-// land before `sidecarRequest` learns its id (a resident-served request finishes in
-// a millisecond), so unclaimed events are buffered until their caller arrives.
-
-type SidecarEvent =
-	| { kind: "line"; line: string }
-	| { kind: "log"; line: string }
-	| { kind: "done"; error: string | null };
-
-const sidecarHandlers = new Map<number, (ev: SidecarEvent) => void>();
-const sidecarPending = new Map<number, SidecarEvent[]>();
-let sidecarListeners: Promise<void> | null = null;
-
-function routeSidecarEvent(reqId: number, ev: SidecarEvent) {
-	const handler = sidecarHandlers.get(reqId);
-	if (handler) {
-		handler(ev);
-		return;
-	}
-	const buffered = sidecarPending.get(reqId);
-	if (buffered) buffered.push(ev);
-	else sidecarPending.set(reqId, [ev]);
-}
-
-function listenForSidecarEvents(): Promise<void> {
-	sidecarListeners ??= (async () => {
-		await events.sidecarLine.listen((ev) =>
-			routeSidecarEvent(ev.payload.reqId, { kind: "line", line: ev.payload.line }),
-		);
-		await events.sidecarLog.listen((ev) =>
-			routeSidecarEvent(ev.payload.reqId, { kind: "log", line: ev.payload.line }),
-		);
-		await events.sidecarDone.listen((ev) =>
-			routeSidecarEvent(ev.payload.reqId, { kind: "done", error: ev.payload.error }),
-		);
-	})();
-	return sidecarListeners;
-}
-
-export interface SidecarOptions<T> {
-	/** Fires once per JSON object the sidecar emits, in order. */
-	onLine?(item: T): void;
-	/** Sidecar diagnostics (stderr), one-shot runs only. Resident-served commands
-	 *  write theirs to the app log instead. */
-	onLog?(line: string): void;
-	signal?: AbortSignal;
-}
-
-/** Run one unit of work on a plugin's sidecar and resolve with its last emitted
- *  object (null if it emitted none). The app owns the process: commands the manifest
- *  lists under `serve` are answered by the plugin's resident sidecar, the rest by a
- *  one-shot run. `payload` is handed to the sidecar as JSON. */
-async function sidecarRequest<T>(
-	pluginId: string,
-	command: string,
-	payload?: unknown,
-	opts?: SidecarOptions<T>,
-): Promise<T | null> {
-	await listenForSidecarEvents();
-	const reqId = await commands.sidecarRequest(
-		pluginId,
-		command,
-		payload === undefined ? null : JSON.stringify(payload),
-	);
-
-	return new Promise<T | null>((resolve, reject) => {
-		let last: T | null = null;
-		// Abort kills the run but leaves the handler installed, so the `done` that
-		// follows still cleans up. Resident-served work has no process to kill.
-		const onAbort = () => {
-			commands.sidecarCancel(reqId).catch(() => {});
-			reject(new DOMException(`Sidecar ${command} aborted`, "AbortError"));
-		};
-		sidecarHandlers.set(reqId, (ev) => {
-			if (ev.kind === "line") {
-				let item: T;
-				try {
-					item = JSON.parse(ev.line) as T;
-				} catch {
-					return;
-				}
-				last = item;
-				opts?.onLine?.(item);
-			} else if (ev.kind === "log") {
-				opts?.onLog?.(ev.line);
-			} else {
-				sidecarHandlers.delete(reqId);
-				opts?.signal?.removeEventListener("abort", onAbort);
-				if (ev.error) reject(new Error(ev.error));
-				else resolve(last);
-			}
-		});
-
-		const buffered = sidecarPending.get(reqId);
-		if (buffered) {
-			sidecarPending.delete(reqId);
-			for (const ev of buffered) sidecarHandlers.get(reqId)?.(ev);
-		}
-
-		if (opts?.signal?.aborted) onAbort();
-		else opts?.signal?.addEventListener("abort", onAbort);
-	});
-}
-
-/** Explicitly exposed functions not in other APIs. */
-const surface = {
-	ready: false,
-
-	// --- Rust IPC commands ---
-	cmd: commands as Cmd,
-
-	// --- Tauri primitives (for plugins) ---
-	invoke,
-	shell: { Command },
-	dialog: { open: dialogOpen, save: dialogSave },
-
-	// --- Sidecar binaries (distributed via GitHub Releases on install) ---
-	sidecar: {
-		installedVersion: (pluginId: string) => commands.sidecarInstalledVersion(pluginId),
-		request: sidecarRequest,
-	},
-
-	// --- Bootstrap (for plugins) ---
-	registerPlugin,
-	registerEnrichFields,
-	registerEnrichmentProvider,
-	preloadModules,
-	getAvailableExternals,
-	createLocationStore,
-
-	// --- UI primitives (for plugins) ---
-	ui: { Sidebar, Section, Field, EmptyState, SegmentedControl, ScopeSelector },
-
-	// --- Notifications ---
-	toast,
-
-	// --- Namespaced per-plugin storage ---
-	storage: createPluginStorage,
-	usePluginState,
-
-	// --- Field definitions ---
-	getFieldDef,
-	getAllFieldDefs,
-
-	// --- Types ---
-	createLocation,
-
-	// --- Map host ---
-	getMapHost,
-	waitForMapHost,
-
-	// --- Settings ---
-	setSetting,
-	getSettings: () => ({ ...getSettings() }),
-
-	// --- Saved selections ---
-	getSavedSelections,
-	savedToSelectionProps,
-	describeRule,
-
-	// --- Events (for plugins) ---
-	on<E extends EditorEvent>(event: E, handler: EventHandler<E>) {
-		const unsub = subscribe(event, handler);
-		trackDisposable(unsub); // auto-removed on plugin deactivation
-		return unsub;
-	},
-
-	// --- Seen ---
-	getSeenEntries,
-	getSeenCount,
-	clearSeen,
-	loadSeenPano,
-
-	// --- Enrichment ---
-	enrichAll,
-	bulkPinToPano,
-	validateLocations,
-	needsEnrichment,
-
-	// --- SV metadata ---
-	fetchSvMetadata,
-
-	// --- Util ---
-	mmaBufUrl,
-
-	// --- Test-only convenience ---
-	_test: testApi,
-};
-
+type ConstsApi = typeof consts;
 type StoreApi = typeof store;
+/** Pure transforms over the selection list behind the sidebar. @unstable */
+type SelectionOpsApi = typeof selectionOps;
+/** Editing the selection list the way the sidebar does. @unstable */
+type SelectionActionsApi = typeof selectionActions;
+/** Saved selection rules. @unstable */
+type SavedSelectionsApi = typeof savedSelections;
+/** App settings and their option tables; the shape moves with every setting added. @unstable */
+type SettingsApi = typeof settings;
+/** Stage, preview, and confirm an import into the open map. @unstable */
 type ImportStagingApi = typeof importStaging;
+/** Uncommitted changes and their preview on the map. @unstable */
 type CommitDiffApi = typeof commitDiff;
-type ScopeApi = typeof scope;
+/** The selector picker the pick dialogs share; its choices move with the UI. @unstable */
+type SelectorPickApi = typeof picker;
+/** The cached map list and its refresh. @unstable */
 type MapListApi = typeof mapList;
+/** Review sessions and their history. @unstable */
 type ReviewApi = typeof review;
-type SurfaceApi = typeof surface;
+/** The raw command layer under the app-level API; any of them can change in a release. @unstable */
+type CommandsApi = typeof commands;
+/** Raw command, shell, and file dialog access. @unstable */
+type TauriApi = typeof tauri;
+type RegistryApi = typeof registry;
+/** Enabling plugins and their activation lifecycle. @unstable */
+type PluginHostApi = typeof pluginHost;
+/** The plugin marketplace and its update checks. @unstable */
+type MarketplaceApi = typeof marketplace;
+type PluginStorageApi = typeof pluginStorage;
+/** Which plugin owns a registration, and its teardown. @unstable */
+type ScopeApi = typeof scope;
+type PluginEventsApi = typeof pluginEvents;
+type ExternalsApi = typeof externals;
+type SidecarApi = typeof sidecar;
+type UiApi = typeof uiSurface;
+type FieldDefsApi = typeof fieldDefs;
+type FieldDefRegistryApi = typeof fieldDefRegistry;
+/** The keys a field can be grouped by. @unstable */
+type FieldProjectionsApi = typeof fieldProjections;
+/** Running procedures directly, outside a registered provider. @unstable */
+type ProceduresApi = typeof procedures;
+/** The seen-location history. @unstable */
+type SeenApi = typeof seen;
+/** How the app records panorama visits into the seen history. @unstable */
+type SeenRecorderApi = typeof seenRecorder;
+/** The shared panorama viewer. @unstable */
+type PanoApi = typeof panoSurface;
+/** Enrichment passes over the open map. @unstable */
+type EnrichApi = typeof enrich;
+/** The providers the app registers for enrichment. @unstable */
+type ProvidersApi = typeof providers;
+/** Bulk pinning locations to their panoramas. @unstable */
+type PinPanoApi = typeof pinPano;
+/** Coverage validation passes. @unstable */
+type ValidateApi = typeof validate;
+/** The validation categories users pick from, over the flags a check answers. @unstable */
+type ValidationCategoriesApi = typeof validationCategories;
+type QueryApi = typeof query;
+/** The embedded map host, its preferences, and click interceptors. @unstable */
+type MapStateApi = typeof mapState;
+/** The marker scene the map surfaces render from, and its load lifecycle. @unstable */
+type SceneStoreApi = typeof sceneStore;
+/** Screen positions of the rendered markers. @unstable */
+type ScenePositionsApi = typeof scenePositions;
+/** Color conversion helpers. @unstable */
+type ColorApi = typeof colorUtils;
+type ToastApi = typeof toast;
+/** The global job tray. @unstable */
+type JobsApi = typeof jobs;
+type UseJobApi = typeof useJob;
+/** Shims for removed APIs. @unstable */
 type LegacyApi = typeof legacy;
+/** @unstable */
+type TestApi = typeof testSurface;
+type TypesApi = typeof types;
+/** General-purpose helpers. @unstable */
+type UtilApi = typeof util;
 
+/** The global `MMA` object (also `window.MMA`). */
 export interface MMA
 	extends
+		ConstsApi,
 		StoreApi,
+		SelectionOpsApi,
+		SelectionActionsApi,
+		SavedSelectionsApi,
+		SettingsApi,
 		ImportStagingApi,
 		CommitDiffApi,
-		ScopeApi,
+		SelectorPickApi,
 		MapListApi,
 		ReviewApi,
-		SurfaceApi,
+		CommandsApi,
+		TauriApi,
+		RegistryApi,
+		PluginHostApi,
+		MarketplaceApi,
+		PluginStorageApi,
+		ScopeApi,
+		PluginEventsApi,
+		ExternalsApi,
+		SidecarApi,
+		UiApi,
+		FieldDefsApi,
+		FieldDefRegistryApi,
+		FieldProjectionsApi,
+		ProceduresApi,
+		SeenApi,
+		SeenRecorderApi,
+		PanoApi,
+		EnrichApi,
+		ProvidersApi,
+		PinPanoApi,
+		ValidateApi,
+		ValidationCategoriesApi,
+		QueryApi,
+		MapStateApi,
+		SceneStoreApi,
+		ScenePositionsApi,
+		ColorApi,
+		ToastApi,
+		JobsApi,
+		UseJobApi,
+		TestApi,
+		TypesApi,
+		UtilApi,
 		LegacyApi {}
 
+export type { MMA as MMAApi };
+
 const mma: MMA = {
+	...consts,
 	...store,
+	...selectionOps,
+	...selectionActions,
+	...savedSelections,
+	...settings,
 	...importStaging,
 	...commitDiff,
-	...scope,
+	...picker,
 	...mapList,
 	...review,
-	...surface,
+	...commands,
+	...tauri,
+	...registry,
+	...pluginHost,
+	...marketplace,
+	...pluginStorage,
+	...scope,
+	...pluginEvents,
+	...externals,
+	...sidecar,
+	...uiSurface,
+	...fieldDefs,
+	...fieldDefRegistry,
+	...fieldProjections,
+	...procedures,
+	...seen,
+	...seenRecorder,
+	...panoSurface,
+	...enrich,
+	...providers,
+	...pinPano,
+	...validate,
+	...validationCategories,
+	...query,
+	...mapState,
+	...sceneStore,
+	...scenePositions,
+	...colorUtils,
+	...toast,
+	...jobs,
+	...useJob,
+	...testSurface,
+	...types,
+	...util,
 	...legacy,
 };
 

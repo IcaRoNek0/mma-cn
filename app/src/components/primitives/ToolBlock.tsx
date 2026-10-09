@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import * as Collapsible from "@radix-ui/react-collapsible";
+import { Collapsible } from "@base-ui-components/react/collapsible";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiChevronDown, mdiChevronRight } from "@mdi/js";
 
@@ -34,7 +34,7 @@ function CollapsibleToolBlock({
 				</Collapsible.Trigger>
 				{isCollapsed ? collapsedAddons : addons}
 			</header>
-			<Collapsible.Content className="tool-block__content">{children}</Collapsible.Content>
+			<Collapsible.Panel className="tool-block__content">{children}</Collapsible.Panel>
 		</Collapsible.Root>
 	);
 }
@@ -51,6 +51,7 @@ function StaticToolBlock({ title, className, addons, children }: ToolBlockProps)
 	);
 }
 
+/** @unstable */
 export function ToolBlock(props: ToolBlockProps) {
 	if (props.onCollapse) {
 		return <CollapsibleToolBlock {...props} onCollapse={props.onCollapse} />;

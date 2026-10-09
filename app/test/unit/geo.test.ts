@@ -1,21 +1,17 @@
+import { mirrorCases } from "./fixtures/mirrorCases";
 import { describe, it, expect } from "vitest";
 import {
+	bearingDeg,
 	densifyRing,
-	foldLng,
-	inBbox,
+	normalizeHeading,
+	reverseHeading,
+	wrapDeg,
 	lerpLng,
 	lngSpan,
-	pointInPolygon,
-	ringsBbox,
 	unionBounds,
 	unwrapLng,
 	unwrapRing,
 } from "@/lib/geo/geo";
-import {
-	getBoundingBox,
-	pointInGeoJsonGeometry,
-	poissonDiskSample,
-} from "@/plugins/generator/engine/geo";
 
 /** What the rectangle tool builds, before it is closed and densified. */
 const corners = (a: number, b: number) => [
@@ -98,66 +94,60 @@ describe("densifyRing", () => {
 	});
 });
 
-describe("foldLng", () => {
+describe("wrapDeg", () => {
 	it("shifts into [min, min + 360)", () => {
-		expect(foldLng(-175, 170)).toBeCloseTo(185);
-		expect(foldLng(160, 170)).toBeCloseTo(520);
-		expect(foldLng(5, 5)).toBeCloseTo(5);
+		expect(wrapDeg(-175, 170)).toBeCloseTo(185);
+		expect(wrapDeg(160, 170)).toBeCloseTo(520);
+		expect(wrapDeg(5, 5)).toBeCloseTo(5);
+	});
+
+	it("folds any number of whole turns, not just one", () => {
+		expect(wrapDeg(700, -180)).toBeCloseTo(-20);
+		expect(wrapDeg(-700, -180)).toBeCloseTo(20);
+		expect(wrapDeg(3610, 0)).toBeCloseTo(10);
+	});
+
+	it("puts the window start at both ends, so min + 360 folds back to min", () => {
+		expect(wrapDeg(-180, -180)).toBe(-180);
+		expect(wrapDeg(180, -180)).toBe(-180);
+		expect(wrapDeg(360, 0)).toBe(0);
 	});
 });
 
-describe("ringsBbox / inBbox", () => {
-	it("emits the crossing form and reads it back", () => {
-		const bb = ringsBbox([box(170, 190)])!;
-		expect([bb.west, bb.east]).toEqual([170, -170]); // west > east = crosses
-		expect(inBbox(-175, 0, bb)).toBe(true);
-		expect(inBbox(180, 0, bb)).toBe(true);
-		expect(inBbox(160, 0, bb)).toBe(false);
-		expect(inBbox(0, 0, bb)).toBe(false);
+describe("normalizeHeading", () => {
+	it("passes through values inside [-180, 180)", () => {
+		expect(normalizeHeading(0)).toBe(0);
+		expect(normalizeHeading(90)).toBe(90);
+		expect(normalizeHeading(-90)).toBe(-90);
+		expect(normalizeHeading(-180)).toBe(-180);
 	});
 
-	it("reads a plain box the ordinary way", () => {
-		const bb = ringsBbox([box(10, 20)])!;
-		expect([bb.west, bb.east]).toEqual([10, 20]);
-		expect(inBbox(15, 0, bb)).toBe(true);
-		expect(inBbox(25, 0, bb)).toBe(false);
-		expect(inBbox(5, 0, bb)).toBe(false);
+	it("wraps outside it, over any number of turns", () => {
+		expect(normalizeHeading(270)).toBe(-90);
+		expect(normalizeHeading(360)).toBe(0);
+		expect(normalizeHeading(-270)).toBe(90);
+		expect(normalizeHeading(-360)).toBe(0);
+		expect(normalizeHeading(700)).toBeCloseTo(-20);
 	});
 
-	it("holds a span wider than 180 degrees", () => {
-		const bb = ringsBbox([box(20, -170)])!;
-		expect(inBbox(0, 0, bb)).toBe(true);
-		expect(inBbox(-100, 0, bb)).toBe(true);
-		expect(inBbox(100, 0, bb)).toBe(false);
-		expect(inBbox(-175, 0, bb)).toBe(false);
+	// The window is half-open, so the antipode has one spelling rather than two.
+	it("spells 180 as -180", () => {
+		expect(normalizeHeading(180)).toBe(-180);
+	});
+});
+
+describe("reverseHeading", () => {
+	it("is the opposite bearing", () => {
+		expect(reverseHeading(0)).toBe(-180);
+		expect(reverseHeading(90)).toBe(-90);
+		expect(reverseHeading(-90)).toBe(90);
+		expect(reverseHeading(350)).toBe(170);
 	});
 
-	// Read in their own frames the two parts would span the globe and reject nothing.
-	it("merges straddling parts into one frame", () => {
-		const bb = ringsBbox([box(170, 190), box(-175, -172)])!;
-		expect([bb.west, bb.east]).toEqual([170, -170]);
-		expect(inBbox(-174, 0, bb)).toBe(true);
-		expect(inBbox(0, 0, bb)).toBe(false);
-	});
-
-	it("is null with no vertices", () => {
-		expect(ringsBbox([])).toBe(null);
-		expect(ringsBbox([[]])).toBe(null);
-	});
-
-	// Antarctica-style: a ring running the full -180..180. Folding both edges would
-	// collapse the box to zero width and reject everything.
-	it("holds a full-globe span instead of collapsing to zero width", () => {
-		const ring: number[][] = [];
-		for (let lng = -180; lng <= 180; lng += 10) ring.push([lng, -85]);
-		for (let lng = 180; lng >= -180; lng -= 10) ring.push([lng, -60]);
-		const bb = ringsBbox([ring])!;
-		expect([bb.west, bb.east]).toEqual([-180, 180]);
-		expect(lngSpan(bb)).toBe(360);
-		expect(inBbox(0, -70, bb)).toBe(true);
-		expect(inBbox(-179, -70, bb)).toBe(true);
-		expect(inBbox(100, -70, bb)).toBe(true);
-		expect(inBbox(0, -50, bb)).toBe(false); // latitude still rejects
+	it("is its own inverse", () => {
+		for (const h of [0, 37, 90, 179, -179, -90, 270, 359]) {
+			expect(reverseHeading(reverseHeading(h))).toBeCloseTo(normalizeHeading(h));
+		}
 	});
 });
 
@@ -184,8 +174,7 @@ describe("unionBounds", () => {
 			{ west: 350, east: 355, south: 0, north: 1 },
 		);
 		expect(lngSpan(u)).toBe(30); // 350 -> 20, not the 345 the other way
-		expect(inBbox(0, 0.5, u)).toBe(true);
-		expect(inBbox(180, 0.5, u)).toBe(false);
+		expect([u.west, u.east]).toEqual([350, 20]);
 	});
 
 	it("behaves like plain min/max when neither box crosses", () => {
@@ -203,75 +192,25 @@ describe("unionBounds", () => {
 	});
 });
 
-describe("pointInPolygon across the seam", () => {
-	it("selects inside a narrow box straddling the antimeridian", () => {
-		const ring = box(170, 190);
-		expect(pointInPolygon(180, 0, [ring])).toBe(true);
-		expect(pointInPolygon(-175, 0, [ring])).toBe(true);
-		expect(pointInPolygon(175, 0, [ring])).toBe(true);
-		expect(pointInPolygon(160, 0, [ring])).toBe(false);
-		expect(pointInPolygon(-160, 0, [ring])).toBe(false);
-	});
-
-	// The "shortest rectangle" bug: a box wider than half the globe used to resolve to
-	// its complement, because a span over 180 degrees can't be read back off normalized
-	// vertices.
-	it("selects the drawn side of a box wider than 180 degrees", () => {
-		const ring = box(20, -170);
-		expect(pointInPolygon(0, 0, [ring])).toBe(true);
-		expect(pointInPolygon(-100, 0, [ring])).toBe(true);
-		expect(pointInPolygon(-169, 0, [ring])).toBe(true);
-		expect(pointInPolygon(100, 0, [ring])).toBe(false);
-		expect(pointInPolygon(-175, 0, [ring])).toBe(false);
-	});
-
-	// The "inverts" bug: normalizing to [0, 360) only moved the seam to lng 0, so a
-	// shape crossing both meridians tore at Greenwich instead.
-	it("selects across a shape crossing both the antimeridian and Greenwich", () => {
-		const ring = box(170, 365);
-		expect(pointInPolygon(180, 0, [ring])).toBe(true);
-		expect(pointInPolygon(-90, 0, [ring])).toBe(true);
-		expect(pointInPolygon(0, 0, [ring])).toBe(true);
-		expect(pointInPolygon(3, 0, [ring])).toBe(true);
-		expect(pointInPolygon(30, 0, [ring])).toBe(false);
-		expect(pointInPolygon(100, 0, [ring])).toBe(false);
-	});
-
-	it("selects with the generator's broad phase, which shares the same frame", () => {
-		// pointInGeoJsonGeometry bbox-rejects before the exact test, so a raw comparison
-		// there would drop seam-crossing points the ring test would have accepted.
-		const geometry: GeoJSON.Polygon = { type: "Polygon", coordinates: [box(170, 190)] };
-		expect(pointInGeoJsonGeometry(180, 0, geometry)).toBe(true);
-		expect(pointInGeoJsonGeometry(-175, 0, geometry)).toBe(true);
-		expect(pointInGeoJsonGeometry(175, 0, geometry)).toBe(true);
-		expect(pointInGeoJsonGeometry(160, 0, geometry)).toBe(false);
-		expect(pointInGeoJsonGeometry(0, 0, geometry)).toBe(false);
-	});
-
-	it("samples a seam-crossing region instead of the rest of the world", () => {
-		// Raw min/max bounds made this box 340 degrees wide, so sampling landed almost
-		// entirely outside it and every emitted longitude had to be in [-180, 180].
-		const feature: GeoJSON.Feature<GeoJSON.Polygon> = {
-			type: "Feature",
-			properties: {},
-			geometry: { type: "Polygon", coordinates: [box(170, 190)] },
-		};
-		expect(lngSpan(getBoundingBox(feature)!)).toBe(20);
-		const points = poissonDiskSample(feature, 40_000);
-		expect(points.length).toBeGreaterThan(0);
-		for (const p of points) {
-			expect(p.lng).toBeGreaterThanOrEqual(-180);
-			expect(p.lng).toBeLessThanOrEqual(180);
-			expect(pointInGeoJsonGeometry(p.lng, p.lat, feature.geometry)).toBe(true);
+describe("longitude delta shared mirror cases", () => {
+	it("agrees with the geo crate, including exactly 180 degrees apart", () => {
+		for (const [from, to, expected] of mirrorCases.lngDelta) {
+			expect(unwrapLng(to, from) - from).toBeCloseTo(expected);
 		}
-		expect(points.some((p) => p.lng < 0)).toBe(true); // reached past the seam
+	});
+});
+
+describe("bearingDeg", () => {
+	it("gives compass bearings along the axes", () => {
+		const o = { lat: 0, lng: 0 };
+		expect(bearingDeg(o, { lat: 1, lng: 0 })).toBeCloseTo(0);
+		expect(bearingDeg(o, { lat: 0, lng: 1 })).toBeCloseTo(90);
+		expect(bearingDeg(o, { lat: -1, lng: 0 })).toBeCloseTo(-180);
+		expect(bearingDeg(o, { lat: 0, lng: -1 })).toBeCloseTo(-90);
 	});
 
-	it("honours holes in the seam frame", () => {
-		const outer = box(170, 200);
-		const hole = box(180, 190);
-		expect(pointInPolygon(185, 0, [outer, hole])).toBe(false);
-		expect(pointInPolygon(175, 0, [outer, hole])).toBe(true);
-		expect(pointInPolygon(-165, 0, [outer, hole])).toBe(true);
+	it("follows the great circle rather than the rhumb line", () => {
+		// Due east at 60N starts out bearing north of east.
+		expect(bearingDeg({ lat: 60, lng: 0 }, { lat: 60, lng: 10 })).toBeCloseTo(85.67, 1);
 	});
 });

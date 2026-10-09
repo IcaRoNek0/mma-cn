@@ -40,7 +40,7 @@ describe("Data integrity - flags", () => {
 		expect(reloaded.flags).toBe(1);
 	});
 
-	it("flag=2 (Informational) survives save/load", async () => {
+	it("an unassigned flag bit survives save/load", async () => {
 		const ids = await addLocs([createLocation({ lat: 30, lng: 40, flags: 2 })]);
 
 		await flushAndWait();
@@ -187,7 +187,7 @@ describe("Data integrity - extras", () => {
 		await openMap(map.id);
 
 		const loc = await getLoc(ids[0]);
-		expect(loc.extra.country).toBe("United States of America");
+		expect(loc.extra?.country).toBe("United States of America");
 	});
 
 	it("numeric extra survives", async () => {
@@ -204,9 +204,9 @@ describe("Data integrity - extras", () => {
 		await openMap(map.id);
 
 		const loc = await getLoc(ids[0]);
-		expect(loc.extra.altitude).toBeCloseTo(8848.86, 2);
-		expect(loc.extra.population).toBe(0);
-		expect(loc.extra.negative).toBe(-42);
+		expect(loc.extra?.altitude).toBeCloseTo(8848.86, 2);
+		expect(loc.extra?.population).toBe(0);
+		expect(loc.extra?.negative).toBe(-42);
 	});
 
 	it("nested extra object survives", async () => {
@@ -223,9 +223,8 @@ describe("Data integrity - extras", () => {
 		await openMap(map.id);
 
 		const loc = await getLoc(ids[0]);
-		expect(loc.extra.meta.source).toBe("import");
-		expect(loc.extra.meta.version).toBe(2);
-		expect(loc.extra.arr).toEqual([1, 2, 3]);
+		expect(loc.extra?.meta).toMatchObject({ source: "import", version: 2 });
+		expect(loc.extra?.arr).toEqual([1, 2, 3]);
 	});
 
 	it("empty extra object survives", async () => {

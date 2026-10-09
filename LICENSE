@@ -19,12 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Acknowledgements
-
-This project is an extension of map-making.app, created by ReAnna.
-Some code is derived from map-making.app, such as the CSS and portions of the
-editor UI, used with her permission. The data engine and all new features 
-are independent implementations.

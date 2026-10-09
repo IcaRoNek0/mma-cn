@@ -1,28 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { Location } from "@/bindings.gen";
 import { Sidebar, SegmentedControl } from "@/components/primitives/Sidebar";
+import { ProgressRow } from "@/components/primitives/ProgressRow";
 import { cmd } from "@/lib/commands";
+import { query } from "@/store/useMapStore";
 import { getSettings } from "@/store/settings";
-import { fetchAllLocations } from "@/store/useMapStore";
+
 import { subscribeMany, LOCATION_DATA_EVENTS } from "@/lib/events";
-import { usePluginState, createPluginStorage } from "@/plugins/registry";
+import { usePluginState, storage } from "@/plugins/pluginStorage";
 import "./distribution.css";
-import { t, getLocale } from "@/lib/i18n";
+import { t } from "@/lib/i18n";
+import { countryName } from "@/lib/util/format";
 
 type Source = "coords" | "metadata";
-
-let countryNames: { locale: string; names: Intl.DisplayNames } | null = null;
-
-function getCountryName(code: string): string {
-	const locale = getLocale();
-	if (countryNames?.locale !== locale)
-		countryNames = { locale, names: new Intl.DisplayNames([locale], { type: "region" }) };
-	try {
-		return countryNames.names.of(code) ?? code;
-	} catch {
-		return code;
-	}
-}
 
 interface CountryEntry {
 	code: string;
@@ -30,26 +19,17 @@ interface CountryEntry {
 	count: number;
 }
 
-function computeDistribution(locations: Location[]): { entries: CountryEntry[]; unknown: number } {
-	const counts = new Map<string, number>();
-	let unknown = 0;
-
-	for (const loc of locations) {
-		const code = loc.extra?.countryCode as string | undefined;
-		if (code) {
-			counts.set(code, (counts.get(code) ?? 0) + 1);
-		} else {
-			unknown++;
-		}
-	}
-
-	const entries: CountryEntry[] = [];
-	for (const [code, count] of counts) {
-		entries.push({ code, name: getCountryName(code), count });
-	}
-	entries.sort((a, b) => b.count - a.count);
-
-	return { entries, unknown };
+/** Country counts from the enriched `countryCode` field, grouped in Rust. `unknown` is
+ *  whatever the grouping didn't account for. */
+function toDistribution(
+	counts: [string, number][],
+	total: number,
+): { entries: CountryEntry[]; unknown: number } {
+	const entries = counts
+		.map(([code, count]) => ({ code, name: countryName(code), count }))
+		.sort((a, b) => b.count - a.count);
+	const known = entries.reduce((sum, e) => sum + e.count, 0);
+	return { entries, unknown: total - known };
 }
 
 export function DistributionSidebar({ onClose }: { onClose: () => void }) {
@@ -59,16 +39,19 @@ export function DistributionSidebar({ onClose }: { onClose: () => void }) {
 	const [source, setSource] = usePluginState<Source>("distribution", "source", "coords");
 	const [metaAvailable, setMetaAvailable] = useState(false);
 	// A persisted choice counts as already defaulted — don't auto-flip it.
-	const autoDefaulted = useRef(createPluginStorage("distribution").keys().includes("source"));
+	const autoDefaulted = useRef(storage("distribution").keys().includes("source"));
 
 	const refresh = useCallback(async () => {
 		const map = MMA.getMapState().map;
 		if (!map) return;
-		const locs = await fetchAllLocations();
-		setTotal(locs.length);
+		const count = MMA.getMapState().locationCount;
+		setTotal(count);
 
-		const meta = computeDistribution(locs);
-		const hasMeta = locs.length > 0 && meta.unknown < locs.length;
+		const [countries] = await query({ type: "Everything" }).countBy(["countryCode"], {
+			kind: "value",
+		});
+		const meta = toDistribution(countries.counts, count);
+		const hasMeta = count > 0 && meta.unknown < count;
 		setMetaAvailable(hasMeta);
 
 		// One-time: prefer enriched metadata when it's actually present, else stay on
@@ -87,10 +70,13 @@ export function DistributionSidebar({ onClose }: { onClose: () => void }) {
 			setEntries(meta.entries);
 			setUnknown(meta.unknown);
 		} else {
-			const counts = await cmd.storeCountryDistribution(getSettings().borderDetail);
+			const counts = await cmd.storeCountryDistribution(
+				{ type: "Everything" },
+				getSettings().borderDetail,
+			);
 			setEntries(
 				counts
-					.map(([code, count]) => ({ code, name: getCountryName(code), count }))
+					.map(([code, count]) => ({ code, name: countryName(code), count }))
 					.sort((a, b) => b.count - a.count),
 			);
 			setUnknown(0);
@@ -98,8 +84,9 @@ export function DistributionSidebar({ onClose }: { onClose: () => void }) {
 	}, [source, setSource]);
 
 	useEffect(() => {
-		refresh();
-		return subscribeMany(LOCATION_DATA_EVENTS, refresh);
+		const run = () => void refresh();
+		run();
+		return subscribeMany(LOCATION_DATA_EVENTS, run);
 	}, [refresh]);
 
 	const maxCount = entries.length > 0 ? entries[0].count : 1;
@@ -132,9 +119,13 @@ export function DistributionSidebar({ onClose }: { onClose: () => void }) {
 
 			<div className="distribution-sidebar__list">
 				{entries.map((e) => (
-					<div key={e.code} className="distribution-row">
-						<div className="distribution-row__label">
-							<span className="distribution-row__name">
+					<ProgressRow
+						key={e.code}
+						size="md"
+						value={e.count / maxCount}
+						count={e.count}
+						label={
+							<>
 								<img
 									src={`/flags/${e.code.toUpperCase()}.svg`}
 									alt={e.code}
@@ -143,16 +134,9 @@ export function DistributionSidebar({ onClose }: { onClose: () => void }) {
 									style={{ borderRadius: 2, flexShrink: 0 }}
 								/>
 								{e.name}
-							</span>
-							<span className="distribution-row__count">{e.count}</span>
-						</div>
-						<div className="distribution-row__bar-track">
-							<div
-								className="distribution-row__bar-fill"
-								style={{ width: `${(e.count / maxCount) * 100}%` }}
-							/>
-						</div>
-					</div>
+							</>
+						}
+					/>
 				))}
 			</div>
 		</Sidebar>

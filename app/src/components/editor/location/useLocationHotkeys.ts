@@ -6,50 +6,51 @@ import {
 	type SetStateAction,
 } from "react";
 import type { Location } from "@/bindings.gen";
-import { getMapState, getVisibleTags, duplicateLocation } from "@/store/useMapStore";
+import {
+	getMapState,
+	getVisibleTags,
+	addLocations,
+	createTags,
+	useMapState,
+	getTagCounts,
+} from "@/store/useMapStore";
 import { sortTagsByMode } from "@/lib/util/util";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { getSettings, setSetting, MOVEMENT_CYCLE, MOVEMENT_MODES } from "@/store/settings";
-import { PANO_ZOOM, zoomInStep, zoomOutStep } from "@/lib/sv/constants";
-import { tweenPov } from "@/lib/sv/tweenPov";
-import { type PanoReference, nearestLinkHeading } from "@/lib/sv/lookup";
+import { followLinkedPanos } from "@/lib/sv/lookup";
 import { toast } from "@/lib/util/toast";
-import { t } from "@/lib/i18n";
-import { isVirtualLocation } from "@/types";
-import { cycle } from "@/types/util";
-import { reviewNext, reviewPrev } from "@/lib/review/review";
-import { registerMapKeyActionHandler } from "@/lib/map/mapKeyBindings";
 import { cmd } from "@/lib/commands";
+import { t } from "@/lib/i18n";
+import { downloadPano } from "@/lib/sv/panoDownload";
+import { isVirtualLocation, dropLocation } from "@/types";
+import { cycle } from "@/types/util";
+import { reviewNext, reviewPrev, useReviewSession } from "@/lib/review/review";
+import { registerMapKeyActionHandler } from "@/lib/map/mapKeyBindings";
 import { log } from "@/lib/util/log";
-import { singletonPano } from "@/lib/sv/panoSingleton";
+import { toggleViewportLock } from "@/lib/sv/viewportLock";
+import { sendHideCar } from "./PanoControls";
+import { usePanoViewer } from "./PanoViewerContext";
+import { usePano } from "@/lib/hooks/usePano";
 
 interface LocationHotkeyDeps {
-	location: Location | null;
-	isReviewMode: boolean;
-	panoDates: PanoReference[];
-	selectedPanoId: string | null;
-	currentPano: Pick<google.maps.StreetViewPanoramaData, "location" | "imageDate"> | null;
-	cancelTweenRef: RefObject<(() => void) | null>;
 	pendingTags: string[];
 	setPendingTags: Dispatch<SetStateAction<string[]>>;
 	fullscreenContainerRef: RefObject<HTMLDivElement | null>;
 	panoContainerRef: RefObject<HTMLDivElement | null>;
-	handleSave: () => void;
-	handleClose: () => void;
-	handleDelete: () => void;
-	handleReturnToSpawn: () => void;
-	handleDateChange: (panoId: string | null) => void;
+	handleSave: () => void | Promise<void>;
+	handleClose: () => void | Promise<void>;
+	handleDelete: () => void | Promise<void>;
+	handleReturnToSpawn: () => void | Promise<void>;
+	handleDateChange: (panoId: string | null) => void | Promise<void>;
 }
 
 export function useLocationHotkeys(deps: LocationHotkeyDeps) {
+	const { draft, timeline } = usePanoViewer();
+	const pano = usePano();
+	const location = useMapState((s) => s.activeLocation);
+	const isReviewMode = useReviewSession() !== null;
 	const {
-		location,
-		isReviewMode,
-		panoDates,
-		selectedPanoId,
-		currentPano,
-		cancelTweenRef,
 		pendingTags,
 		setPendingTags,
 		fullscreenContainerRef,
@@ -62,67 +63,35 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 	} = deps;
 
 	useHotkey(useBinding("locationSave"), () => {
-		if (location) handleSave();
+		if (location) void Promise.resolve(handleSave());
 	});
 	useHotkey(useBinding("locationClose"), () => {
-		handleClose();
+		void Promise.resolve(handleClose());
 	});
 	useHotkey(useBinding("locationDelete"), () => {
-		if (location) handleDelete();
+		if (location) void Promise.resolve(handleDelete());
 	});
 	useHotkey(useBinding("reviewNext"), () => {
-		if (isReviewMode) reviewNext();
+		if (isReviewMode) void reviewNext();
 	});
 	useHotkey(useBinding("reviewPrev"), () => {
-		if (isReviewMode) reviewPrev();
+		if (isReviewMode) void reviewPrev();
 	});
 	useHotkey(useBinding("returnToSpawn"), () => {
-		handleReturnToSpawn();
+		void Promise.resolve(handleReturnToSpawn());
 	});
-	useHotkey(useBinding("pointNorth"), () => {
-		if (singletonPano) {
-			cancelTweenRef.current?.();
-			const h = singletonPano.getPov().heading;
-			if (Math.abs(h) < 1 && Math.abs(singletonPano.getPov().pitch) < 1) {
-				cancelTweenRef.current = tweenPov(singletonPano, { heading: 0, pitch: -90 });
-			} else {
-				cancelTweenRef.current = tweenPov(singletonPano, { heading: 0, pitch: 0 });
-			}
-		}
-	});
-	useHotkey(useBinding("centerRoad"), () => {
-		if (!singletonPano) return;
-		const headings = (singletonPano.getLinks() ?? [])
-			.map((l) => l?.heading)
-			.filter((h): h is number => h != null);
-		const nearest = nearestLinkHeading(headings, singletonPano.getPov().heading);
-		if (nearest == null) return;
-		cancelTweenRef.current?.();
-		cancelTweenRef.current = tweenPov(singletonPano, { heading: nearest, pitch: 0 });
-	});
-	useHotkey(useBinding("spin180"), () => {
-		if (singletonPano) {
-			cancelTweenRef.current?.();
-			const pov = singletonPano.getPov();
-			cancelTweenRef.current = tweenPov(singletonPano, {
-				heading: (pov.heading + 180) % 360,
-				pitch: pov.pitch,
-			});
-		}
-	});
+	useHotkey(useBinding("pointNorth"), () => pano.pointNorth());
+	useHotkey(useBinding("centerRoad"), () => pano.faceRoad());
+	useHotkey(useBinding("spin180"), () => pano.turnAround());
 	const canZoom = () => getSettings().defaultMovementMode !== "nmpz";
 	useHotkey(useBinding("zoomIn"), () => {
-		if (singletonPano && canZoom()) {
-			singletonPano.setZoom(zoomInStep(singletonPano.getZoom()));
-		}
+		if (canZoom()) pano.zoomIn();
 	});
 	useHotkey(useBinding("zoomOut"), () => {
-		if (singletonPano && canZoom()) {
-			singletonPano.setZoom(zoomOutStep(singletonPano.getZoom()));
-		}
+		if (canZoom()) pano.zoomOut();
 	});
 	useHotkey(useBinding("panoZoomReset"), () => {
-		if (singletonPano && canZoom()) singletonPano.setZoom(PANO_ZOOM.min);
+		if (canZoom()) pano.resetZoom();
 	});
 	useHotkey(
 		useBinding("copyLink"),
@@ -155,16 +124,35 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 		const container = fullscreenContainerRef.current ?? panoContainerRef.current?.parentElement;
 		if (container) toast(t(MOVEMENT_MODES[mode]), 1200, container);
 	});
+	/** The open location as it is right now: live camera, staged tags. */
+	const buildDrop = async (): Promise<Location | null> => {
+		if (!location || isVirtualLocation(location)) return null;
+		const live = pano.capture();
+		if (!live) return null;
+		const tags = (await createTags(pendingTags)).map((tag) => tag.id);
+		return dropLocation(location, live, live.panoId ?? location.panoId, tags);
+	};
+
 	useHotkey(useBinding("duplicateLocation"), () => {
-		if (location) duplicateLocation(location.id);
+		void buildDrop().then(async (drop) => {
+			if (!drop) return;
+			await addLocations([drop]);
+			const container = fullscreenContainerRef.current ?? panoContainerRef.current?.parentElement;
+			if (container) toast(t("Marker dropped"), 1200, container);
+		});
 	});
 
+	useHotkey(useBinding("downloadPanoTile"), () => {
+		const panoId = pano.panoId();
+		if (panoId) void downloadPano(panoId);
+	});
 	const stepPanoDate = (step: 1 | -1) => {
+		const panoDates = timeline ?? [];
 		if (!panoDates.length) return;
-		const current = selectedPanoId ?? currentPano?.location?.pano ?? location?.panoId;
-		handleDateChange(
+		const current = draft?.panoId ?? location?.panoId ?? null;
+		void handleDateChange(
 			cycle(
-				panoDates.map((d) => d.pano),
+				panoDates.map((d) => d.panoId),
 				current,
 				step,
 			),
@@ -172,14 +160,40 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 	};
 	useHotkey(useBinding("nextPanoDate"), () => stepPanoDate(1));
 	useHotkey(useBinding("prevPanoDate"), () => stepPanoDate(-1));
+	useHotkey(useBinding("followRoad"), () => {
+		const panoId = pano.panoId();
+		const heading = pano.pov().heading;
+		if (!panoId) return;
+		const container = fullscreenContainerRef.current ?? panoContainerRef.current?.parentElement;
+		if (container) toast(t("Following road..."), 1500, container);
+		followLinkedPanos(panoId, heading)
+			.then((locs) => {
+				if (locs.length > 0) void addLocations(locs);
+				if (container)
+					toast(
+						t({ one: "Added {n} location", other: "Added {n} locations" }, { n: locs.length }),
+						1500,
+						container,
+					);
+			})
+			.catch(() => {
+				if (container) toast(t("Follow road failed"), 1500, container);
+			});
+	});
+
+	useHotkey(useBinding("refreshPano"), () => {
+		if (!pano.exists() || !location) return;
+		pano.reload({ lat: location.lat, lng: location.lng });
+		sendHideCar(!getSettings().showCar);
+	});
+
+	useHotkey(useBinding("viewportLock"), () => {
+		void toggleViewportLock(pano);
+	});
 
 	const quicktagSlot = (idx: number) => {
 		if (!location || !getMapState().map) return;
-		const tags = sortTagsByMode(
-			getVisibleTags(),
-			getSettings().tagSortMode,
-			getMapState().tagCounts,
-		);
+		const tags = sortTagsByMode(getVisibleTags(), getSettings().tagSortMode, getTagCounts());
 		if (idx >= tags.length) return;
 		const tag = tags[idx];
 		const has = pendingTags.includes(tag.name);
@@ -196,6 +210,11 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 		);
 	});
 
+	const onDropToMap = useEffectEvent(async (mapId: string) => {
+		const drop = await buildDrop();
+		return drop && cmd.storeAddLocationsToMap(mapId, [drop]);
+	});
+
 	const hasLocation = location != null;
 	useEffect(() => {
 		if (!hasLocation) return;
@@ -205,11 +224,10 @@ export function useLocationHotkeys(deps: LocationHotkeyDeps) {
 			if (!loc || isVirtualLocation(loc)) return false;
 			const container = fullscreenContainerRef.current ?? panoContainerRef.current?.parentElement;
 			const t0 = performance.now();
-			cmd
-				.storeCopyLocationsToMap(mapId, [loc.id])
+			onDropToMap(mapId)
 				.then((res) => {
 					log.debug(`[copyToMap] ipc=${Math.round(performance.now() - t0)}ms`);
-					if (!container) return;
+					if (!res || !container) return;
 					toast(
 						res.copied > 0
 							? t('Copied to "{name}"', { name: res.targetName })

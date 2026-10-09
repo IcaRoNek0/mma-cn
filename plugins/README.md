@@ -17,10 +17,8 @@ macOS:    ~/Library/Application Support/app.map-making.local/plugins/<plugin-id>
 Grab the plugin scaffold directly into your plugins directory:
 
 ```bash
-mkdir %APPDATA%/app.map-making.local/plugins
-cd %APPDATA%/app.map-making.local/plugins
-npx degit ccmdi/mma/plugins
-cd sample
+npx degit ccmdi/mma/plugins <plugins directory>
+cd <plugins directory>/sample
 npm install
 npm run build
 ```
@@ -41,8 +39,8 @@ This watches your source, rebuilds on change, and copies `index.js`, `manifest.j
 For sidecar plugins, run `cargo build` in `plugins/<id>/sidecar/` in a separate terminal - the dev script polls for binary changes and copies them over.
 
 Each plugin is a folder containing at minimum:
-- `manifest.json` — plugin identity
-- `index.js` (or whatever `main` points to) — plugin behavior
+- `manifest.json` - plugin identity
+- `index.js` (or whatever `main` points to) - plugin behavior
 
 ## manifest.json
 
@@ -59,13 +57,13 @@ The manifest is the plugin's identity:
 }
 ```
 
-- `id` — unique identifier (kebab-case recommended, defaults to folder name)
-- `name` — display name shown in the plugin marketplace
-- `description` — short description (optional)
-- `icon` — MDI SVG path string (get one from [pictogrammers.com/library/mdi](https://pictogrammers.com/library/mdi/), or `npm install -D @mdi/js` and import the constant)
-- `main` — entry point JS file, loaded as an ES module (defaults to `index.js`)
-- `experimental` — `true` marks the plugin as experimental (optional). The marketplace card shows a flask label so users know to expect rough edges.
-- `minAppVersion` — lowest app version this build works on (optional). The registry only serves the latest build of each plugin, so older apps use this to refuse an install/update that needs a newer `window.MMA` instead of breaking. Set it when a release starts depending on new API surface.
+- `id` - unique identifier (kebab-case recommended, defaults to folder name)
+- `name` - display name shown in the plugin marketplace
+- `description` - short description (optional)
+- `icon` - MDI SVG path string (get one from [pictogrammers.com/library/mdi](https://pictogrammers.com/library/mdi/), or `npm install -D @mdi/js` and import the constant)
+- `main` - entry point JS file, loaded as an ES module (defaults to `index.js`)
+- `experimental` - `true` marks the plugin as experimental (optional). The marketplace card shows a flask label so users know to expect rough edges.
+- `minAppVersion` - lowest app version this build works on (required). Older apps install the newest build they support.
 
 ## Writing a plugin
 
@@ -77,7 +75,7 @@ MMA.registerPlugin({
     // Called when the plugin activates (map opens + plugin enabled)
     // Use MMA.* to interact with the editor
     return () => {
-      // Optional cleanup — called on deactivate
+      // Optional cleanup - called on deactivate
     };
   },
 });
@@ -85,17 +83,10 @@ MMA.registerPlugin({
 
 ## The MMA API
 
-The global `MMA` object is the single API surface. It provides:
+The global `MMA` object is the single API surface. It provides just about anything you'd want to do in the app.
 
-- Map & location CRUD
-- Tag management
-- Selection queries
-- Event subscription
-- Shell command spawning
-- File dialogs
-- Raw Tauri IPC for advanced use
+See [`plugins/types/mma.d.ts`](types/mma.d.ts)/[`API.md`](types/API.md) for the full API surface.
 
-See [`plugins/types/mma.d.ts`](types/mma.d.ts) for the full API surface.
 ## UI plugins
 
 Plugins can provide React components for richer UI:
@@ -114,9 +105,30 @@ Component props:
 - `modal` receives `{ onClose: () => void }`
 - `locationPanel` receives no props
 
+## Styling
+
+Build UI from `MMA.ui` first (`Sidebar`, `Section`, `Field`, `Button`, `Switch`, `Slider`, `Bar`, `ProgressRow`, ...): they already match the app. For your own CSS, use the app's design tokens instead of colors or sizes of your own, so your plugin follows the theme and the user's accent color. These are the tokens a plugin may use:
+
+| Group | Tokens | Use |
+|-------|--------|-----|
+| Surfaces | `--surface-0` to `--surface-3` | background, panels and cards, dialogs, popovers and chips |
+| Borders | `--border-subtle`, `--border-strong` | dividers, control borders |
+| Text | `--text-1`, `--text-2`, `--text-3` | primary, muted, faint. Mute text with these, never with `opacity` |
+| Accent | `--accent`, `--accent-hover`, `--accent-muted`, `--on-accent` | selection, focus, progress fills; follows the user's line color |
+| Action | `--action`, `--action-hover`, `--on-action` | primary buttons |
+| Status | `--constructive`, `--destructive`, `--on-destructive`, `--destructive-text`, `--warning`, `--warning-muted` | success; destructive fills; error text; warnings |
+| State | `--hover`, `--pressed`, `--disabled-opacity` | hover overlay; active or selected overlay; disabled controls |
+| Radius | `--radius-1`, `--radius-2`, `--radius-3`, `--radius-pill` | inputs; buttons; cards and popovers; pills |
+| Type | `--font-mono` | numbers, IDs, coordinates |
+| Motion | `--dur-fast`, `--dur`, `--dur-slow`, `--ease-standard`, `--ease-enter` | hover; enter and toggle; size and fill changes |
+
+Utility classes: `.mono` for data (counts, coordinates, IDs) and `.text-muted` for secondary text.
+
+Colors that are data, such as a layer color drawn on the map, can stay literal. Give them a custom property of your own (`--my-plugin-layer: #ff7800`) so the rest of your CSS reads it by name. Any other `var(--x)` must be one of the tokens above: an unknown name silently renders its fallback. `node plugins/check-tokens.mjs` fails on one.
+
 ## Shared modules
 
-The plugin template's build config automatically deduplicates libraries the app already bundles (React, deck.gl, luma.gl). Just write normal imports -- the build handles the rest. Libraries the app doesn't have get bundled into your plugin automatically.
+The plugin template's build config automatically deduplicates libraries the app already bundles (React, deck.gl, luma.gl). Just write normal imports and the build handles the rest. Libraries the app doesn't have get bundled into your plugin automatically. Imported `.css` files are bundled too and added to the page when your plugin loads.
 
 ## Distribution
 
@@ -130,6 +142,4 @@ To share: zip the folder and distribute however you like (GitHub, Discord, etc.)
 
 ### Type dependencies
 
-`mma-plugin-types` declares the libraries the SDK types import from (react, deck.gl, tauri, google.maps) as its own dependencies, so installing it pulls the whole type closure -- nothing else to install. They are types-only: at runtime your plugin shares the app's copies (see Shared modules).
-
-For the `icon` field, `@mdi/js` has the icon paths, or just copy the SVG path string from [pictogrammers.com/library/mdi](https://pictogrammers.com/library/mdi/).
+`mma-plugin-types` declares the libraries the SDK types import from (react, deck.gl, tauri, google.maps) as its own dependencies, so installing it pulls the whole type closure. They are types-only: at runtime your plugin shares the app's copies (see Shared modules).

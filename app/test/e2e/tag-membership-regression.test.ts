@@ -12,6 +12,7 @@ import {
 	useMap,
 	seedLocs,
 	select,
+	tagSelector,
 } from "./helpers";
 import type { Location } from "@/bindings.gen";
 
@@ -40,7 +41,7 @@ describe("Bulk add 50 locations split across 3 tags", () => {
 	});
 	it("tagA count matches via getTagCounts", async () => {
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagAId);
 		expect(count).toBe(20);
@@ -48,7 +49,7 @@ describe("Bulk add 50 locations split across 3 tags", () => {
 
 	it("tagB count matches via getTagCounts", async () => {
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagBId);
 		expect(count).toBe(15);
@@ -56,31 +57,31 @@ describe("Bulk add 50 locations split across 3 tags", () => {
 
 	it("tagC count matches via getTagCounts", async () => {
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagCId);
 		expect(count).toBe(15);
 	});
 
 	it("tagA selection returns exactly 20 ids", async () => {
-		await select({ type: "Tag", tagId: tagAId });
+		await select(tagSelector(tagAId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(20);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tagB selection returns exactly 15 ids", async () => {
-		await select({ type: "Tag", tagId: tagBId });
+		await select(tagSelector(tagBId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(15);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tagC selection returns exactly 15 ids", async () => {
-		await select({ type: "Tag", tagId: tagCId });
+		await select(tagSelector(tagCId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(15);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 });
 
@@ -100,10 +101,10 @@ describe("Remove tagged locations shrinks tag selection", () => {
 		locIds = await seedLocs(20, (i) => ({ lat: i * 0.01, lng: i * 0.01, tags: [tagId] }));
 	});
 	it("selection starts at 20", async () => {
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(20);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("removing 5 locations drops selection to 15", async () => {
@@ -112,15 +113,15 @@ describe("Remove tagged locations shrinks tag selection", () => {
 			await api.removeLocations(new Set(ids));
 		}, toRemove);
 
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(15);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tag count agrees with selection after removal", async () => {
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(count).toBe(15);
@@ -149,7 +150,7 @@ describe("Undo bulk remove restores tag membership", () => {
 		}, toRemove);
 
 		const afterRemove = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(afterRemove).toBe(6);
@@ -157,32 +158,32 @@ describe("Undo bulk remove restores tag membership", () => {
 		await withApi(async (api) => api.undo());
 
 		const afterUndo = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(afterUndo).toBe(12);
 	});
 
 	it("selection agrees with count after undo", async () => {
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(12);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("redo re-applies the removal", async () => {
 		await withApi(async (api) => api.redo());
 
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(count).toBe(6);
 
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(6);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 });
 
@@ -202,7 +203,7 @@ describe("Add locations to existing tag accumulates membership", () => {
 	});
 	it("initial batch: count is 10", async () => {
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(count).toBe(10);
@@ -216,17 +217,17 @@ describe("Add locations to existing tag accumulates membership", () => {
 		await addLocs(batch2);
 
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(count).toBe(25);
 	});
 
 	it("selection returns all 25", async () => {
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(25);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("addTagToLocations on existing untagged locations grows count", async () => {
@@ -245,15 +246,15 @@ describe("Add locations to existing tag accumulates membership", () => {
 		);
 
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(count).toBe(30);
 
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(30);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 });
 
@@ -289,24 +290,24 @@ describe("Multiple tags on same location", () => {
 		await addLocs(exclusive);
 	});
 	it("tag1 selection includes shared + exclusive = 15", async () => {
-		await select({ type: "Tag", tagId: tag1Id });
+		await select(tagSelector(tag1Id));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(15);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tag2 selection includes only shared = 8", async () => {
-		await select({ type: "Tag", tagId: tag2Id });
+		await select(tagSelector(tag2Id));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(8);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tag3 selection includes only shared = 8", async () => {
-		await select({ type: "Tag", tagId: tag3Id });
+		await select(tagSelector(tag3Id));
 		const ids = await refreshSelections();
 		expect(ids.length).toBe(8);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("removing tag2 from shared locations does not affect tag1 or tag3", async () => {
@@ -324,24 +325,24 @@ describe("Multiple tags on same location", () => {
 		);
 
 		const tag2Count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tag2Id);
 		expect(tag2Count).toBe(0);
 
-		await select({ type: "Tag", tagId: tag1Id });
+		await select(tagSelector(tag1Id));
 		const tag1Ids = await refreshSelections();
 		expect(tag1Ids.length).toBe(15);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 
-		await select({ type: "Tag", tagId: tag3Id });
+		await select(tagSelector(tag3Id));
 		const tag3Ids = await refreshSelections();
 		expect(tag3Ids.length).toBe(8);
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("counts agree with selections after cross-tag mutation", async () => {
-		const counts = (await withApi((api) => api.getMapState().tagCounts)) as any;
+		const counts = (await withApi((api) => api.getTagCounts())) as any;
 		expect(counts[String(tag1Id)]).toBe(15);
 		expect(counts[String(tag2Id)] ?? 0).toBe(0);
 		expect(counts[String(tag3Id)]).toBe(8);
@@ -367,13 +368,13 @@ describe("Full scene reset preserves selectedLocationIds", () => {
 	});
 
 	after(async () => {
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 		await closeMap();
 		await deleteMap(mapId);
 	});
 
 	it("undo of >100 add (full_reset) keeps selection count correct", async () => {
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const beforeIds = await refreshSelections();
 		expect(beforeIds.length).toBe(150);
 
@@ -387,12 +388,12 @@ describe("Full scene reset preserves selectedLocationIds", () => {
 		await withApi(async (api) => api.redo());
 
 		const count = await withApi(async (api, tid) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tid)] ?? 0;
 		}, tagId);
 		expect(count).toBe(150);
 
-		await select({ type: "Tag", tagId });
+		await select(tagSelector(tagId));
 		const afterRedo = await refreshSelections();
 		expect(afterRedo.length).toBe(150);
 	});

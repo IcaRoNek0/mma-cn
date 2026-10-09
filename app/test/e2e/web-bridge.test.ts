@@ -2,12 +2,30 @@
  * The web-serve HTTP bridge (`--web` only; excluded from the native suite).
  *
  * These surfaces have no desktop equivalent -- natively, Tauri serves custom schemes and
- * delivers events itself. Only the browser build goes through `/__scheme/` and `/__events`,
+ * delivers events and channel messages itself. Only the browser build goes through
+ * `/__scheme/`, `/__events` and `/__channel/`,
  * and nothing else asserts on them: the rest of the web suite exercises the relay
  * incidentally at best, so a regression there can pass ~46 of 47 tests.
  */
 
-import { createAndOpenMap, closeMap, deleteMap, withApi, addLocs, createLocation } from "./helpers";
+import {
+	createAndOpenMap,
+	closeMap,
+	deleteMap,
+	withApi,
+	addLocs,
+	createLocation,
+	getLocCount,
+	waitForReady,
+} from "./helpers";
+import { setFaults } from "./parityDriver";
+
+/** Markers this tab's scene holds, once it has applied every frame sent so far. */
+const sceneTotal = () =>
+	withApi(async (api) => {
+		await api.sceneReached((await api.cmd.storeGetSummary()).version);
+		return api.getScene().totalCount;
+	});
 
 describe("Web bridge", () => {
 	let mapId: string;
@@ -30,7 +48,7 @@ describe("Web bridge", () => {
 	it("is actually running on the HTTP bridge", async () => {
 		const web = await withApi(async () =>
 			Boolean(
-				// eslint-disable-next-line no-restricted-syntax -- the bridge itself is under test
+				// eslint-disable-next-line local/restricted-syntax -- the bridge itself is under test
 				(window as { __TAURI_INTERNALS__?: { __webserve?: boolean } }).__TAURI_INTERNALS__
 					?.__webserve,
 			),
@@ -41,7 +59,7 @@ describe("Web bridge", () => {
 	describe("scheme relay (/__scheme/)", () => {
 		it("serves a real file", async () => {
 			const res = await withApi(async (api) => {
-				const path = await api.cmd.storeExportCsv(null);
+				const path = await api.cmd.storeExportCsv({ type: "Everything" });
 				const r = await fetch(api.mmaBufUrl(path));
 				return { status: r.status, type: r.headers.get("content-type"), body: await r.text() };
 			});
@@ -62,10 +80,10 @@ describe("Web bridge", () => {
 
 	describe("event stream (/__events)", () => {
 		it("delivers a backend-emitted event to a JS listener", async () => {
-			const received = await withApi(async (api) => {
+			await withApi(async (api) => {
 				// listen() can't cross the withApi serialization boundary, and the emulated
 				// event API is the thing under test, not a shortcut around withApi.
-				// eslint-disable-next-line no-restricted-syntax -- the bridge itself is under test
+				// eslint-disable-next-line local/restricted-syntax -- the bridge itself is under test
 				const internals = (
 					window as unknown as {
 						__TAURI_INTERNALS__: {
@@ -75,22 +93,140 @@ describe("Web bridge", () => {
 					}
 				).__TAURI_INTERNALS__;
 
-				const events: unknown[] = [];
+				const received = window as unknown as { __e2eBridgeEvents: unknown[] };
+				received.__e2eBridgeEvents = [];
 				await internals.invoke("plugin:event|listen", {
 					event: "bulk-export-progress",
-					handler: internals.transformCallback((e) => events.push(e)),
+					handler: internals.transformCallback((e) => received.__e2eBridgeEvents.push(e)),
 				});
 
 				await api.cmd.storeExportBulkZip();
-
-				// SSE frames arrive on their own connection, so the emit can land after the
-				// command resolves. Poll instead of sleeping a fixed amount.
-				for (let i = 0; i < 100 && events.length === 0; i++) {
-					await new Promise((r) => setTimeout(r, 50));
-				}
-				return events.length;
 			});
-			expect(received).toBeGreaterThan(0);
+
+			// SSE frames arrive on their own connection, so the emit can land after the command resolves.
+			await browser.waitUntil(
+				() =>
+					browser.execute(
+						() =>
+							(window as unknown as { __e2eBridgeEvents: unknown[] }).__e2eBridgeEvents.length > 0,
+					),
+				{ timeoutMsg: "the backend-emitted event never reached the listener" },
+			);
+		});
+
+		it("stops delivering to a listener once it unlistens", async () => {
+			await withApi(async (api) => {
+				const w = window as unknown as {
+					__TAURI_INTERNALS__: {
+						invoke: (cmd: string, args: unknown) => Promise<unknown>;
+						transformCallback: (cb: (p: unknown) => void) => number;
+					};
+					__TAURI_EVENT_PLUGIN_INTERNALS__: {
+						unregisterListener: (event: string, id: number) => void;
+					};
+					__e2eKept: unknown[];
+					__e2eDropped: unknown[];
+				};
+				// eslint-disable-next-line local/restricted-syntax -- the bridge itself is under test
+				const { invoke, transformCallback } = w.__TAURI_INTERNALS__;
+				const event = "bulk-export-progress";
+				w.__e2eKept = [];
+				w.__e2eDropped = [];
+				await invoke("plugin:event|listen", {
+					event,
+					handler: transformCallback((e) => w.__e2eKept.push(e)),
+				});
+				const dropped = (await invoke("plugin:event|listen", {
+					event,
+					handler: transformCallback((e) => w.__e2eDropped.push(e)),
+				})) as number;
+
+				w.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(event, dropped);
+				await invoke("plugin:event|unlisten", { event, eventId: dropped });
+
+				await api.cmd.storeExportBulkZip();
+			});
+
+			await browser.waitUntil(
+				() =>
+					browser.execute(
+						() => (window as unknown as { __e2eKept: unknown[] }).__e2eKept.length > 0,
+					),
+				{ timeoutMsg: "the kept listener never received the event" },
+			);
+			const dropped = await browser.execute(
+				() => (window as unknown as { __e2eDropped: unknown[] }).__e2eDropped.length,
+			);
+			expect(dropped).toBe(0);
+		});
+	});
+
+	describe("render frames (/__channel/)", () => {
+		it("draws the scene and every edit through the channel", async () => {
+			const before = await sceneTotal();
+			expect(before).toBe(await getLocCount());
+			const [id] = await addLocs([createLocation({ lat: 42.5, lng: -76.5 })]);
+			expect(id).toBeGreaterThan(0);
+			expect(await sceneTotal()).toBe(before + 1);
+			await withApi(async (api, gone) => api.removeLocations(new Set([gone])), id);
+			expect(await sceneTotal()).toBe(before);
+		});
+	});
+
+	it("answers other commands while a slow one is still running", async () => {
+		const pano = "-zrYsLR4Fh-cfJG_EMZ1-A";
+		// One transient failure makes the lookup sit out the engine's retry backoff.
+		await setFaults({ [pano]: [503] });
+		const order = await withApi(async (api, id) => {
+			const done: string[] = [];
+			const slow = api.cmd
+				.procedureQuery(
+					{ entry: "res://procedures/svMeta.js" },
+					JSON.stringify({ op: "metadata", panoIds: [id] }),
+					null,
+				)
+				.then(() => done.push("slow"));
+			await api.cmd.storeGetSummary();
+			done.push("fast");
+			await slow;
+			return done;
+		}, pano);
+		await setFaults({});
+		expect(order).toEqual(["fast", "slow"]);
+	});
+
+	it("serves commands that read the generator's shared state", async () => {
+		const error = await withApi(async (api) => {
+			try {
+				await api.cmd.valiCancel();
+				return null;
+			} catch (e) {
+				return String(e);
+			}
+		});
+		expect(error).toBeNull();
+	});
+
+	describe("clients", () => {
+		it("keeps each tab's open map its own", async () => {
+			const first = await browser.getWindowHandle();
+			await browser.newWindow(new URL(await browser.getUrl()).origin);
+			const second = await browser.getWindowHandle();
+			await waitForReady();
+			const other = await createAndOpenMap("web-bridge-other");
+			await addLocs([0, 1, 2].map((i) => createLocation({ lat: 10 + i, lng: 20 + i })));
+			expect(await getLocCount()).toBe(3);
+			expect(await sceneTotal()).toBe(3);
+
+			await browser.switchToWindow(first);
+			expect(await getLocCount()).toBe(2);
+			expect(await sceneTotal()).toBe(2);
+
+			await browser.switchToWindow(second);
+			await closeMap();
+			await deleteMap(other);
+			await browser.closeWindow();
+			await browser.switchToWindow(first);
 		});
 	});
 });

@@ -2,58 +2,61 @@
 // drives; never called by app code.
 
 import {
-	openMap as storeOpenMap,
 	closeMap as storeCloseMap,
-	mutate,
+	currentSelection,
 	getMapState,
+	mutate,
+	openMap as storeOpenMap,
+	query,
+	syncSelections as storeSyncSelections,
 } from "@/store/useMapStore";
 import * as mapList from "@/store/mapList";
 import { cmd } from "@/lib/commands";
-import { goToMap, goToList } from "@/store/router";
+import { goTo } from "@/store/router";
 
-/** Forces a full selection re-resolve in Rust and returns the raw selected IDs.
- *  App code reads `getMapState().selectedLocationIds` — mutations already sync
- *  selections via MutationResult. */
+export { mapOpen } from "@/lib/util/debug";
+
+/** Run a single procedure over a selector. */
+export { runProcedure, procedureEntry } from "@/lib/data/procedures";
+
+/** Force a full selection re-resolve and return the selected IDs. */
 export async function syncSelections(): Promise<{ ids: number[] }> {
-	const { selections, ghostedSelections } = getMapState();
-	if (selections.length === 0) return { ids: [] };
-	await cmd.storeSyncSelections(
-		selections.map((s) => ({
-			key: s.key,
-			props: s.props,
-			color: s.color,
-			ghosted: ghostedSelections.has(s.key),
-		})),
-	);
-	return { ids: await cmd.storeGetSelectedIdsList() };
+	if (getMapState().selectionList.length === 0) return { ids: [] };
+	await storeSyncSelections();
+	return { ids: await query(currentSelection()).ids() };
 }
 
+/** Open a map by id and navigate to it. */
 export async function openMap(id: string) {
 	// Await the real store op for a deterministic completion signal, THEN sync the
 	// URL — by which point the router's reconcile is a no-op (state already matches),
 	// so no second fire-and-forget openMap can interleave with the next test step.
 	await storeOpenMap(id);
-	goToMap(id);
+	goTo({ type: "editor", mapId: id });
 }
 
+/** Close the current map and return to the map list. */
 export async function closeMap() {
 	await storeCloseMap();
-	goToList();
+	goTo({ type: "list" });
 }
 
+/** Delete a map by id. */
 export function deleteMap(id: string) {
 	return mapList.deleteMap(id);
 }
 
+/** Import locations from pasted text and commit them to the map. */
 export async function importPaste(text: string) {
 	await cmd.storeImportPastePreview(text);
-	const r = await cmd.storeImportFile([], null);
-	await mutate(() => Promise.resolve(r));
+	const r = await cmd.storeImportFile([], []);
+	await mutate(() => Promise.resolve(r.mutation));
 	return [r];
 }
 
-export async function importFile(droppedFields: string[], tagName?: string) {
-	const r = await cmd.storeImportFile(droppedFields, tagName ?? null);
-	await mutate(() => Promise.resolve(r));
+/** Import a previewed file, optionally assigning tags. */
+export async function importFile(droppedFields: string[], tagNames: string[] = []) {
+	const r = await cmd.storeImportFile(droppedFields, tagNames);
+	await mutate(() => Promise.resolve(r.mutation));
 	return r;
 }

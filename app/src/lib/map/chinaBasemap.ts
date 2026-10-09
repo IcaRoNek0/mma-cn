@@ -47,7 +47,7 @@ export function petalTileUrl(): string {
 
 export function chinaBasemapStyle(prefs: MapEmbedPrefs): StyleSpecification {
 	const opacity = activeCoverageOpacity(prefs.svOpacity);
-	const active = activeCoverageProviders(prefs.panoProvider, prefs.svOpacity);
+	const active = activeCoverageProviders(prefs.panoProvider, prefs.svVisible ? prefs.svOpacity : 0);
 	return {
 		version: 8,
 		sources: {

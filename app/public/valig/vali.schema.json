@@ -3,31 +3,42 @@
 	"title": "Vali Map Definition",
 	"type": "object",
 	"description": "Configuration for generating maps",
+	"required": ["countryCodes"],
 	"properties": {
 		"countryCodes": {
 			"type": "array",
-			"description": "ISO 3166-1 alpha-2 country codes, or special keywords like \u0027europe\u0027, \u0027asia\u0027, \u0027africa\u0027, \u0027*\u0027, etc.",
+			"description": "ISO 3166-1 alpha-2 country codes, or special keywords like 'europe', 'asia', 'africa', 'world', '*', etc.",
 			"minItems": 1,
+			"uniqueItems": true,
 			"items": {
 				"type": "string"
-			}
+			},
+			"examples": [["NO", "SE", "DK"], ["europe"], ["*"]]
 		},
 		"subdivisionInclusions": {
 			"type": "object",
+			"description": "Include only these subdivisions per country (e.g., {\"US\": [\"US-CA\", \"US-NY\"]})",
 			"additionalProperties": {
 				"type": "array",
 				"items": {
 					"type": "string"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionExclusions": {
 			"type": "object",
+			"description": "Exclude these subdivisions per country",
 			"additionalProperties": {
 				"type": "array",
 				"items": {
 					"type": "string"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"countryDistribution": {
@@ -36,17 +47,23 @@
 			"additionalProperties": {
 				"type": "integer",
 				"format": "int32"
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionDistribution": {
 			"type": "object",
-			"description": "Custom distribution weights per subdivision/region (integers representing relative weights)",
+			"description": "Custom distribution weights per subdivision (outer key = country code, inner key = subdivision code)",
 			"additionalProperties": {
 				"type": "object",
 				"additionalProperties": {
 					"type": "integer",
 					"format": "int32"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"distributionStrategy": {
@@ -55,51 +72,76 @@
 		},
 		"globalLocationFilter": {
 			"type": ["null", "string"],
-			"description": "Expression to filter locations globally (e.g., \u0027ClosestCoast lt 100 and Buildings200 gte 4\u0027)"
+			"description": "Expression to filter locations globally (e.g., 'ClosestCoast lt 100 and Buildings200 gte 4')",
+			"examples": [
+				"ClosestCoast lt 100 and Buildings200 gte 4",
+				"Year gte 2020",
+				"Surface eq 'asphalt' or Surface eq 'paved'",
+				"HighwayType in ('Primary', 'Secondary', 'Tertiary')"
+			]
 		},
 		"countryLocationFilters": {
 			"type": "object",
+			"description": "Per-country location filter expressions (key = country code, value = filter expression)",
 			"additionalProperties": {
 				"type": "string"
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"countryProximityFilters": {
 			"type": "object",
-			"description": "Per-country proximity filters to reference locations",
+			"description": "Per-country proximity filters (include locations near reference points)",
 			"additionalProperties": {
 				"$ref": "#/definitions/ProximityFilter"
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"countryGeometryFilters": {
 			"type": "object",
+			"description": "Per-country geometry filters (GeoJSON polygon inclusion/exclusion)",
 			"additionalProperties": {
 				"type": "array",
 				"items": {
 					"$ref": "#/definitions/GeometryFilter"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionLocationFilters": {
 			"type": "object",
+			"description": "Per-subdivision location filter expressions (outer key = country, inner key = subdivision)",
 			"additionalProperties": {
 				"type": "object",
 				"additionalProperties": {
 					"type": "string"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionProximityFilters": {
 			"type": "object",
-			"description": "Per-subdivision proximity filters to reference locations",
+			"description": "Per-subdivision proximity filters",
 			"additionalProperties": {
 				"type": "object",
 				"additionalProperties": {
 					"$ref": "#/definitions/ProximityFilter"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionGeometryFilters": {
 			"type": "object",
+			"description": "Per-subdivision geometry filters",
 			"additionalProperties": {
 				"type": "object",
 				"additionalProperties": {
@@ -108,28 +150,34 @@
 						"$ref": "#/definitions/GeometryFilter"
 					}
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"globalLocationPreferenceFilters": {
 			"type": "array",
-			"description": "Prefer locations matching these conditions (applies globally)",
+			"description": "Percentage-based location allocation filters applied globally. Percentages must sum to 100 or less.",
 			"items": {
 				"$ref": "#/definitions/LocationPreferenceFilter"
 			}
 		},
 		"countryLocationPreferenceFilters": {
 			"type": "object",
-			"description": "Per-country location preference filters",
+			"description": "Per-country percentage-based location allocation filters",
 			"additionalProperties": {
 				"type": "array",
 				"items": {
 					"$ref": "#/definitions/LocationPreferenceFilter"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionLocationPreferenceFilters": {
 			"type": "object",
-			"description": "Per-subdivision location preference filters",
+			"description": "Per-subdivision percentage-based location allocation filters",
 			"additionalProperties": {
 				"type": "object",
 				"additionalProperties": {
@@ -138,6 +186,9 @@
 						"$ref": "#/definitions/LocationPreferenceFilter"
 					}
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"output": {
@@ -145,12 +196,13 @@
 			"$ref": "#/definitions/LocationOutput"
 		},
 		"proximityFilter": {
-			"description": "Filter locations by proximity to a set of reference locations",
-			"$ref": "#/definitions/ProximityFilter"
+			"description": "Global proximity filter (include locations near reference points)",
+			"$ref": "#/definitions/ProximityFilter",
+			"$comment": "For per-country/subdivision proximity, use countryProximityFilters/subdivisionProximityFilters instead."
 		},
 		"neighborFilters": {
 			"type": "array",
-			"description": "Filter locations based on nearby neighbors",
+			"description": "Filter locations based on properties of nearby neighbors",
 			"items": {
 				"$ref": "#/definitions/NeighborFilter"
 			}
@@ -164,44 +216,57 @@
 		},
 		"namedExpressions": {
 			"type": "object",
-			"description": "Reusable filter expressions (must start with $$)",
-			"additionalProperties": false,
-			"patternProperties": {
-				"^\\$\\$": {
-					"type": "string"
+			"description": "Reusable named filter expressions. Keys must start with $$. Keys must not overlap (e.g., $$urban and $$urban_area would conflict). Reference in filters as $$name.",
+			"additionalProperties": {
+				"type": "string"
+			},
+			"examples": [
+				{
+					"$$urban": "Buildings200 gte 4 and Roads25 gte 2",
+					"$$recent": "Year gte 2020"
 				}
+			],
+			"propertyNames": {
+				"pattern": "^\\$\\$"
 			}
 		},
 		"usedLocationsPaths": {
 			"type": "array",
-			"description": "Paths to CSV files containing already-used locations to avoid duplicates",
+			"description": "Paths to CSV or JSON files of already-used locations to avoid duplicates",
+			"uniqueItems": true,
 			"items": {
 				"type": "string"
 			}
 		},
 		"enableDefaultLocationFilters": {
 			"type": "boolean",
-			"description": "Apply built-in filters to exclude parking lots, driveways, and other unwanted locations"
+			"description": "Apply built-in default location filters (e.g., minimum coverage quality)"
 		},
 		"globalLocationProbability": {
-			"description": "Probability settings for including/excluding locations globally",
+			"description": "Global weight-based location selection probability. Locations matching weight override expressions are more/less likely to be selected.",
 			"$ref": "#/definitions/LocationProbability"
 		},
 		"countryLocationProbabilities": {
 			"type": "object",
-			"description": "Per-country probability settings for location selection",
+			"description": "Per-country location selection probability weights",
 			"additionalProperties": {
 				"$ref": "#/definitions/LocationProbability"
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		},
 		"subdivisionLocationProbabilities": {
 			"type": "object",
-			"description": "Per-subdivision probability settings for location selection",
+			"description": "Per-subdivision location selection probability weights",
 			"additionalProperties": {
 				"type": "object",
 				"additionalProperties": {
 					"$ref": "#/definitions/LocationProbability"
 				}
+			},
+			"propertyNames": {
+				"pattern": "^[A-Z]{2}$"
 			}
 		}
 	},
@@ -215,12 +280,13 @@
 					"enum": [
 						"FixedCountByMaxMinDistance",
 						"MaxCountByFixedMinDistance",
-						"EvenlyByDistanceWithinCountry"
+						"EvenlyByDistanceWithinCountry",
+						"FixedCountByCoverageDensity"
 					]
 				},
 				"locationCountGoal": {
 					"type": "integer",
-					"description": "Target number of locations (used with FixedCountByMaxMinDistance)",
+					"description": "Target number of locations. Required for FixedCountByMaxMinDistance and FixedCountByCoverageDensity strategies.",
 					"format": "int32",
 					"maximum": 1000000.0,
 					"minimum": 1.0
@@ -229,6 +295,7 @@
 					"type": "integer",
 					"description": "Minimum distance in meters between locations",
 					"format": "int32",
+					"minimum": 0.0,
 					"enum": [
 						25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 600, 700, 800,
 						900, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000, 3300, 3600, 3900, 4200, 4500,
@@ -238,8 +305,9 @@
 				},
 				"fixedMinDistance": {
 					"type": "integer",
-					"description": "Fixed minimum distance in meters between locations (used with MaxCountByFixedMinDistance)",
+					"description": "Fixed minimum distance in meters between locations. Required for MaxCountByFixedMinDistance and EvenlyByDistanceWithinCountry.",
 					"format": "int32",
+					"minimum": 1.0,
 					"enum": [
 						25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 600, 700, 800,
 						900, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000, 3300, 3600, 3900, 4200, 4500,
@@ -249,13 +317,14 @@
 				},
 				"treatCountriesAsSingleSubdivision": {
 					"type": "array",
+					"description": "Country codes to treat as having a single subdivision (skip internal subdivision-level distribution)",
 					"items": {
 						"type": "string"
 					}
 				},
 				"countryDistributionFromMap": {
 					"type": ["null", "string"],
-					"description": "Use country distribution from a famous map",
+					"description": "Use country distribution weights from a well-known map",
 					"enum": [
 						"aarw",
 						"aaw",
@@ -271,6 +340,22 @@
 						"yellowbelly",
 						"5kable"
 					]
+				},
+				"coverageDensityTuningFactor": {
+					"type": ["null", "number"],
+					"description": "Adjust if lower coverage areas should be upweighted/have lower distance between locations than higher coverage areas. 1 is absurd, 0.01 is almost no adjustment compared to linearly weighted according to number of locations available.",
+					"format": "double",
+					"default": 0.6,
+					"maximum": 1.0,
+					"minimum": 0.01
+				},
+				"coverageDensityClusterSize": {
+					"type": ["integer", "null"],
+					"description": "Cluster size for coverage density calculation. 1 ~ 5000x5000 km, 2 ~ 1250x625 km, 3 ~ 156x156 km, 4 ~ 39x20 km, 5 ~ 5x5 km, 6 ~ 1x1 km.",
+					"format": "int32",
+					"default": 3,
+					"maximum": 6.0,
+					"minimum": 1.0
 				}
 			},
 			"allOf": [
@@ -278,7 +363,7 @@
 					"if": {
 						"properties": {
 							"key": {
-								"const": "FixedCountByMaxMinDistance"
+								"enum": ["FixedCountByMaxMinDistance"]
 							}
 						},
 						"required": ["key"]
@@ -288,23 +373,11 @@
 						"properties": {
 							"fixedMinDistance": {
 								"not": {}
-							}
-						}
-					}
-				},
-				{
-					"if": {
-						"properties": {
-							"key": {
-								"const": "MaxCountByFixedMinDistance"
-							}
-						},
-						"required": ["key"]
-					},
-					"then": {
-						"required": ["locationCountGoal", "fixedMinDistance"],
-						"properties": {
-							"minMinDistance": {
+							},
+							"coverageDensityTuningFactor": {
+								"not": {}
+							},
+							"coverageDensityClusterSize": {
 								"not": {}
 							}
 						}
@@ -314,7 +387,7 @@
 					"if": {
 						"properties": {
 							"key": {
-								"const": "EvenlyByDistanceWithinCountry"
+								"enum": ["MaxCountByFixedMinDistance"]
 							}
 						},
 						"required": ["key"]
@@ -324,6 +397,60 @@
 						"properties": {
 							"minMinDistance": {
 								"not": {}
+							},
+							"locationCountGoal": {
+								"not": {}
+							},
+							"coverageDensityTuningFactor": {
+								"not": {}
+							},
+							"coverageDensityClusterSize": {
+								"not": {}
+							}
+						}
+					}
+				},
+				{
+					"if": {
+						"properties": {
+							"key": {
+								"enum": ["EvenlyByDistanceWithinCountry"]
+							}
+						},
+						"required": ["key"]
+					},
+					"then": {
+						"required": ["fixedMinDistance"],
+						"properties": {
+							"minMinDistance": {
+								"not": {}
+							},
+							"locationCountGoal": {
+								"not": {}
+							},
+							"coverageDensityTuningFactor": {
+								"not": {}
+							},
+							"coverageDensityClusterSize": {
+								"not": {}
+							}
+						}
+					}
+				},
+				{
+					"if": {
+						"properties": {
+							"key": {
+								"enum": ["FixedCountByCoverageDensity"]
+							}
+						},
+						"required": ["key"]
+					},
+					"then": {
+						"required": ["locationCountGoal"],
+						"properties": {
+							"fixedMinDistance": {
+								"not": {}
 							}
 						}
 					}
@@ -332,14 +459,15 @@
 		},
 		"ProximityFilter": {
 			"type": "object",
+			"additionalProperties": false,
 			"properties": {
 				"locationsPath": {
 					"type": "string",
-					"description": "Path to CSV file containing reference locations (must have Lat and Lng columns)"
+					"description": "Path to a CSV or JSON file of reference locations"
 				},
 				"radius": {
 					"type": "integer",
-					"description": "Radius in meters - only include locations within this distance of any reference location",
+					"description": "Include locations within this radius in meters of reference points",
 					"format": "int32",
 					"maximum": 30000.0,
 					"minimum": 1.0
@@ -348,6 +476,7 @@
 		},
 		"GeometryFilter": {
 			"type": "object",
+			"required": ["filePath"],
 			"properties": {
 				"filePath": {
 					"type": "string",
@@ -355,7 +484,8 @@
 				},
 				"inclusionMode": {
 					"type": "string",
-					"description": "Whether to include or exclude locations in this area",
+					"description": "Whether to include or exclude locations in this area. Defaults to 'include'.",
+					"default": "include",
 					"enum": ["include", "exclude"]
 				},
 				"combinationMode": {
@@ -368,23 +498,33 @@
 		"LocationPreferenceFilter": {
 			"type": "object",
 			"additionalProperties": false,
+			"required": ["expression"],
 			"properties": {
 				"expression": {
-					"type": "string"
+					"type": "string",
+					"description": "Boolean filter expression for matching locations. Use '*' to match all locations.",
+					"examples": ["Year gte 2020", "IsResidential eq true", "*"]
 				},
 				"percentage": {
 					"type": ["integer", "null"],
-					"format": "int32"
+					"description": "Percentage of total locations that should match this filter (1-100). Percentages across filters at the same level must sum to 100 or less.",
+					"format": "int32",
+					"maximum": 100.0,
+					"minimum": 1.0
 				},
 				"fill": {
-					"type": "boolean"
+					"type": "boolean",
+					"description": "If true, fill remaining allocation with locations matching this filter. Only one filter per level can have fill=true."
 				},
 				"locationTag": {
-					"type": ["null", "string"]
+					"type": ["null", "string"],
+					"description": "Tag to assign to locations matched by this filter"
 				},
 				"minMinDistance": {
 					"type": ["integer", "null"],
-					"format": "int32"
+					"description": "Minimum distance in meters between locations matched by this filter",
+					"format": "int32",
+					"minimum": 0.0
 				},
 				"proximityFilter": {
 					"$ref": "#/definitions/ProximityFilter"
@@ -405,6 +545,7 @@
 		},
 		"NeighborFilter": {
 			"type": "object",
+			"required": ["expression", "bound", "radius"],
 			"properties": {
 				"checkEachCardinalDirectionSeparately": {
 					"type": "boolean",
@@ -419,13 +560,13 @@
 				},
 				"expression": {
 					"type": "string",
-					"description": "Filter expression for neighbor locations (can reference current location with \u0027current:\u0027 prefix)"
+					"description": "Filter expression for neighbor locations. Use 'current:Property' to reference the current location being evaluated.",
+					"examples": ["Buildings200 gte 1", "current:Surface eq Surface"]
 				},
 				"limit": {
 					"type": ["integer", "null"],
-					"description": "Number or percentage of neighbors required (depending on bound)",
-					"format": "int32",
-					"minimum": 0.0
+					"description": "Number or percentage of neighbors required (depends on bound). Not used with 'all'/'none'/'some'.",
+					"format": "int32"
 				},
 				"bound": {
 					"type": "string",
@@ -438,9 +579,10 @@
 					"if": {
 						"properties": {
 							"bound": {
-								"const": "all"
+								"enum": ["all"]
 							}
-						}
+						},
+						"required": ["bound"]
 					},
 					"then": {
 						"properties": {
@@ -454,9 +596,10 @@
 					"if": {
 						"properties": {
 							"bound": {
-								"const": "none"
+								"enum": ["none"]
 							}
-						}
+						},
+						"required": ["bound"]
 					},
 					"then": {
 						"properties": {
@@ -470,9 +613,10 @@
 					"if": {
 						"properties": {
 							"bound": {
-								"const": "some"
+								"enum": ["some"]
 							}
-						}
+						},
+						"required": ["bound"]
 					},
 					"then": {
 						"properties": {
@@ -489,7 +633,8 @@
 			"properties": {
 				"locationTags": {
 					"type": "array",
-					"description": "Tags to add to generated locations. Numeric tags can be extended with -\u003Cnumber\u003E for bucketing (e.g., Buildings25-5, ClosestCoast-100).",
+					"description": "Tags to add to generated locations. Numeric tags can be extended with -<number> for bucketing (e.g., Buildings25-5, ClosestCoast-100).",
+					"uniqueItems": true,
 					"items": {
 						"type": "string",
 						"oneOf": [
@@ -517,6 +662,7 @@
 									"IsScout",
 									"Month",
 									"PanoramaCount",
+									"ResolutionHeight",
 									"Roads0",
 									"Roads10",
 									"Roads100",
@@ -536,25 +682,36 @@
 							},
 							{
 								"type": "string",
-								"pattern": "^(ArrowCount|Buildings10|Buildings100|Buildings200|Buildings25|ClosestCoast|ClosestLake|ClosestRailway|ClosestRiver|DescriptionLength|DrivingDirectionAngle|Elevation|Heading|PanoramaCount|Roads0|Roads10|Roads100|Roads200|Roads25|Roads50|Tunnels10|Tunnels200)-\\d\u002B$"
+								"pattern": "^(Buildings10|Buildings100|Buildings200|Buildings25|ClosestCoast|ClosestLake|ClosestRailway|ClosestRiver|DrivingDirectionAngle|Elevation|Heading|HighwayTypeCount|Month|ResolutionHeight|Roads0|Roads10|Roads100|Roads200|Roads25|Roads50|Tunnels10|Tunnels200|Year)-\\d+$"
 							}
 						]
 					}
 				},
 				"panoIdCountryCodes": {
 					"type": "array",
+					"description": "Country codes for which to look up specific panorama IDs during verification",
+					"uniqueItems": true,
 					"items": {
 						"type": "string"
 					}
 				},
 				"globalHeadingExpression": {
 					"type": ["null", "string"],
-					"description": "Expression to calculate heading (e.g., \u0027DrivingDirectionAngle \u002B 90\u0027)"
+					"description": "Expression to calculate heading (e.g., 'DrivingDirectionAngle + 90')",
+					"examples": [
+						"DrivingDirectionAngle",
+						"DrivingDirectionAngle + 90",
+						"DrivingDirectionAngle + 180"
+					]
 				},
 				"countryHeadingExpressions": {
 					"type": "object",
+					"description": "Per-country heading expressions (key = country code, value = heading expression)",
 					"additionalProperties": {
 						"type": "string"
+					},
+					"propertyNames": {
+						"pattern": "^[A-Z]{2}$"
 					}
 				},
 				"globalZoom": {
@@ -566,10 +723,10 @@
 				},
 				"globalPitch": {
 					"type": ["null", "number"],
-					"description": "Pitch angle for all locations (-89 to 89)",
+					"description": "Pitch angle for all locations (-90 to 90)",
 					"format": "double",
-					"maximum": 89.0,
-					"minimum": -89.0
+					"maximum": 90.0,
+					"minimum": -90.0
 				},
 				"panoVerificationStrategy": {
 					"type": ["null", "string"],
@@ -589,7 +746,7 @@
 				},
 				"countryPanoVerificationPanning": {
 					"type": "object",
-					"description": "Per-country panning settings for panorama verification (maps country code to panning direction)",
+					"description": "Per-country panning configuration for panorama verification (key = country code)",
 					"additionalProperties": {
 						"oneOf": [
 							{
@@ -599,11 +756,21 @@
 								"$ref": "#/definitions/CountryPanning"
 							}
 						]
+					},
+					"propertyNames": {
+						"pattern": "^[A-Z]{2}$"
 					}
 				},
 				"panoVerificationExpression": {
 					"type": ["null", "string"],
-					"description": "Filter expression for panorama verification (e.g., \u0027ArrowCount eq 1\u0027 to only accept panos with exactly one arrow)"
+					"description": "Filter expression for panorama verification (e.g., 'ArrowCount eq 1' to only accept panos with exactly one arrow)"
+				},
+				"panoVerificationParallelism": {
+					"type": "integer",
+					"description": "Number of parallel panorama verification requests",
+					"format": "int32",
+					"default": 100,
+					"minimum": 1.0
 				},
 				"panoVerificationStart": {
 					"type": ["null", "string"],
@@ -623,10 +790,12 @@
 			"properties": {
 				"defaultPanning": {
 					"type": "string",
+					"description": "Default panning direction for this country",
 					"enum": ["awayfromdrivingdirection", "indrivingdirection"]
 				},
 				"panningExpressions": {
 					"type": "array",
+					"description": "Conditional panning expressions. First matching expression is used, then falls back to defaultPanning.",
 					"items": {
 						"$ref": "#/definitions/PanningExpression"
 					}
@@ -636,26 +805,32 @@
 		"PanningExpression": {
 			"type": "object",
 			"additionalProperties": false,
+			"required": ["expression", "panning"],
 			"properties": {
 				"expression": {
-					"type": "string"
+					"type": "string",
+					"description": "Boolean filter expression to match locations"
 				},
 				"panning": {
 					"type": "string",
+					"description": "Panning direction to use when this condition matches",
 					"enum": ["awayfromdrivingdirection", "indrivingdirection"]
 				}
 			}
 		},
 		"LocationProbability": {
 			"type": "object",
+			"additionalProperties": false,
 			"properties": {
 				"defaultWeight": {
 					"type": "integer",
+					"description": "Default weight for locations not matching any override. Must be greater than 0 when weight overrides are used.",
 					"format": "int32",
 					"minimum": 1.0
 				},
 				"weightOverrides": {
 					"type": "array",
+					"description": "Weight overrides based on filter expressions. Locations matching an expression use that weight instead of defaultWeight.",
 					"items": {
 						"$ref": "#/definitions/LocationWeightOverride"
 					}
@@ -665,12 +840,15 @@
 		"LocationWeightOverride": {
 			"type": "object",
 			"additionalProperties": false,
+			"required": ["expression", "weight"],
 			"properties": {
 				"expression": {
-					"type": "string"
+					"type": "string",
+					"description": "Boolean filter expression to match locations"
 				},
 				"weight": {
 					"type": "integer",
+					"description": "Selection weight for matched locations (higher = more likely). Must be greater than 0.",
 					"format": "int32",
 					"minimum": 1.0
 				}

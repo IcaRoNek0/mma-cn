@@ -4,7 +4,9 @@ A **doclink** ties a tag to a heading in a Google Doc. Select that tag and the r
 
 ## Assigning links
 
-Run **Assign document links...** from the command palette (Tags group). Paste the document's URL and <App /> loads its outline: every heading, listed in order. Arm a tag by clicking it, then click headings to attach or detach that tag. One tag can point at several headings, and one heading can serve several tags.
+Run **Assign document links...** from the command palette (Tags group). Paste the document's URL and <App /> loads its outline: every heading, listed in order. Arm a tag by clicking it, then click headings to attach or detach that tag. One tag can point at several headings, and one heading can serve several tags. The tag pane mirrors the sidebar's tag list - same folders, order, and view mode, opening with the folders you had expanded. Both panes have filter fields, and when the map links more than one document, buttons under the URL switch between them.
+
+**Match names** proposes links wherever a heading's text equals a tag's name (ignoring case and accents; a nested tag like `Poland/Bollard` also matches a heading named just `Bollard` when no other tag shares that leaf). Review the suggestions, dismiss any you don't want, then **Link all**.
 
 The document has to be readable by anyone with the link - <App /> fetches it as an anonymous reader, with no sign-in.
 
@@ -12,7 +14,7 @@ The document has to be readable by anyone with the link - <App /> fetches it as 
 
 Once any tag on the map carries a doclink, a document icon appears above the sidebar and opens the panel. From then on it follows your selections: select a doclinked tag and the panel shows its section. The panel header has:
 
-- **Refresh.** Re-fetches the document, bypassing the cache. Use it after editing the doc.
+- **Refresh.** Reloads the document. Use it after editing the doc.
 - **Whole document.** Swaps the single-section view for the full document, scrolled to the linked heading.
 - **Pin.** Stops the panel following selections, so it stays on the section you are reading.
 - **Open in browser.** Opens the real document externally.

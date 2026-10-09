@@ -1,13 +1,19 @@
 import { useState } from "react";
+import type { Tag } from "@/types";
 import { mdiChevronDown, mdiChevronUp } from "@mdi/js";
-import type { Tag } from "@/bindings.gen";
-import { getMapState } from "@/store/useMapStore";
+import { getTagCounts } from "@/store/useMapStore";
 import { sortTagsByMode, tagColorFor, appendTagName } from "@/lib/util/util";
 import { TagPill, TagPillButton } from "@/components/primitives/TagPill";
-import { Icon } from "@/components/primitives/Icon";
-import { useSetting, setSetting } from "@/store/settings";
+import { useSetting } from "@/store/settings";
+import { persisted, useLocalStorage } from "@/lib/hooks/useLocalStorage";
 import { displayTagName } from "@/store/selections";
 import { t } from "@/lib/i18n";
+import { search } from "@/lib/search";
+import { IconButton } from "@/components/primitives/IconButton";
+import { AddTagForm } from "@/components/editor/tags/AddTagForm";
+
+/** Tag bar dropped down to a thin strip. Toggled from the bar itself, not Settings. */
+const FULLSCREEN_TAGBAR_COLLAPSED = persisted("fullscreenTagbarCollapsed", false);
 
 export function FullscreenTagBar({
 	pendingTags,
@@ -21,14 +27,13 @@ export function FullscreenTagBar({
 	const [input, setInput] = useState("");
 	const [focused, setFocused] = useState(false);
 	const [hovered, setHovered] = useState(false);
-	const collapsed = useSetting("fullscreenTagbarCollapsed");
+	const [collapsed, setCollapsed] = useLocalStorage(FULLSCREEN_TAGBAR_COLLAPSED);
 	const tagSortMode = useSetting("tagSortMode");
 	useSetting("truncateTagPaths");
 	useSetting("tagViewMode");
 	const label = displayTagName;
 
-	const handleAdd = (e: React.FormEvent) => {
-		e.preventDefault();
+	const handleAdd = () => {
 		const name = input.trim();
 		if (!name) return;
 		onChangeTags(appendTagName(pendingTags, name, tags));
@@ -46,11 +51,9 @@ export function FullscreenTagBar({
 	};
 
 	const pendingLower = new Set(pendingTags.map((n) => n.toLowerCase()));
-	const sorted = sortTagsByMode(tags, tagSortMode, getMapState().tagCounts);
+	const sorted = sortTagsByMode(tags, tagSortMode, getTagCounts());
 	const available = sorted.filter((t) => !pendingLower.has(t.name.toLowerCase()));
-	const filtered = input.trim()
-		? available.filter((t) => t.name.toLowerCase().includes(input.toLowerCase()))
-		: available;
+	const filtered = search(available, input, (t) => [t.name]);
 
 	return (
 		<div
@@ -77,31 +80,24 @@ export function FullscreenTagBar({
 							/>
 						))}
 					</ul>
-					<form className="form-add-tag" onSubmit={handleAdd}>
-						<button className="button form-add-tag__button" type="submit">
-							+
-						</button>
-						<input
-							className="form-add-tag__input fullscreen-tagbar__input"
-							type="text"
-							placeholder={t("Add a tag...")}
-							spellCheck={false}
-							value={input}
-							onChange={(e) => setInput(e.target.value)}
-							onFocus={() => setFocused(true)}
-							onBlur={() => setTimeout(() => setFocused(false), 150)}
-						/>
-					</form>
+					<AddTagForm
+						value={input}
+						onChange={setInput}
+						onAdd={handleAdd}
+						onFocus={() => setFocused(true)}
+						onBlur={() => setTimeout(() => setFocused(false), 150)}
+					/>
 				</div>
 			</div>
-			<button
-				type="button"
+			<IconButton
 				className="fullscreen-tagbar__collapse"
-				aria-label={collapsed ? t("Expand tag bar") : t("Collapse tag bar")}
-				onClick={() => setSetting("fullscreenTagbarCollapsed", !collapsed)}
-			>
-				<Icon path={collapsed ? mdiChevronUp : mdiChevronDown} size={16} />
-			</button>
+				icon={collapsed ? mdiChevronUp : mdiChevronDown}
+				size={16}
+				label={collapsed ? t("Expand tag bar") : t("Collapse tag bar")}
+				tooltip={false}
+				overlay
+				onClick={() => setCollapsed(!collapsed)}
+			/>
 			{!collapsed && (focused || hovered) && filtered.length > 0 && (
 				<div className="fullscreen-tagbar__palette">
 					{filtered.map((t) => (

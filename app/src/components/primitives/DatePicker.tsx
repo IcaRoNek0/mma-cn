@@ -1,11 +1,11 @@
-﻿import { useState, useCallback, useRef } from "react";
+﻿import { useState, useCallback, useMemo, useRef } from "react";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/style.css";
-import * as Popover from "@radix-ui/react-popover";
+import { Popover } from "@base-ui-components/react/popover";
 import { Icon } from "@/components/primitives/Icon";
 import { Checkbox } from "@/components/primitives/Checkbox";
 import { mdiClose } from "@mdi/js";
-import { dateParts, partsToEpoch } from "@/lib/data/fieldOps";
+import { dateParts, partsToEpoch } from "@/lib/util/date";
 import { MONTHS, parseTypedDate } from "@/lib/util/date";
 import { dateFmt, dayMonthFmt, shortDateFmt, monthShort } from "@/lib/util/format";
 import { t } from "@/lib/i18n";
@@ -30,6 +30,20 @@ interface DatePickerProps {
 	 *  date filtering, where Rust re-interprets the wall-clock in each pano's zone. */
 	wallClock?: boolean;
 }
+
+export type DateFlagProps = Pick<
+	DatePickerProps,
+	| "anyYear"
+	| "onAnyYearToggle"
+	| "showAnyYear"
+	| "anyTime"
+	| "onAnyTimeToggle"
+	| "showAnyTime"
+	| "tzLocal"
+	| "onTzLocalToggle"
+	| "showTzLocal"
+	| "onYearSelect"
+>;
 
 function pad2(n: number): string {
 	return n < 10 ? `0${n}` : String(n);
@@ -119,6 +133,7 @@ function MonthGrid({
 		}
 	};
 
+	// eslint-disable-next-line react-hooks/purity -- the year list ends at today's year
 	const currentYear = new Date().getFullYear();
 	const yearStart = 2007;
 	const years = Array.from({ length: currentYear - yearStart + 1 }, (_, i) => yearStart + i);
@@ -169,6 +184,7 @@ function MonthGrid({
 	);
 }
 
+/** @unstable */
 export function DatePicker({
 	mode,
 	value,
@@ -283,6 +299,21 @@ export function DatePicker({
 		if (parsed != null) onChange(parsed);
 	}, [draft, mode, anyYear, anyTime, showTime, wallClock, onChange]);
 
+	// Typed text that parses to nothing: flagged while you type, so blurring away from it
+	// is a visible discard rather than a silent one.
+	const draftInvalid = useMemo(() => {
+		if (draft == null || draft.trim() === "") return false;
+		return (
+			parseTypedDate(draft, {
+				mode,
+				anyYear,
+				anyTime,
+				withTime: showTime && !anyYear,
+				wallClock,
+			}) == null
+		);
+	}, [draft, mode, anyYear, anyTime, showTime, wallClock]);
+
 	// Seed the draft with the exact display text: blur then repaints identical pixels,
 	// so clicking a calendar day never flashes the old value in another format.
 	// parseTypedDate accepts the display forms ("Jun 3, 2019 14:30", "Jun 2019", ...).
@@ -308,148 +339,160 @@ export function DatePicker({
 					: 12;
 
 	return (
-		<Popover.Root open={open} onOpenChange={handleOpenChange}>
-			<Popover.Anchor asChild>
-				<input
-					ref={inputRef}
-					type="text"
-					className="date-picker__trigger"
-					size={inputSize}
-					value={draft ?? (value ? formatDisplay(value, mode, anyYear, anyTime, wallClock) : "")}
-					placeholder={draft != null ? formatHint(mode, anyYear, anyTime) : t("Select...")}
-					onFocus={startEditing}
-					onClick={startEditing}
-					onChange={(e) => setDraft(e.target.value)}
-					onBlur={() => {
+		<Popover.Root
+			open={open}
+			onOpenChange={(next, details) => {
+				// Clicking the anchor input is not "outside" -- it would close and
+				// instantly re-open via the input's focus/click handlers.
+				if (
+					!next &&
+					details.reason === "outside-press" &&
+					inputRef.current &&
+					details.event.target instanceof Node &&
+					inputRef.current.contains(details.event.target)
+				) {
+					details.cancel();
+					return;
+				}
+				handleOpenChange(next);
+			}}
+		>
+			<input
+				ref={inputRef}
+				type="text"
+				className={`date-picker__trigger${draftInvalid ? " is-invalid" : ""}`}
+				aria-invalid={draftInvalid || undefined}
+				size={inputSize}
+				value={draft ?? (value ? formatDisplay(value, mode, anyYear, anyTime, wallClock) : "")}
+				placeholder={draft != null ? formatHint(mode, anyYear, anyTime) : t("Select...")}
+				onFocus={startEditing}
+				onClick={startEditing}
+				onChange={(e) => setDraft(e.target.value)}
+				onBlur={() => {
+					commitDraft();
+					setDraft(null);
+				}}
+				onKeyDown={(e) => {
+					if (e.key === "Enter") {
+						e.preventDefault(); // typing a date must not submit an enclosing form
 						commitDraft();
 						setDraft(null);
-					}}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") {
-							e.preventDefault(); // typing a date must not submit an enclosing form
-							commitDraft();
-							setDraft(null);
-							setOpen(false);
-							inputRef.current?.blur();
-						} else if (e.key === "Escape") {
-							e.stopPropagation();
-							setDraft(null);
-							setOpen(false);
-							inputRef.current?.blur();
-						}
-					}}
-				/>
-			</Popover.Anchor>
+						setOpen(false);
+						inputRef.current?.blur();
+					} else if (e.key === "Escape") {
+						e.stopPropagation();
+						setDraft(null);
+						setOpen(false);
+						inputRef.current?.blur();
+					}
+				}}
+			/>
 			<Popover.Portal>
-				<Popover.Content
-					className="date-picker__popover"
+				<Popover.Positioner
+					className="picker-positioner"
+					anchor={inputRef}
 					sideOffset={4}
 					align="start"
 					collisionPadding={8}
-					onOpenAutoFocus={(e) => e.preventDefault()}
-					onInteractOutside={(e) => {
-						// Clicking the anchor input is not "outside" â€” it would close and
-						// instantly re-open via the input's focus/click handlers.
-						if (inputRef.current && e.target instanceof Node && inputRef.current.contains(e.target))
-							e.preventDefault();
-					}}
 				>
-					{anyTime ? (
-						<div className="date-picker__time-only">
-							<label>
-								{t("Time of day:")}
-								<input
-									type="time"
-									value={/^\d{2}:\d{2}$/.test(value) ? value : ""}
-									onChange={(e) => onChange(e.target.value)}
-								/>
-							</label>
-						</div>
-					) : mode === "month" ? (
-						<MonthGrid
-							value={value}
-							onChange={handleMonthSelect}
-							anyYear={anyYear}
-							onYearSelect={
-								onYearSelect
-									? (y) => {
-											onYearSelect(y);
-											setOpen(false);
-										}
-									: undefined
-							}
-						/>
-					) : (
-						<>
-							<DayPicker
-								mode="single"
-								selected={pendingDate ?? selectedDate}
-								onSelect={handleDaySelect}
-								month={navMonth}
-								onMonthChange={setNavMonth}
-								captionLayout="dropdown"
-								navLayout="around"
-								startMonth={new Date(2007, 0)}
-								endMonth={new Date(new Date().getFullYear() + 1, 11)}
+					<Popover.Popup
+						className="date-picker__popover popover-surface"
+						initialFocus={false}
+						// Focus returned to the input re-fires onFocus, which re-opens the picker.
+						finalFocus={false}
+					>
+						{anyTime ? (
+							<div className="date-picker__time-only">
+								<label>
+									{t("Time of day:")}
+									<input
+										type="time"
+										value={/^\d{2}:\d{2}$/.test(value) ? value : ""}
+										onChange={(e) => onChange(e.target.value)}
+									/>
+								</label>
+							</div>
+						) : mode === "month" ? (
+							<MonthGrid
+								value={value}
+								onChange={handleMonthSelect}
+								anyYear={anyYear}
+								onYearSelect={
+									onYearSelect
+										? (y) => {
+												onYearSelect(y);
+												setOpen(false);
+											}
+										: undefined
+								}
 							/>
-							{showTime && !anyYear && (
-								<div className="date-picker__time">
-									<label>
-										{t("Time:")}
-										<input
-											type="time"
-											value={time}
-											onChange={(e) => handleTimeChange(e.target.value)}
-										/>
-									</label>
-									<button
-										type="button"
-										className="date-picker__time-clear"
-										title={t("Clear time (whole day)")}
-										disabled={!time || time === "00:00"}
-										onClick={() => handleTimeChange("")}
-									>
-										<Icon path={mdiClose} size={14} />
-									</button>
-								</div>
-							)}
-						</>
-					)}
-					{(showAnyYear || showAnyTime || showTzLocal) && (
-						<div className="date-picker__toggles">
-							{showAnyYear && (
-								<label className="date-picker__any-year">
+						) : (
+							<>
+								<DayPicker
+									mode="single"
+									selected={pendingDate ?? selectedDate}
+									onSelect={handleDaySelect}
+									month={navMonth}
+									onMonthChange={setNavMonth}
+									captionLayout="dropdown"
+									navLayout="around"
+									startMonth={new Date(2007, 0)}
+									// eslint-disable-next-line react-hooks/purity -- the calendar ends a year past today
+									endMonth={new Date(new Date().getFullYear() + 1, 11)}
+								/>
+								{showTime && !anyYear && (
+									<div className="date-picker__time">
+										<label>
+											{t("Time:")}
+											<input
+												type="time"
+												value={time}
+												onChange={(e) => handleTimeChange(e.target.value)}
+											/>
+										</label>
+										<button
+											type="button"
+											className="date-picker__time-clear"
+											title={t("Clear time (whole day)")}
+											disabled={!time || time === "00:00"}
+											onClick={() => handleTimeChange("")}
+										>
+											<Icon path={mdiClose} size={14} />
+										</button>
+									</div>
+								)}
+							</>
+						)}
+						{(showAnyYear || showAnyTime || showTzLocal) && (
+							<div className="date-picker__toggles">
+								{showAnyYear && (
 									<Checkbox
 										checked={anyYear ?? false}
 										onChange={(e) => onAnyYearToggle?.(e.target.checked)}
-									/>
-
-									{t("Any year")}
-								</label>
-							)}
-							{showAnyTime && (
-								<label className="date-picker__any-year">
+									>
+										{t("Any year")}
+									</Checkbox>
+								)}
+								{showAnyTime && (
 									<Checkbox
 										checked={anyTime ?? false}
 										onChange={(e) => onAnyTimeToggle?.(e.target.checked)}
-									/>
-
-									{t("Any date")}
-								</label>
-							)}
-							{showTzLocal && (
-								<label className="date-picker__any-year">
+									>
+										{t("Any date")}
+									</Checkbox>
+								)}
+								{showTzLocal && (
 									<Checkbox
 										checked={tzLocal ?? false}
 										onChange={(e) => onTzLocalToggle?.(e.target.checked)}
-									/>
-
-									{t("Location timezone")}
-								</label>
-							)}
-						</div>
-					)}
-				</Popover.Content>
+									>
+										{t("Location timezone")}
+									</Checkbox>
+								)}
+							</div>
+						)}
+					</Popover.Popup>
+				</Popover.Positioner>
 			</Popover.Portal>
 		</Popover.Root>
 	);

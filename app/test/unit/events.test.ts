@@ -2,9 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 // emit() routes caught handler errors through log.error, which hits the tauri logger
 // (absent under vitest). Stub it so the error-isolation test doesn't leak a rejection.
-vi.mock("@/lib/util/log", () => ({
-	log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() },
-}));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 
 import {
 	emit,
@@ -20,6 +18,7 @@ describe("event group constants", () => {
 	it("LOCATION_DATA_EVENTS contains exactly the location:* events", () => {
 		expect([...LOCATION_DATA_EVENTS].sort()).toEqual([
 			"location:add",
+			"location:invalidate",
 			"location:remove",
 			"location:update",
 		]);

@@ -1,16 +1,11 @@
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { useEffect, useState } from "react";
-import {
-	Sidebar,
-	Section,
-	Field,
-	SegmentedControl,
-	EmptyState,
-} from "@/components/primitives/Sidebar";
+import { Sidebar, Section, Field, SegmentedControl } from "@/components/primitives/Sidebar";
 import { Button } from "@/components/primitives/Button";
 import { Slider } from "@/components/primitives/Slider";
 import { NSelect } from "@/components/primitives/NSelect";
 import { TextInput } from "@/components/primitives/TextInput";
-import { usePluginState } from "@/plugins/registry";
+import { usePluginState } from "@/plugins/pluginStorage";
 import { useMapState } from "@/store/useMapStore";
 import { useT } from "@/lib/i18n";
 import { Icon } from "@/components/primitives/Icon";
@@ -117,7 +112,7 @@ export function GameSidebar({ onClose }: { onClose: () => void }) {
 					<>
 						<Section title={t("Map pool")}>
 							<Field label={t("Current map")}>
-								<div className="gg-sidebar__map-name">{map.meta.name}</div>
+								<div className="gg-sidebar__map-name">{map.name}</div>
 							</Field>
 							<Field label={t("Locations in pool")}>
 								<div>{locationCount.toLocaleString()}</div>

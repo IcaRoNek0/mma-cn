@@ -1,56 +1,79 @@
-import { useState } from "react";
 import { embed, searchImage } from "./sidecar";
+
+const {
+	ui: { Button },
+	getMapState,
+	useJob,
+	fetchAllLocations,
+	applySelectionUpdate,
+	addSelection,
+} = MMA;
 
 const SIMILARITY_THRESHOLD = 0.85;
 
 export function FindSimilarButton() {
-	const [running, setRunning] = useState(false);
-	const [result, setResult] = useState<string | null>(null);
+	const active = getMapState().activeLocation;
+	const panoId = active?.panoId;
 
-	const active = MMA.getMapState().activeLocation;
-	if (!active?.panoId) return null;
+	const job = useJob<number>(async ({ signal, report }) => {
+		const locs = await fetchAllLocations();
+		signal.throwIfAborted();
+		const panoIds = locs.filter((l) => l.panoId).map((l) => l.panoId!);
 
-	const run = async () => {
-		setRunning(true);
-		setResult(null);
-		try {
-			const locs = await MMA.fetchAllLocations();
-			const panoIds = locs.filter((l) => l.panoId).map((l) => l.panoId!);
+		let embedded = 0;
+		let failed = 0;
+		const start = Date.now();
+		await embed(panoIds, {
+			signal,
+			onStatus: report,
+			onUnit: (count) => {
+				embedded += count;
+				const elapsed = (Date.now() - start) / 1000;
+				const rate = elapsed > 0.5 ? (embedded / elapsed).toFixed(1) : "--";
+				report(`Embedding: ${embedded}/${panoIds.length} (${rate} panos/s)`);
+			},
+			onFailed: () => failed++,
+		});
+		signal.throwIfAborted();
 
-			// Ensure embeddings exist (cached ones skip instantly)
-			await embed(panoIds);
+		report(
+			failed > 0 ? `Comparing... (${failed} pano${failed === 1 ? "" : "s"} failed to embed)` : "Comparing...",
+		);
+		const results = await searchImage(panoId!, null, SIMILARITY_THRESHOLD);
+		const matchedIds = results
+			.map((r) => locs.find((l) => l.panoId === r.panoId)?.id)
+			.filter((id): id is number => id != null);
 
-			const results = await searchImage(active.panoId!, null, SIMILARITY_THRESHOLD);
-
-			const matchedIds = results
-				.map((r) => locs.find((l) => l.panoId === r.panoId)?.id)
-				.filter((id): id is number => id != null);
-
-			if (matchedIds.length > 0) {
-				await MMA.addSelections([{
+		if (matchedIds.length > 0) {
+			await applySelectionUpdate(
+				addSelection({
 					type: "Locations",
 					locations: matchedIds,
-					name: `Similar to ${active.panoId!.slice(0, 8)}...`,
-				}]);
-				setResult(`${matchedIds.length} similar`);
-			} else {
-				setResult("No similar panos found");
-			}
-		} catch (e) {
-			setResult(`Error: ${e}`);
-		} finally {
-			setRunning(false);
+					name: `Similar to ${panoId!.slice(0, 8)}...`,
+				}),
+			);
 		}
-	};
+		return matchedIds.length;
+	});
+
+	if (!panoId) return null;
 
 	return (
-		<button
-			className="button button--small"
-			style={{ width: "100%" }}
-			disabled={running}
-			onClick={run}
-		>
-			{running ? "Searching..." : "Find similar panos"}
-		</button>
+		<>
+			<Button
+				small
+				className="vision-find-similar"
+				onClick={job.running ? job.cancel : job.run}
+			>
+				{job.running ? "Cancel" : "Find similar panos"}
+			</Button>
+			{job.progress && <div className="vision-status">{job.progress}</div>}
+			{job.error && <div className="vision-status vision-status--error">{job.error}</div>}
+			{job.result !== null && !job.running && (
+				<div className="vision-status">
+					{job.result > 0 ? `${job.result} similar` : "No similar panos found"}
+				</div>
+			)}
+		</>
 	);
 }

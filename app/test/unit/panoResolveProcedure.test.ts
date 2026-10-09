@@ -1,0 +1,65 @@
+/* The panoResolve procedure end to end, against a stubbed host. Two things are pinned:
+ * the patch a `run` emits (which the collect sink hands to `panoDownload` as its `value`),
+ * and that `query {op:"at"}` answers whole panos, not ids -- the coordinate search carries
+ * the metadata, so a caller that needs both must not have to fetch twice. */
+import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { CAR_PANO } from "./fixtures/pano";
+
+const app = fileURLToPath(new URL("../..", import.meta.url));
+// The bundle is a build artifact, not a checked-in one.
+execFileSync(process.execPath, ["scripts/build-procedures.mjs", "panoResolve"], { cwd: app });
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const mod: any = await import(
+	new URL("../../src-tauri/procedures/panoResolve.js", import.meta.url).href
+);
+
+const PANO = CAR_PANO.id;
+const NULL_CFG = { fields: [], force: false, config: null };
+
+/** The host issues the search and reads the answer back; the procedure only builds queries. */
+function withHost<T>(run: () => T): T {
+	(globalThis as any).mma = {
+		panos: (queries: unknown[]) => queries.map(() => ({ state: "found", pano: CAR_PANO })),
+		log: () => {},
+		progress: () => {},
+		fail: () => {},
+		aborted: () => false,
+	};
+	return run();
+}
+
+describe("panoResolve procedure", () => {
+	it("patches a row with the pano id the search found", () => {
+		const out = withHost(() => mod.run([{ id: 7, lat: 1, lng: 2, panoId: null }], NULL_CFG));
+		expect(out).toEqual([{ id: 7, patch: { panoId: PANO } }]);
+	});
+
+	it("leaves a row that already carries a pano id alone", () => {
+		const out = withHost(() => mod.run([{ id: 7, lat: 1, lng: 2, panoId: "kept" }], NULL_CFG));
+		expect(out).toEqual([]);
+	});
+
+	it("re-resolves a stored pano when the run is forced, which is what pinning asks for", () => {
+		const cfg = { fields: [], force: true, config: null };
+		const out = withHost(() => mod.run([{ id: 7, lat: 1, lng: 2, panoId: "stale" }], cfg));
+		expect(out).toEqual([{ id: 7, patch: { panoId: PANO } }]);
+	});
+
+	it("answers whole panos from the `at` query, not ids", () => {
+		const [pano] = withHost(() =>
+			mod.query({ op: "at", points: [{ lat: 1, lng: 2 }] }, NULL_CFG),
+		) as any[];
+		expect(pano.id).toBe(PANO);
+		// The metadata rides along: no second lookup to learn the timeline or the camera.
+		expect(pano.time.length).toBeGreaterThan(0);
+		expect(pano.worldSize.height).toBeGreaterThan(0);
+	});
+
+	it("rejects an unknown query op rather than guessing", () => {
+		expect(withHost(() => mod.query({ op: "nope" }, NULL_CFG))).toEqual({
+			error: "panoResolve: unknown query op",
+		});
+	});
+});

@@ -1,165 +1,76 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { NSelect } from "@/components/primitives/NSelect";
+import { useItemDrag } from "@/lib/hooks/useItemDrag";
 import { Checkbox } from "@/components/primitives/Checkbox";
-import { renameMap, updateMapLabels } from "@/store/useMapStore";
+import { Notice } from "@/components/primitives/Hint";
 import {
 	useMapList,
 	createMap,
-	deleteMap,
+	copyName,
+	duplicateMap,
+	openScratchMap,
 	renameFolder,
 	deleteFolder,
 	moveMapToFolder,
 	invalidateMapList,
+	useMapBadges,
+	type MapBadge,
 } from "@/store/mapList";
-import { openMapWindow } from "@/lib/window";
-import { log, fireAndForget } from "@/lib/util/log";
+import { openWindow } from "@/lib/window";
+import { log } from "@/lib/util/log";
 import { cmpVersion } from "@/lib/util/util";
+import { setInputValue } from "@/lib/util/dom";
+import { appVersion } from "@/lib/version";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openDialog as openAppDialog } from "@/store/dialogBus";
 import { cmd } from "@/lib/commands";
 import { mmaBufUrl, downloadBlob } from "@/lib/util/util";
-import * as Collapsible from "@radix-ui/react-collapsible";
-import { Dialog, DialogContent, useCloseDialog } from "@/components/primitives/Dialog";
+import { Collapsible } from "@base-ui-components/react/collapsible";
+import {
+	ConfirmDialog,
+	Dialog,
+	DialogActions,
+	DialogContent,
+	PromptDialog,
+	type DialogProps,
+} from "@/components/primitives/Dialog";
 import { Icon } from "@/components/primitives/Icon";
+import { DiffCounts } from "@/components/primitives/DiffCounts";
+import { IconButton } from "@/components/primitives/IconButton";
+import { DeleteMapDialog, MapSettingsForm } from "@/components/dialogs/MapSettingsForm";
 import {
 	mdiChevronDown,
 	mdiChevronRight,
 	mdiPencil,
 	mdiFolder,
+	mdiContentCopy,
 	mdiDelete,
 	mdiPlus,
 	mdiTextSearch,
 	mdiFolderRemove,
 	mdiDragVertical,
-	mdiClose,
 	mdiImport,
 	mdiExport,
 } from "@mdi/js";
 import clsx from "clsx";
 import type { SortMode } from "@/types";
 import { events, type MapMeta } from "@/bindings.gen";
-import { fmt, relativeTime, shortDateFmt } from "@/lib/util/format";
+import { errText, fmt, relativeTime, shortDateFmt } from "@/lib/util/format";
 import { useLocalStorage } from "@/lib/hooks/useLocalStorage";
-import { useSetting, setSetting, getSettings, type MapListField } from "@/store/settings";
-import { ColorPicker } from "@/components/primitives/ColorPicker";
-import { labelColor, rgbToHex, hexToRgb, textColorFor } from "@/lib/util/color";
-import { toast, progressToast } from "@/lib/util/toast";
-import { parseMapQuery, mapMatchesQuery, toggleLabelInQuery } from "./mapQuery";
+import { useSetting, type MapListField } from "@/store/settings";
+import { labelColor, textColorFor } from "@/lib/util/color";
+import { toast } from "@/lib/util/toast";
+import { registerJob } from "@/lib/jobs";
+import { applyMapFilter, toggleLabelInQuery } from "./mapQuery";
 import { t, msg } from "@/lib/i18n";
 import { Trans } from "@/components/primitives/Trans";
-
-// --- What's new (latest release notes) ---
-
-interface ChangelogSection {
-	tag: string;
-	heading: string;
-	body: string;
-}
-
-// Split the changelog into per-version sections. A version starts at a `## vX...`
-// heading; headings inside a body (e.g. `## What's new`) are left untouched.
-function parseChangelog(md: string): ChangelogSection[] {
-	const sections: ChangelogSection[] = [];
-	let cur: ChangelogSection | null = null;
-	for (const line of md.split(/\r?\n/)) {
-		const m = /^##\s+(v\d\S*)\s*(.*)$/.exec(line);
-		if (m) {
-			if (cur) sections.push(cur);
-			cur = { tag: m[1], heading: line.replace(/^##\s+/, "").trim(), body: "" };
-		} else if (cur) {
-			cur.body += line + "\n";
-		}
-	}
-	if (cur) sections.push(cur);
-	return sections;
-}
-
-declare const __APP_VERSION__: string;
-
-// Inline markdown: **bold**, *italic*, `code`, [text](url).
-function renderInline(text: string, kb: string): React.ReactNode[] {
-	const nodes: React.ReactNode[] = [];
-	const re = /\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g;
-	let last = 0;
-	let i = 0;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(text))) {
-		if (m.index > last) nodes.push(text.slice(last, m.index));
-		const k = `${kb}-${i++}`;
-		if (m[1]) nodes.push(<strong key={k}>{m[1]}</strong>);
-		else if (m[2]) nodes.push(<em key={k}>{m[2]}</em>);
-		else if (m[3]) nodes.push(<code key={k}>{m[3]}</code>);
-		else
-			nodes.push(
-				<a key={k} href={m[5]} target="_blank" rel="noopener noreferrer">
-					{m[4]}
-				</a>,
-			);
-		last = re.lastIndex;
-	}
-	if (last < text.length) nodes.push(text.slice(last));
-	return nodes;
-}
-
-// Block-level markdown for changelog bodies: headings, bullet lists, paragraphs.
-function renderMarkdown(md: string): React.ReactNode[] {
-	const out: React.ReactNode[] = [];
-	let list: React.ReactNode[] | null = null;
-	let para: string[] = [];
-	let key = 0;
-	const flushPara = () => {
-		if (para.length) {
-			out.push(<p key={`b${key++}`}>{renderInline(para.join(" "), `b${key}`)}</p>);
-			para = [];
-		}
-	};
-	const flushList = () => {
-		if (list) {
-			out.push(<ul key={`b${key++}`}>{list}</ul>);
-			list = null;
-		}
-	};
-	for (const raw of md.split(/\r?\n/)) {
-		const line = raw.trimEnd();
-		const heading = /^#{1,6}\s+(.*)$/.exec(line);
-		const bullet = /^[-*]\s+(.*)$/.exec(line);
-		if (heading) {
-			flushPara();
-			flushList();
-			out.push(<h4 key={`b${key++}`}>{renderInline(heading[1], `b${key}`)}</h4>);
-		} else if (bullet) {
-			flushPara();
-			(list ??= []).push(<li key={`b${key++}`}>{renderInline(bullet[1], `b${key}`)}</li>);
-		} else if (line === "") {
-			flushPara();
-			flushList();
-		} else {
-			flushList();
-			para.push(line);
-		}
-	}
-	flushPara();
-	flushList();
-	return out;
-}
-
-let changelogPromise: Promise<ChangelogSection[] | null> | null = null;
-
-function fetchChangelog(): Promise<ChangelogSection[] | null> {
-	if (!changelogPromise) {
-		changelogPromise = fetch("https://raw.githubusercontent.com/ccmdi/mma/master/CHANGELOG.md")
-			.then((r) => (r.ok ? r.text() : null))
-			.then((md) => {
-				if (!md) return null;
-				const sections = parseChangelog(md);
-				return sections.length ? sections : null;
-			})
-			.catch((e) => {
-				log.warn("Failed to fetch changelog", e);
-				return null;
-			});
-	}
-	return changelogPromise;
-}
+import { UnreadReplyDot } from "@/components/dialogs/SettingsPage";
+import { Pill } from "@/components/primitives/Pill";
+import { PrereleasePill } from "@/components/primitives/PrereleasePill";
+import { fetchReleases, type Release } from "@/lib/util/updateCheck";
+import { Markdown } from "@/lib/util/markdown";
+import { Button } from "@/components/primitives/Button";
+import { SearchInput } from "@/components/primitives/SearchInput";
 
 // One character cell of the version readout. When its character changes it rolls
 // the old one out and the new one in, like a safe dial. Digits roll by value
@@ -205,16 +116,16 @@ function RollChar({ ch }: { ch: string }) {
 }
 
 function WhatsNew() {
-	const [versions, setVersions] = useState<ChangelogSection[] | null>(null);
+	const [releases, setReleases] = useState<Release[] | null>(null);
 	const [failed, setFailed] = useState(false);
 	const [activeTag, setActiveTag] = useState<string | null>(null);
 	const historyRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		let alive = true;
-		fetchChangelog().then((v) => {
+		void fetchReleases().then((v) => {
 			if (!alive) return;
-			if (v) setVersions(v);
+			if (v) setReleases(v);
 			else setFailed(true);
 		});
 		return () => {
@@ -237,46 +148,52 @@ function WhatsNew() {
 
 	if (failed) return null;
 
-	const displayTag = activeTag ?? versions?.[0]?.tag ?? null;
-	const installed = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : null;
-	const isUnreleased = (tag: string) =>
-		installed ? cmpVersion(tag.replace(/^v/, ""), installed) > 0 : false;
+	const shown = releases?.find((r) => r.tag === activeTag) ?? releases?.[0] ?? null;
+	const installed = appVersion();
+	const notInstalled = (r: Release) => (installed ? cmpVersion(r.version, installed) > 0 : false);
 
 	return (
 		<li className="updates__item updates__item--new">
 			<span className="updates__circle" />
 			<time className="updates__time">
 				{t("What's new")}
-				{displayTag && (
+				{shown && (
 					<>
 						<span className="updates__version-sep">·</span>
 						<span className="updates__version-roll">
-							{[...displayTag].map((c, i) => (
+							{[...shown.tag].map((c, i) => (
 								<RollChar key={i} ch={c} />
 							))}
 						</span>
+						{shown.prerelease && <PrereleasePill />}
 					</>
 				)}
 			</time>
-			<div className={clsx("updates__skeleton", versions && "updates__skeleton--hidden")}>
-				<span />
-				<span />
-				<span />
+			<div className={clsx("updates__skeleton", releases && "updates__skeleton--hidden")}>
+				<span className="skeleton" />
+				<span className="skeleton" />
+				<span className="skeleton" />
 			</div>
-			<div className={clsx("updates__notes", versions && "updates__notes--open")}>
+			<div className={clsx("updates__notes", releases && "updates__notes--open")}>
 				<div>
 					<div className="updates__history" ref={historyRef} onScroll={onScroll}>
-						{versions?.map((v, vi) => (
+						{releases?.map((r, i) => (
 							<div
-								key={v.tag}
+								key={r.tag}
 								className={clsx(
 									"updates__release",
-									isUnreleased(v.tag) && "updates__release--unreleased",
+									notInstalled(r) && "updates__release--unreleased",
 								)}
-								data-tag={v.tag}
+								data-tag={r.tag}
 							>
-								{vi > 0 && <time className="updates__release-tag">{v.heading}</time>}
-								<div className="updates__release-body">{renderMarkdown(v.body)}</div>
+								{i > 0 && (
+									<time className="updates__release-tag">
+										{r.tag}
+										{r.publishedAt && ` - ${shortDateFmt.format(new Date(r.publishedAt))}`}
+										{r.prerelease && <PrereleasePill />}
+									</time>
+								)}
+								<Markdown source={r.body} />
 							</div>
 						))}
 					</div>
@@ -310,133 +227,27 @@ function hitTestDropTarget(x: number, y: number): DropTarget {
 
 // --- Subcomponents ---
 
-function RenameForm({
+function RenameFolderDialog({
+	open,
+	onOpenChange,
 	name,
 	onRename,
-}: {
-	name: string;
-	onRename?: (from: string, to: string) => void;
-}) {
-	const close = useCloseDialog();
+}: DialogProps & { name: string; onRename: (from: string, to: string) => void }) {
+	const [value, setValue] = useState(name);
 	return (
-		<form
-			onSubmit={(e) => {
-				e.preventDefault();
-				const val = new FormData(e.currentTarget).get("name");
-				if (typeof val === "string" && val.trim() !== "") {
-					const to = val.trim();
-					onRename?.(name, to);
-					renameFolder(name, to).finally(close);
-				}
+		<PromptDialog
+			open={open}
+			onOpenChange={onOpenChange}
+			title={t("Rename folder")}
+			value={value}
+			onChange={(v) => setValue(v.slice(0, 100))}
+			submitLabel={t("Save")}
+			onSubmit={() => {
+				const to = value.trim();
+				onRename(name, to);
+				void renameFolder(name, to).finally(() => onOpenChange(false));
 			}}
-		>
-			<p>
-				<input
-					type="text"
-					name="name"
-					defaultValue={name}
-					className="text-input"
-					minLength={1}
-					maxLength={100}
-					autoFocus
-				/>
-			</p>
-			<div className="edit-map-modal__actions">
-				<button type="submit" className="button button--primary">
-					{t("Save")}
-				</button>
-			</div>
-		</form>
-	);
-}
-
-function MapEditForm({ id, name, labels }: { id: string; name: string; labels: string[] }) {
-	const close = useCloseDialog();
-	const labelColors = useSetting("labelColors");
-	const [currentLabels, setCurrentLabels] = useState(labels);
-	const [labelInput, setLabelInput] = useState("");
-
-	const setLabelColor = (label: string, hex: string) =>
-		setSetting("labelColors", { ...getSettings().labelColors, [label.toLowerCase()]: hex });
-
-	const addLabel = () => {
-		const val = labelInput.trim().toLowerCase();
-		if (val && !currentLabels.includes(val)) {
-			setCurrentLabels([...currentLabels, val]);
-		}
-		setLabelInput("");
-	};
-
-	return (
-		<form
-			onSubmit={(e) => {
-				e.preventDefault();
-				const val = new FormData(e.currentTarget).get("name");
-				if (typeof val === "string" && val.trim() !== "") {
-					Promise.all([renameMap(id, val.trim()), updateMapLabels(id, currentLabels)]).finally(
-						close,
-					);
-				}
-			}}
-		>
-			<p>
-				<input
-					type="text"
-					name="name"
-					defaultValue={name}
-					className="text-input"
-					minLength={1}
-					maxLength={100}
-					autoFocus
-				/>
-			</p>
-			<div className="map-edit-labels">
-				<div className="map-edit-labels__label">{t("Labels")}</div>
-				<div className="map-edit-labels__list">
-					{currentLabels.map((l) => {
-						const [r, g, b] = hexToRgb(labelColor(l, labelColors));
-						return (
-							<span key={l} className="map-label map-label--editable">
-								<ColorPicker
-									color={{ r, g, b }}
-									onChange={(rgb) => setLabelColor(l, rgbToHex(rgb))}
-									ariaLabel={t("Color for {label}", { label: l })}
-								/>
-								{l}
-								<button
-									type="button"
-									className="map-label__remove"
-									onClick={() => setCurrentLabels(currentLabels.filter((x) => x !== l))}
-								>
-									<Icon path={mdiClose} size={12} />
-								</button>
-							</span>
-						);
-					})}
-					<input
-						type="text"
-						className="map-edit-labels__input"
-						placeholder={t("Add label...")}
-						value={labelInput}
-						onChange={(e) => setLabelInput(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") {
-								e.preventDefault();
-								addLabel();
-							}
-							if (e.key === "Backspace" && !labelInput && currentLabels.length > 0) {
-								setCurrentLabels(currentLabels.slice(0, -1));
-							}
-						}}
-					/>
-				</div>
-			</div>
-			<div className="edit-map-modal__actions">
-				<button type="submit" className="button button--primary">
-					{t("Save")}
-				</button>
-			</div>
-		</form>
+		/>
 	);
 }
 
@@ -444,7 +255,21 @@ interface MapAction {
 	type: "edit" | "delete";
 	id: string;
 	name: string;
-	labels: string[];
+}
+
+const NO_BADGES: MapBadge[] = [];
+
+function MapBadges({ badges }: { badges: MapBadge[] }) {
+	if (badges.length === 0) return null;
+	return (
+		<span className="map-list__badges">
+			{badges.map((b) => (
+				<span key={b.key} title={b.title}>
+					{"icon" in b ? <Icon path={b.icon} size={14} /> : <DiffCounts {...b.diff} hideZero />}
+				</span>
+			))}
+		</span>
+	);
 }
 
 const FIELD_RENDERERS: Record<MapListField, (meta: MapMeta) => React.ReactNode> = {
@@ -463,13 +288,15 @@ const MapEntry = React.memo(function MapEntry({
 	onAction,
 	onLabelClick,
 	fields,
+	badges,
 }: {
 	meta: MapMeta;
 	isDragging: boolean;
-	onDragStart: (item: DragItem, e: React.PointerEvent) => void;
+	onDragStart: (e: React.MouseEvent, item: DragItem) => void;
 	onAction: (action: MapAction) => void;
 	onLabelClick: (label: string) => void;
 	fields: MapListField[];
+	badges: MapBadge[];
 }) {
 	const labelColors = useSetting("labelColors");
 	const metaParts: React.ReactNode[] = [];
@@ -480,33 +307,33 @@ const MapEntry = React.memo(function MapEntry({
 
 	return (
 		<li
-			className={clsx("map-list__entry", isDragging && "is-dragging")}
+			className={isDragging ? "is-dragging" : undefined}
 			style={isDragging ? { opacity: 0.4 } : undefined}
 			data-filter-name={meta.name.toLowerCase()}
 			data-filter-labels={meta.labels.join("\n")}
 		>
-			<button
-				className="map-list__drag-handle icon-button"
-				style={{ color: "rgba(255, 255, 255, 0.7)" }}
+			<IconButton
+				className="map-list__drag-handle"
+				icon={mdiDragVertical}
+				label={t("Drag to move")}
+				tooltip={false}
+				reveal
 				draggable={false}
-				onPointerDown={(e) => {
-					if (e.button !== 0) return;
-					e.preventDefault();
-					onDragStart({ id: meta.id, folder: meta.folder, name: meta.name || "(unnamed)" }, e);
-				}}
-			>
-				<Icon path={mdiDragVertical} />
-			</button>
+				onMouseDown={(e) =>
+					onDragStart(e, { id: meta.id, folder: meta.folder, name: meta.name || "(unnamed)" })
+				}
+			/>
 			<a
 				href="#"
 				className="map-link"
 				onClick={(e) => {
 					e.preventDefault();
-					openMapWindow(meta.id, meta.name);
+					void openWindow({ type: "editor", mapId: meta.id }, meta.name);
 				}}
 			>
 				{meta.name || t("(unnamed)")}
 			</a>
+			<MapBadges badges={badges} />
 			{metaParts.length > 0 && (
 				<span className="map-list__meta">
 					{metaParts.map((part, i) => (
@@ -531,22 +358,31 @@ const MapEntry = React.memo(function MapEntry({
 					</span>
 				);
 			})}
-			<button
-				className="map-list__edit icon-button"
-				aria-label={t("Edit map")}
+			<IconButton
+				className="map-list__edit"
+				icon={mdiPencil}
+				label={t("Edit map")}
+				reveal
+				onClick={() => onAction({ type: "edit", id: meta.id, name: meta.name })}
+			/>
+			<IconButton
+				className="map-list__edit"
+				icon={mdiContentCopy}
+				label={t("Duplicate map")}
+				reveal
 				onClick={() =>
-					onAction({ type: "edit", id: meta.id, name: meta.name, labels: meta.labels })
+					void duplicateMap(meta.id, copyName(meta.name)).catch((e: unknown) =>
+						toast(t("Could not save a copy: {error}", { error: errText(e) })),
+					)
 				}
-			>
-				<Icon path={mdiPencil} />
-			</button>
-			<button
-				className="map-list__edit icon-button"
-				aria-label={t("Delete map")}
-				onClick={() => onAction({ type: "delete", id: meta.id, name: meta.name, labels: [] })}
-			>
-				<Icon path={mdiDelete} />
-			</button>
+			/>
+			<IconButton
+				className="map-list__edit"
+				icon={mdiDelete}
+				label={t("Delete map")}
+				reveal
+				onClick={() => onAction({ type: "delete", id: meta.id, name: meta.name })}
+			/>
 		</li>
 	);
 });
@@ -566,78 +402,88 @@ const FolderEntry = React.memo(function FolderEntry({
 	onFolderAction,
 	onLabelClick,
 	fields,
+	badges,
+	searching,
 }: {
 	name: string;
 	maps: MapMeta[];
 	dragId: string | null;
-	onDragStart: (item: DragItem, e: React.PointerEvent) => void;
+	onDragStart: (e: React.MouseEvent, item: DragItem) => void;
 	onMapAction: (action: MapAction) => void;
 	onFolderAction: (action: FolderAction) => void;
 	onLabelClick: (label: string) => void;
 	fields: MapListField[];
+	badges: Map<string, MapBadge[]>;
+	searching: boolean;
 }) {
 	const triggerId = `folder:${name}-trig`;
 	const [collapsed, setCollapsed] = useLocalStorage<string[]>("collapsedFolders", []);
-	const open = !collapsed.includes(name);
+	// A search reaches into closed folders: the entries have to be mounted for the filter to
+	// find them, and a folder with no match is hidden wholesale below.
+	const open = searching || !collapsed.includes(name);
 	const setOpen = (v: boolean) => {
+		if (searching) return;
 		setCollapsed((prev) => (v ? prev.filter((f) => f !== name) : [...prev, name]));
 	};
 	const count = useMemo(() => maps.reduce((a, m) => a + m.locationCount, 0), [maps]);
 
 	return (
-		<Collapsible.Root asChild open={open} onOpenChange={setOpen}>
-			<li className="map-folder" data-drop-folder={name} data-filter-folder>
-				<div className="map-folder__head">
-					<Collapsible.Trigger
-						id={triggerId}
-						className="icon-button"
-						style={{ display: "inline-block" }}
-						aria-label={t("Open or close folder")}
-					>
-						<Icon path={open ? mdiChevronDown : mdiChevronRight} />
-					</Collapsible.Trigger>
-					<label htmlFor={triggerId}>
-						<strong>{name}</strong>
-						<span className="map-list__folder-count">
-							{" "}
-							·{" "}
-							{t("{maps} maps · {locations} locations", {
-								maps: fmt.format(maps.length),
-								locations: fmt.format(count),
-							})}
-						</span>
-					</label>
-					<button
-						className="map-list__edit icon-button"
-						aria-label={t("Rename folder")}
-						onClick={() => onFolderAction({ type: "rename-folder", name, mapCount: maps.length })}
-					>
-						<Icon path={mdiPencil} />
-					</button>
-					<button
-						className="map-list__edit icon-button"
-						aria-label={t("Delete folder")}
-						onClick={() => onFolderAction({ type: "delete-folder", name, mapCount: maps.length })}
-					>
-						<Icon path={mdiFolderRemove} />
-					</button>
-				</div>
-				<Collapsible.Content asChild>
-					<ul className="map-sublist">
-						{maps.map((m) => (
-							<MapEntry
-								key={m.id}
-								meta={m}
-								isDragging={dragId === m.id}
-								onDragStart={onDragStart}
-								onAction={onMapAction}
-								onLabelClick={onLabelClick}
-								fields={fields}
-							/>
-						))}
-					</ul>
-				</Collapsible.Content>
-			</li>
+		<Collapsible.Root
+			open={open}
+			onOpenChange={setOpen}
+			render={<li className="map-folder" data-drop-folder={name} data-filter-folder />}
+		>
+			<div>
+				<Collapsible.Trigger
+					id={triggerId}
+					render={
+						<IconButton
+							icon={open ? mdiChevronDown : mdiChevronRight}
+							label={t("Open or close folder")}
+							tooltip={false}
+						/>
+					}
+				/>
+				<label htmlFor={triggerId}>
+					<strong>{name}</strong>
+					<span className="map-list__folder-count">
+						{" "}
+						·{" "}
+						{t("{maps} maps · {locations} locations", {
+							maps: fmt.format(maps.length),
+							locations: fmt.format(count),
+						})}
+					</span>
+				</label>
+				<IconButton
+					className="map-list__edit"
+					icon={mdiPencil}
+					label={t("Rename folder")}
+					reveal
+					onClick={() => onFolderAction({ type: "rename-folder", name, mapCount: maps.length })}
+				/>
+				<IconButton
+					className="map-list__edit"
+					icon={mdiFolderRemove}
+					label={t("Delete folder")}
+					reveal
+					onClick={() => onFolderAction({ type: "delete-folder", name, mapCount: maps.length })}
+				/>
+			</div>
+			<Collapsible.Panel render={<ul className="map-sublist" />}>
+				{maps.map((m) => (
+					<MapEntry
+						key={m.id}
+						meta={m}
+						isDragging={dragId === m.id}
+						onDragStart={onDragStart}
+						onAction={onMapAction}
+						onLabelClick={onLabelClick}
+						fields={fields}
+						badges={badges.get(m.id) ?? NO_BADGES}
+					/>
+				))}
+			</Collapsible.Panel>
 		</Collapsible.Root>
 	);
 });
@@ -698,13 +544,13 @@ async function applyFolderFiles(paths: string[], maps: MapMeta[]) {
 }
 
 function ImportPreviewModal({
+	open,
+	onOpenChange,
 	preview,
 	onConfirm,
-	onClose,
-}: {
+}: DialogProps & {
 	preview: ImportPreview;
 	onConfirm: (selectedIndices: number[]) => void;
-	onClose: () => void;
 }) {
 	const [entries, setEntries] = useState(preview.entries);
 	const selectedCount = entries.filter((e) => e.selected).length;
@@ -720,23 +566,12 @@ function ImportPreviewModal({
 		setEntries((prev) => prev.map((e) => ({ ...e, selected: !e.isDuplicate })));
 
 	return (
-		<Dialog
-			open
-			onOpenChange={(open) => {
-				if (!open) onClose();
-			}}
-		>
-			<DialogContent title={t("Import Maps")} className="import-preview-modal">
-				<div className="import-preview__actions">
-					<button className="button" onClick={selectAll}>
-						{t("All")}
-					</button>
-					<button className="button" onClick={selectNone}>
-						{t("None")}
-					</button>
-					<button className="button" onClick={selectNew}>
-						{t("New only")}
-					</button>
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			<DialogContent title={t("Import Maps")}>
+				<div className="import-preview__toolbar">
+					<Button onClick={selectAll}>{t("All")}</Button>
+					<Button onClick={selectNone}>{t("None")}</Button>
+					<Button onClick={selectNew}>{t("New only")}</Button>
 					<span className="import-preview__summary">
 						{t("{selected} of {total} selected ({locations} locations)", {
 							selected: selectedCount,
@@ -757,48 +592,41 @@ function ImportPreviewModal({
 							onClick={() => toggle(i)}
 						>
 							<Checkbox checked={entry.selected} readOnly />
-							<span className="import-preview__name">{entry.name}</span>
+							<span className="import-preview__name truncate">{entry.name}</span>
 							<span className="import-preview__meta">
 								{t({ one: "{n} loc", other: "{n} loc" }, { n: entry.locationCount })}
 								{entry.tagCount > 0 &&
 									t({ one: ", {n} tag", other: ", {n} tags" }, { n: entry.tagCount })}
 								{entry.folder && ` [${entry.folder}]`}
 							</span>
-							{entry.isDuplicate && (
-								<span className="import-preview__badge">{t("duplicate")}</span>
-							)}
+							{entry.isDuplicate && <Pill tone="warning">{t("duplicate")}</Pill>}
 						</li>
 					))}
 				</ul>
 
 				{preview.warnings.length > 0 && (
-					<details className="import-preview__warnings">
-						<summary>
-							{t({ one: "{n} warning", other: "{n} warnings" }, { n: preview.warnings.length })}
-						</summary>
-						<ul>
-							{preview.warnings.map((w, i) => (
-								<li key={i}>{w}</li>
-							))}
-						</ul>
-					</details>
+					<Notice tone="warning">
+						<details className="import-preview__warnings">
+							<summary>
+								{t({ one: "{n} warning", other: "{n} warnings" }, { n: preview.warnings.length })}
+							</summary>
+							<ul>
+								{preview.warnings.map((w, i) => (
+									<li key={i}>{w}</li>
+								))}
+							</ul>
+						</details>
+					</Notice>
 				)}
 
-				<div className="import-preview__footer">
-					<button className="button" onClick={onClose}>
-						{t("Cancel")}
-					</button>
-					<button
-						className="button button--primary"
-						disabled={selectedCount === 0}
-						onClick={() => {
-							const indices = entries.map((e, i) => (e.selected ? i : -1)).filter((i) => i >= 0);
-							onConfirm(indices);
-						}}
-					>
-						{t({ one: "Import {n} map", other: "Import {n} maps" }, { n: selectedCount })}
-					</button>
-				</div>
+				<DialogActions
+					cancel
+					primary={{
+						label: t({ one: "Import {n} map", other: "Import {n} maps" }, { n: selectedCount }),
+						disabled: selectedCount === 0,
+						onClick: () => onConfirm(entries.flatMap((e, i) => (e.selected ? [i] : []))),
+					}}
+				/>
 			</DialogContent>
 		</Dialog>
 	);
@@ -814,7 +642,7 @@ export function BulkActions() {
 
 	const handleExport = useCallback(async () => {
 		setExporting(true);
-		const progress = progressToast(t("Exporting maps..."));
+		const progress = registerJob(t("Exporting maps..."));
 		const unlisten = await events.bulkExportProgress.listen((e) =>
 			progress.update(
 				e.payload.current / e.payload.total,
@@ -857,11 +685,12 @@ export function BulkActions() {
 			for (const path of mapFiles) {
 				const entries = await cmd.bulkImportPreview(path);
 				entries.forEach((e, localIndex) => {
+					const name = e.name ?? t("Untitled");
 					const isDuplicate = maps.some(
-						(existing) => existing.name === e.name && existing.locationCount === e.locationCount,
+						(existing) => existing.name === name && existing.locationCount === e.locationCount,
 					);
 					aggregated.push({
-						name: e.name,
+						name,
 						folder: e.folder,
 						locationCount: e.locationCount,
 						tagCount: e.tagCount,
@@ -908,7 +737,7 @@ export function BulkActions() {
 		setPreview(null);
 		const total = indices.length;
 		let base = 0; // maps confirmed in prior files, for global progress across the per-file loop
-		const progress = progressToast(t("Importing maps..."));
+		const progress = registerJob(t("Importing maps..."));
 		const unlisten = await events.bulkImportProgress.listen((e) =>
 			progress.update((base + e.payload.current) / total, `${base + e.payload.current} / ${total}`),
 		);
@@ -941,31 +770,31 @@ export function BulkActions() {
 
 	return (
 		<>
-			<button
-				className="settings-gear"
-				onClick={handleExport}
+			<IconButton
+				icon={mdiExport}
+				size={18}
+				label={exporting ? t("Exporting...") : t("Export all maps")}
+				onClick={() => void handleExport()}
 				disabled={exporting}
-				title={exporting ? t("Exporting...") : t("Export all maps")}
-			>
-				<Icon path={mdiExport} />
-			</button>
-			<button
-				className="settings-gear"
-				onClick={handleImport}
+			/>
+			<IconButton
+				icon={mdiImport}
+				size={18}
+				label={parseStatus ?? (importing ? t("Importing...") : t("Import maps"))}
+				onClick={() => void handleImport()}
 				disabled={importing || parseStatus !== null}
-				title={parseStatus ?? (importing ? t("Importing...") : t("Import maps"))}
-			>
-				<Icon path={mdiImport} />
-			</button>
+			/>
 			{preview && (
 				<ImportPreviewModal
-					preview={preview}
-					onConfirm={handleConfirm}
-					onClose={() => {
-						fireAndForget(cmd.bulkImportCancel(), "bulkImportCancel");
+					open
+					onOpenChange={(open) => {
+						if (open) return;
+						void cmd.bulkImportCancel();
 						setPreview(null);
 						importEntriesRef.current = null;
 					}}
+					preview={preview}
+					onConfirm={(indices) => void handleConfirm(indices)}
 				/>
 			)}
 		</>
@@ -1003,26 +832,6 @@ function sortMaps(maps: MapMeta[], mode: SortMode): MapMeta[] {
 
 // --- Main ---
 
-function applyFilter(listEl: HTMLElement | null, query: string) {
-	if (!listEl) return;
-	const entries = listEl.querySelectorAll<HTMLElement>("[data-filter-name]");
-	const folders = listEl.querySelectorAll<HTMLElement>("[data-filter-folder]");
-	const q = parseMapQuery(query);
-	if (q.text.length === 0 && q.labels.length === 0) {
-		for (const el of entries) el.hidden = false;
-		for (const el of folders) el.hidden = false;
-	} else {
-		for (const el of entries) {
-			const labels = (el.dataset.filterLabels ?? "").split("\n").filter(Boolean);
-			el.hidden = !mapMatchesQuery(el.dataset.filterName!, labels, q);
-		}
-		for (const el of folders) {
-			const hasVisible = el.querySelector<HTMLElement>("[data-filter-name]:not([hidden])") !== null;
-			el.hidden = !hasVisible;
-		}
-	}
-}
-
 export function MapList() {
 	const maps = useMapList();
 	const [sortMode, setSortMode] = useLocalStorage<SortMode>("mapListSort", "name");
@@ -1036,26 +845,15 @@ export function MapList() {
 	const filterInputRef = useRef<HTMLInputElement>(null);
 	const [hasFilter, setHasFilter] = useState(false);
 	const mapListFields = useSetting("mapListFields");
-
-	const clearFilter = useCallback(() => {
-		if (filterInputRef.current) filterInputRef.current.value = "";
-		filterRef.current = "";
-		setHasFilter(false);
-		applyFilter(listRef.current, "");
-		filterInputRef.current?.focus();
-	}, []);
+	const badges = useMapBadges();
 
 	const toggleLabelFilter = useCallback((label: string) => {
 		const input = filterInputRef.current;
-		if (!input) return;
-		input.value = toggleLabelInQuery(input.value, label);
-		filterRef.current = input.value.toLowerCase();
-		setHasFilter(input.value.length > 0);
-		applyFilter(listRef.current, filterRef.current);
+		if (input) setInputValue(input, toggleLabelInQuery(input.value, label));
 	}, []);
 
 	useEffect(() => {
-		if (filterRef.current) applyFilter(listRef.current, filterRef.current);
+		if (filterRef.current) applyMapFilter(listRef.current, filterRef.current);
 	}, [maps]);
 
 	const grouped = useMemo(() => {
@@ -1084,71 +882,65 @@ export function MapList() {
 
 	const [activeAction, setActiveAction] = useState<(MapAction | FolderAction) | null>(null);
 
+	// The dialog edits the live row, not the snapshot the menu click carried.
+	const editingMap =
+		activeAction?.type === "edit" ? maps.find((m) => m.id === activeAction.id) : undefined;
+
+	const closeAction = useCallback((open: boolean) => !open && setActiveAction(null), []);
 	const handleMapAction = useCallback((action: MapAction) => setActiveAction(action), []);
 	const handleFolderAction = useCallback((action: FolderAction) => setActiveAction(action), []);
 
-	const handleDragStart = useCallback((item: DragItem, e: React.PointerEvent) => {
-		setDragItem(item);
-		document.body.style.userSelect = "none";
-
-		if (previewRef.current) {
-			previewRef.current.style.left = `${e.clientX + 12}px`;
-			previewRef.current.style.top = `${e.clientY - 12}px`;
-		}
-
-		const onMove = (ev: PointerEvent) => {
+	const handleDragStart = useItemDrag((_e, item: DragItem) => {
+		const placePreview = (ev: MouseEvent) => {
 			if (previewRef.current) {
 				previewRef.current.style.left = `${ev.clientX + 12}px`;
 				previewRef.current.style.top = `${ev.clientY - 12}px`;
 			}
-
-			const target = hitTestDropTarget(ev.clientX, ev.clientY);
-			dropRef.current = target;
-
-			if (prevHighlight.current) {
-				prevHighlight.current.classList.remove("map-list__drop");
-				prevHighlight.current = null;
-			}
-
-			if (target !== false && target !== item.folder) {
-				const selector =
-					target === null ? "[data-drop-folder='']" : `[data-drop-folder='${CSS.escape(target)}']`;
-				const el = document.querySelector<HTMLElement>(selector);
-				if (el) {
-					el.classList.add("map-list__drop");
-					prevHighlight.current = el;
+		};
+		const clearHighlight = () => {
+			prevHighlight.current?.classList.remove("map-list__drop");
+			prevHighlight.current = null;
+		};
+		return {
+			onStart: (ev) => {
+				setDragItem(item);
+				placePreview(ev);
+			},
+			onMove: (ev) => {
+				placePreview(ev);
+				const target = hitTestDropTarget(ev.clientX, ev.clientY);
+				dropRef.current = target;
+				clearHighlight();
+				if (target !== false && target !== item.folder) {
+					const selector =
+						target === null
+							? "[data-drop-folder='']"
+							: `[data-drop-folder='${CSS.escape(target)}']`;
+					const el = document.querySelector<HTMLElement>(selector);
+					if (el) {
+						el.classList.add("map-list__drop");
+						prevHighlight.current = el;
+					}
 				}
-			}
+			},
+			onDrop: () => {
+				const target = dropRef.current;
+				if (target !== false && target !== item.folder) void moveMapToFolder(item.id, target);
+			},
+			onEnd: () => {
+				clearHighlight();
+				dropRef.current = false;
+				setDragItem(null);
+			},
 		};
-
-		const onUp = () => {
-			document.removeEventListener("pointermove", onMove);
-			document.removeEventListener("pointerup", onUp);
-			document.body.style.userSelect = "";
-
-			if (prevHighlight.current) {
-				prevHighlight.current.classList.remove("map-list__drop");
-				prevHighlight.current = null;
-			}
-
-			const target = dropRef.current;
-			if (target !== false && target !== item.folder) {
-				moveMapToFolder(item.id, target);
-			}
-			dropRef.current = false;
-			setDragItem(null);
-		};
-
-		document.addEventListener("pointermove", onMove);
-		document.addEventListener("pointerup", onUp);
-	}, []);
+	});
 
 	return (
 		<div className="page-map-list">
 			<section>
 				<h2>
 					{t("Your Maps")}{" "}
-					<span style={{ color: "#fff8", fontWeight: "normal", fontSize: "0.75em" }}>
+					<span className="map-list__total">
 						({t({ one: "{n} map", other: "{n} maps" }, { n: maps.length })},{" "}
 						{t(
 							{ one: "{n} location", other: "{n} locations" },
@@ -1168,67 +960,40 @@ export function MapList() {
 					>
 						<Icon path={mdiTextSearch} />
 					</span>
-					<span style={{ position: "relative", flexGrow: 1, display: "flex" }}>
-						<input
-							defaultValue=""
-							ref={filterInputRef}
-							onChange={(e) => {
-								filterRef.current = e.target.value.toLowerCase();
-								setHasFilter(e.target.value.length > 0);
-								applyFilter(listRef.current, filterRef.current);
-							}}
-							onKeyDown={(e) => {
-								if (e.key === "Escape" && filterInputRef.current?.value) {
-									e.preventDefault();
-									clearFilter();
-									return;
-								}
-								if (e.key !== "Enter") return;
-								e.preventDefault();
-								const name = filterInputRef.current?.value.trim();
-								if (!name) return;
-								const entries = listRef.current?.querySelectorAll<HTMLElement>(
-									"[data-filter-name]:not([hidden])",
-								);
-								const exact = entries
-									? [...entries].find((el) => el.dataset.filterName === name.toLowerCase())
-									: undefined;
-								if (exact) {
-									exact.querySelector<HTMLAnchorElement>(".map-link")?.click();
-									return;
-								}
-								createMap(name).then((m) => openMapWindow(m.id, m.name));
-							}}
-							className="text-input"
-							type="text"
-							placeholder={t("Search maps...")}
-							title={t('Filter by name, or by label with label:name / label:"two words"')}
-							style={{ flexGrow: 1, paddingRight: hasFilter ? "1.75rem" : undefined }}
-							autoFocus
-						/>
-						{hasFilter && (
-							<button
-								type="button"
-								className="icon-button"
-								aria-label={t("Clear search")}
-								onClick={clearFilter}
-								style={{
-									position: "absolute",
-									right: "0.25rem",
-									top: "50%",
-									transform: "translateY(-50%)",
-									display: "flex",
-									alignItems: "center",
-									justifyContent: "center",
-									lineHeight: 0,
-									padding: 2,
-									color: "#888",
-								}}
-							>
-								<Icon path={mdiClose} size={16} />
-							</button>
-						)}
-					</span>
+					<SearchInput
+						defaultValue=""
+						ref={filterInputRef}
+						onChange={(e) => {
+							filterRef.current = e.target.value.toLowerCase();
+							setHasFilter(e.target.value.length > 0);
+							applyMapFilter(listRef.current, filterRef.current);
+						}}
+						onKeyDown={(e) => {
+							if (e.key !== "Enter") return;
+							e.preventDefault();
+							const name = filterInputRef.current?.value.trim();
+							// Nameless input, nameless map.
+							if (!name) {
+								void openScratchMap();
+								return;
+							}
+							const entries = listRef.current?.querySelectorAll<HTMLElement>(
+								"[data-filter-name]:not([hidden])",
+							);
+							const exact = entries
+								? entries.values().find((el) => el.dataset.filterName === name.toLowerCase())
+								: undefined;
+							if (exact) {
+								exact.querySelector<HTMLAnchorElement>(".map-link")?.click();
+								return;
+							}
+							void createMap(name).then((m) => openWindow({ type: "editor", mapId: m.id }, m.name));
+						}}
+						placeholder={t("Search maps...")}
+						title={t('Filter by name, or by label with label:name / label:"two words"')}
+						style={{ flexGrow: 1 }}
+						autoFocus
+					/>
 					<NSelect
 						className="map-list__sort"
 						value={sortMode}
@@ -1240,8 +1005,9 @@ export function MapList() {
 							</option>
 						))}
 					</NSelect>
-					<button
-						className="icon-button"
+					<IconButton
+						icon={mdiFolder}
+						label={t("New folder")}
 						onClick={() => {
 							const name = filterInputRef.current?.value.trim();
 							if (!name) {
@@ -1250,24 +1016,19 @@ export function MapList() {
 							}
 							setSyntheticFolders((prev) => (prev.includes(name) ? prev : [...prev, name]));
 						}}
-						aria-label={t("New folder")}
-					>
-						<Icon path={mdiFolder} />
-					</button>
-					<button
-						className="icon-button"
+					/>
+					<IconButton
+						icon={mdiPlus}
+						label={t("New map")}
 						onClick={() => {
 							const name = filterInputRef.current?.value.trim();
 							if (!name) {
 								toast(t("Type a name to create a map"));
 								return;
 							}
-							createMap(name);
+							void createMap(name);
 						}}
-						aria-label={t("New map")}
-					>
-						<Icon path={mdiPlus} />
-					</button>
+					/>
 				</p>
 
 				<ul className="map-list" data-drop-folder="" ref={listRef}>
@@ -1282,6 +1043,8 @@ export function MapList() {
 							onFolderAction={handleFolderAction}
 							onLabelClick={toggleLabelFilter}
 							fields={mapListFields}
+							badges={badges}
+							searching={hasFilter}
 						/>
 					))}
 					{rootMaps.map((m) => (
@@ -1293,11 +1056,10 @@ export function MapList() {
 							onAction={handleMapAction}
 							onLabelClick={toggleLabelFilter}
 							fields={mapListFields}
+							badges={badges.get(m.id) ?? NO_BADGES}
 						/>
 					))}
-					{rootMaps.length === 0 && dragItem && (
-						<li className="map-list__entry">{t("drop map here to move out of folder")}</li>
-					)}
+					{rootMaps.length === 0 && dragItem && <li>{t("drop map here to move out of folder")}</li>}
 				</ul>
 			</section>
 			<section className="updates">
@@ -1309,9 +1071,17 @@ export function MapList() {
 							<Trans
 								msg="This is a work in progress. Report bugs {here}"
 								here={
-									<a target="_blank" href="https://github.com/ccmdi/mma/issues">
-										{t("here")}
-									</a>
+									<>
+										{/* The dot sits beside the link, not inside it: the link is underlined. */}
+										<button
+											type="button"
+											className="link-button"
+											onClick={() => openAppDialog("feedback")}
+										>
+											{t("here")}
+										</button>
+										<UnreadReplyDot />
+									</>
 								}
 							/>
 							.
@@ -1321,108 +1091,55 @@ export function MapList() {
 				</ul>
 			</section>
 
-			<div
-				ref={previewRef}
-				style={{
-					position: "fixed",
-					pointerEvents: "none",
-					zIndex: 9999,
-					padding: "6px 12px",
-					background: "var(--sand-3, #333)",
-					borderRadius: "4px",
-					color: "var(--sand-12, #eee)",
-					fontSize: "14px",
-					whiteSpace: "nowrap",
-					display: dragItem ? "block" : "none",
-				}}
-			>
+			<div ref={previewRef} className="popover-surface map-list__drag-preview" hidden={!dragItem}>
 				{dragItem?.name}
 			</div>
-			{activeAction && (
-				<Dialog
-					open
-					onOpenChange={(open) => {
-						if (!open) setActiveAction(null);
-					}}
-				>
-					<DialogContent
-						title={
-							activeAction.type === "edit"
-								? t("Edit map")
-								: activeAction.type === "delete"
-									? t("Delete map")
-									: activeAction.type === "rename-folder"
-										? t("Rename folder")
-										: t("Delete folder")
-						}
-						className="edit-map-modal"
-					>
-						{activeAction.type === "edit" && (
-							<MapEditForm
-								id={activeAction.id}
-								name={activeAction.name}
-								labels={(activeAction as MapAction).labels}
-							/>
-						)}
-						{activeAction.type === "delete" && (
-							<>
-								<p>{t('Delete "{name}"?', { name: activeAction.name || t("(unnamed)") })}</p>
-								<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
-									<button className="button" onClick={() => setActiveAction(null)}>
-										{t("Cancel")}
-									</button>
-									<button
-										className="button button--destructive"
-										onClick={() => {
-											deleteMap(activeAction.id);
-											setActiveAction(null);
-										}}
-									>
-										{t("Delete")}
-									</button>
-								</div>
-							</>
-						)}
-						{activeAction.type === "rename-folder" && (
-							<RenameForm
-								name={activeAction.name}
-								onRename={(from, to) =>
-									setSyntheticFolders((prev) => prev.map((f) => (f === from ? to : f)))
-								}
-							/>
-						)}
-						{activeAction.type === "delete-folder" && (
-							<>
-								<p>
-									{t(
-										{
-											one: 'Delete folder "{name}"? The {n} map inside will be moved to the root.',
-											other:
-												'Delete folder "{name}"? The {n} maps inside will be moved to the root.',
-										},
-										{ name: activeAction.name, n: (activeAction as FolderAction).mapCount },
-									)}
-								</p>
-								<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
-									<button className="button" onClick={() => setActiveAction(null)}>
-										{t("Cancel")}
-									</button>
-									<button
-										className="button button--destructive"
-										onClick={async () => {
-											const name = activeAction.name;
-											setActiveAction(null);
-											setSyntheticFolders((prev) => prev.filter((f) => f !== name));
-											await deleteFolder(name);
-										}}
-									>
-										{t("Delete folder")}
-									</button>
-								</div>
-							</>
-						)}
+			{activeAction?.type === "edit" && editingMap && (
+				<Dialog open onOpenChange={closeAction}>
+					<DialogContent title={t("Edit map")} className="edit-map-modal">
+						<MapSettingsForm map={editingMap} context="list" />
 					</DialogContent>
 				</Dialog>
+			)}
+			{activeAction?.type === "delete" && (
+				<DeleteMapDialog
+					open
+					onOpenChange={closeAction}
+					mapId={activeAction.id}
+					name={activeAction.name}
+				/>
+			)}
+			{activeAction?.type === "rename-folder" && (
+				<RenameFolderDialog
+					open
+					onOpenChange={closeAction}
+					name={activeAction.name}
+					onRename={(from, to) =>
+						setSyntheticFolders((prev) => prev.map((f) => (f === from ? to : f)))
+					}
+				/>
+			)}
+			{activeAction?.type === "delete-folder" && (
+				<ConfirmDialog
+					open
+					onOpenChange={closeAction}
+					title={t("Delete folder")}
+					message={t(
+						{
+							one: 'Delete folder "{name}"? The {n} map inside will be moved to the root.',
+							other: 'Delete folder "{name}"? The {n} maps inside will be moved to the root.',
+						},
+						{ name: activeAction.name, n: activeAction.mapCount },
+					)}
+					confirmLabel={t("Delete folder")}
+					tone="destructive"
+					onConfirm={() => {
+						const name = activeAction.name;
+						setActiveAction(null);
+						setSyntheticFolders((prev) => prev.filter((f) => f !== name));
+						void deleteFolder(name);
+					}}
+				/>
 			)}
 		</div>
 	);

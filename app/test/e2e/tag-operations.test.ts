@@ -32,7 +32,7 @@ describe("Tag reordering", () => {
 		const result = await withApi(
 			async (api, id1, id2, id3) => {
 				await api.reorderTags([id3, id1, id2]);
-				const tags = api.getMapState().tags as any;
+				const tags = api.getTags() as any;
 				return {
 					order1: tags[String(id1)]?.order,
 					order2: tags[String(id2)]?.order,
@@ -55,7 +55,7 @@ describe("Tag reordering", () => {
 
 		const result = await withApi(
 			async (api, id1, id2, id3) => {
-				const tags = api.getMapState().tags as any;
+				const tags = api.getTags() as any;
 				return {
 					order1: tags[String(id1)]?.order,
 					order2: tags[String(id2)]?.order,
@@ -91,12 +91,12 @@ describe("Tag visibility affecting selections", () => {
 		}));
 	});
 	beforeEach(async () => {
-		await withApi(async (api) => api.resetSelections());
+		await withApi(async (api) => api.applySelectionUpdate(() => []));
 	});
 
 	it("tag selection works for visible tag", async () => {
 		await withApi(
-			async (api, tagId) => api.addSelections([{ type: "Tag", tagId: tagId }]),
+			async (api, tagId) => api.applySelectionUpdate(api.addSelection(api.tagSelector(tagId))),
 			visTagId,
 		);
 		const ids = await refreshSelections();
@@ -105,7 +105,7 @@ describe("Tag visibility affecting selections", () => {
 
 	it("deleting tag clears its selection", async () => {
 		await withApi(
-			async (api, tagId) => api.addSelections([{ type: "Tag", tagId: tagId }]),
+			async (api, tagId) => api.applySelectionUpdate(api.addSelection(api.tagSelector(tagId))),
 			visTagId,
 		);
 		const beforeIds = await refreshSelections();
@@ -138,9 +138,9 @@ describe("Bulk tag add", () => {
 	});
 	it("bulkAddTag adds tag to all selected locations", async () => {
 		const result = await withApi(async (api, tagId) => {
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			await api.addTagToLocations(tagId, [...api.getMapState().selectedLocationIds]);
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tagId)] ?? 0;
 		}, bulkTagId);
 		expect(result).toBe(20);
@@ -149,7 +149,7 @@ describe("Bulk tag add", () => {
 	it("bulkAddTag is idempotent (no duplicates in tags array)", async () => {
 		const result = await withApi(
 			async (api, tagId, firstLocId) => {
-				await api.addSelections([{ type: "Everything" }]);
+				await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 				await api.addTagToLocations(tagId, [...api.getMapState().selectedLocationIds]);
 				const loc = await api.fetchLocation(firstLocId);
 				return loc!.tags.filter((t: number) => t === tagId).length;
@@ -162,7 +162,7 @@ describe("Bulk tag add", () => {
 
 	it("tag count updates correctly after bulk add", async () => {
 		const count = await withApi(async (api, tagId) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tagId)] ?? 0;
 		}, bulkTagId);
 		expect(count).toBe(20);
@@ -172,12 +172,12 @@ describe("Bulk tag add", () => {
 		// First add a new bulk tag so we can undo it cleanly
 		const newTag = await createTag("UndoBulk");
 		await withApi(async (api, tagId) => {
-			await api.addSelections([{ type: "Everything" }]);
+			await api.applySelectionUpdate(api.addSelection({ type: "Everything" }));
 			await api.addTagToLocations(tagId, [...api.getMapState().selectedLocationIds]);
 		}, newTag.id);
 
 		const beforeCount = await withApi(async (api, tagId) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tagId)] ?? 0;
 		}, newTag.id);
 		expect(beforeCount).toBe(20);
@@ -185,7 +185,7 @@ describe("Bulk tag add", () => {
 		await withApi(async (api) => api.undo());
 
 		const afterCount = await withApi(async (api, tagId) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tagId)] ?? 0;
 		}, newTag.id);
 		expect(afterCount).toBe(0);
@@ -225,10 +225,58 @@ describe("Tag deletion cascade", () => {
 
 	it("tag count is zero after deletion", async () => {
 		const count = await withApi(async (api, tagId) => {
-			const counts = api.getMapState().tagCounts;
+			const counts = api.getTagCounts();
 			return (counts as any)[String(tagId)] ?? 0;
 		}, delTagId);
 		expect(count).toBe(0);
+	});
+});
+
+describe("Rename tags within a selection", () => {
+	useMap("E2E Tag Rename In Selection");
+	let fromId: number;
+	let intoId: number;
+	let locIds: number[];
+
+	before(async () => {
+		fromId = (await createTag("From")).id;
+		intoId = (await createTag("Into")).id;
+		locIds = await seedLocs(10, (i) => ({ lat: i, lng: i, tags: i < 8 ? [fromId] : [intoId] }));
+	});
+
+	const counts = () =>
+		withApi(
+			async (api, a, b) => {
+				const c = api.getTagCounts() as any;
+				return { from: c[String(a)] ?? 0, into: c[String(b)] ?? 0 };
+			},
+			fromId,
+			intoId,
+		);
+
+	it("splits a tag, moving only the selected locations to a new name", async () => {
+		const created = await withApi(
+			async (api, a, ids) => {
+				await api.renameTagsIn([a], "Split", { type: "Locations", locations: ids, name: null });
+				const tag = Object.values(api.getTags()).find((t: any) => t.name === "Split") as any;
+				return (api.getTagCounts() as any)[String(tag.id)] ?? 0;
+			},
+			fromId,
+			locIds.slice(0, 3),
+		);
+		expect(created).toBe(3);
+		expect(await counts()).toEqual({ from: 5, into: 2 });
+	});
+
+	it("merges the selected locations into a tag that already exists", async () => {
+		await withApi(
+			async (api, a, ids) => {
+				await api.renameTagsIn([a], "Into", { type: "Locations", locations: ids, name: null });
+			},
+			fromId,
+			locIds.slice(3, 5),
+		);
+		expect(await counts()).toEqual({ from: 3, into: 4 });
 	});
 });
 
@@ -250,7 +298,7 @@ describe("Tag color update", () => {
 		}, colorTagId);
 
 		const color = await withApi(async (api, tagId) => {
-			return (api.getMapState().tags as any)[String(tagId)]?.color;
+			return (api.getTags() as any)[String(tagId)]?.color;
 		}, colorTagId);
 		expect(color).toBe("#ff0000");
 	});
@@ -265,7 +313,7 @@ describe("Tag color update", () => {
 		await openMap(map.id);
 
 		const color = await withApi(async (api, tagId) => {
-			return (api.getMapState().tags as any)[String(tagId)]?.color;
+			return (api.getTags() as any)[String(tagId)]?.color;
 		}, colorTagId);
 		expect(color).toBe("#00ff00");
 	});

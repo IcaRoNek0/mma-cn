@@ -1,107 +1,70 @@
-import { hasLoadAsPanoId } from "@/types";
-import type { Location } from "@/bindings.gen";
-import { ValidationState } from "@/store/selections";
-import { fetchSvMetadata } from "./svMeta";
-import { isOfficialPano, newestOfficialPano } from "./panoId";
-import { getPanoAtCoords, isUnofficial } from "./lookup";
-import { runConcurrent } from "@/lib/util/concurrent";
+import type { Selector } from "@/bindings.gen";
+import { ValidationFlag } from "@/bindings.consts";
+import type { ProcedureSpec } from "@/lib/data/fieldDefs";
+import {
+	procedureEntry,
+	runProcedure,
+	type BatchOutcome,
+	type BulkOpts,
+} from "@/lib/data/procedures";
+import {
+	STANDARD_VALIDATION_CATEGORIES,
+	VALIDATION_CATEGORIES,
+	type ValidationAnswer,
+} from "@/lib/sv/validationCategories";
+import { SV_SEARCH_RADIUS } from "@/lib/sv/constants";
+import { log } from "@/lib/util/log";
+import { msg } from "@/lib/i18n";
 
-const GOOD_CAM_TYPES = new Set(["gen4", "gen2"]);
-
-export async function validateOne(loc: Location, signal?: AbortSignal): Promise<ValidationState> {
-	signal?.throwIfAborted();
-
-	const pinned = hasLoadAsPanoId(loc);
-	let data: google.maps.StreetViewResolvedPanoramaData | null = null;
-	let coordData: google.maps.StreetViewResolvedPanoramaData | null = null;
-	let state = ValidationState.Ok;
-
-	// Fetch by pano ID if stored
-	if (loc.panoId != null) {
-		[data] = await fetchSvMetadata([loc.panoId]).catch(() => [null]);
-	}
-
-	if (pinned) {
-		// LoadAsPanoId: if pano lookup failed, mark broke, fall back to coord
-		if (data == null) {
-			if (loc.panoId != null) state = ValidationState.PanoIdBroke;
-			const coordPano = await getPanoAtCoords(loc.lat, loc.lng);
-			if (coordPano) [data] = await fetchSvMetadata([coordPano]).catch(() => [null]);
-		}
-	} else {
-		// No LoadAsPanoId: do coord lookup
-		const coordPano = await getPanoAtCoords(loc.lat, loc.lng);
-		if (coordPano) [coordData] = await fetchSvMetadata([coordPano]).catch(() => [null]);
-	}
-
-	data ??= coordData;
-
-	if (data == null) return ValidationState.NotFound;
-	if (isUnofficial(data)) return ValidationState.Unofficial;
-
-	// Badcam check (only when not pinned)
-	if (!pinned && data.extra?.cameraType === "badcam" && data.time?.length) {
-		const timePanoIds = data.time.map((t) => t.pano);
-		const timeResults = await fetchSvMetadata(timePanoIds).catch(() => []);
-		if (timeResults.some((t) => t && GOOD_CAM_TYPES.has(t.extra?.cameraType ?? ""))) {
-			return ValidationState.GoodcamAvailable;
-		}
-	}
-
-	// Coord update (only when not pinned, since coordData is only set then)
-	if (coordData != null && coordData.location.pano !== data.location.pano) {
-		return ValidationState.UpdateApplied;
-	}
-
-	// Timeline check: the stored pano is a known official capture, but not the newest one
-	const time = data.time ?? [];
-	const storedIsOfficial = time.some((t) => t.pano === loc.panoId && isOfficialPano(t.pano));
-	if (storedIsOfficial && newestOfficialPano(time)?.pano !== loc.panoId) {
-		return pinned ? ValidationState.UpdateAvailable : ValidationState.UpdateApplied;
-	}
-
-	return state;
+/** Configuration for Street View validation: the radius of the coordinate lookup. */
+export interface ValidateConfig {
+	radius: number;
 }
 
-export interface ValidationProgress {
-	progress: number;
-	results: Map<ValidationState, Location[]>;
+/** Street View coverage validation. Checks each location's stored pano, coordinate
+ *  lookup, unofficial status, camera quality, and timeline. Answers with a
+ *  `ValidationAnswer` per location without writing anything. */
+const validateSpec: ProcedureSpec<ValidationAnswer, ValidateConfig> = {
+	entry: procedureEntry("validate"),
+	batch: { mode: "chunk", size: 200 },
+	sink: "collect",
+	config: { radius: SV_SEARCH_RADIUS },
+};
+
+const KNOWN_BITS = Object.values(ValidationFlag).reduce<number>((all, f) => all | f, 0);
+
+/** What a validation run answered: the ids in each asked-for category that any location
+ *  fell into, keyed by category in table order, over the outcome every run reports. */
+export interface ValidationOutcome extends BatchOutcome {
+	categories: Map<string, number[]>;
 }
 
-/** Check that each location's Street View coverage still exists; returns locations grouped
- *  by validation state. */
+/** Check that each location's Street View coverage still exists, grouping the locations
+ *  into `categories` (keys of `VALIDATION_CATEGORIES`; the standard ones when omitted). */
 export async function validateLocations(
-	locations: Location[],
-	opts: {
-		signal?: AbortSignal;
-		onProgress?: (p: ValidationProgress) => void;
-	} = {},
-): Promise<Map<ValidationState, Location[]>> {
-	const { signal, onProgress } = opts;
-	const results = new Map<ValidationState, Location[]>();
-	let completed = 0;
-	let lastUpdate = 0;
+	selector: Selector,
+	opts: BulkOpts & { config?: Partial<ValidateConfig>; categories?: readonly string[] } = {},
+): Promise<ValidationOutcome> {
+	const { categories: asked = STANDARD_VALIDATION_CATEGORIES, ...runOpts } = opts;
+	const run = await runProcedure(validateSpec, selector, {
+		id: "validate",
+		label: msg("Validating"),
+		...runOpts,
+	});
 
-	await runConcurrent(
-		locations,
-		async (loc) => {
-			try {
-				const state = await validateOne(loc, signal);
-				const list = results.get(state);
-				if (list) list.push(loc);
-				else results.set(state, [loc]);
-			} finally {
-				completed++;
-				const now = Date.now();
-				if (now - lastUpdate > 16) {
-					lastUpdate = now;
-					onProgress?.({ progress: completed / locations.length, results });
-				}
-			}
-		},
-		{ concurrency: 100, signal },
+	const wanted = VALIDATION_CATEGORIES.filter((c) => asked.includes(c.key));
+	const ids = wanted.map((): number[] => []);
+	for (const { id, value: answer } of run.collected ?? []) {
+		if ((answer.flags & ~KNOWN_BITS) !== 0) {
+			log.warn(`[validate] location ${id}: unknown validation flags ${String(answer.flags)}`);
+			continue;
+		}
+		wanted.forEach((c, i) => {
+			if (c.test(answer)) ids[i].push(id);
+		});
+	}
+	const categories = new Map(
+		wanted.flatMap((c, i) => (ids[i].length > 0 ? [[c.key, ids[i]] as const] : [])),
 	);
-
-	onProgress?.({ progress: 1, results });
-	return results;
+	return { succeeded: run.succeeded, failed: run.failed, categories };
 }

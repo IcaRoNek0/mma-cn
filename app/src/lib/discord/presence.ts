@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { appWindow } from "@/lib/window";
 import { cmd } from "@/lib/commands";
 import { getMapState } from "@/store/useMapStore";
 import { subscribe, MAP_LIFECYCLE_EVENTS, LOCATION_DATA_EVENTS } from "@/lib/events";
@@ -36,7 +36,7 @@ function buildActivity(level: Exclude<DiscordPresenceMode, "off">): PresenceActi
 	const count = getMapState().locationCount;
 	return {
 		...base,
-		details: `Editing ${map.meta.name}`,
+		details: map.name ? `Editing ${map.name}` : "Editing a map",
 		state: t({ one: "{n} location", other: "{n} locations" }, { n: count }),
 		start,
 	};
@@ -49,11 +49,10 @@ export function useDiscordPresence(): void {
 
 	useEffect(() => {
 		if (isWeb() || level === "off") {
-			cmd.discordPresenceClear();
+			void cmd.discordPresenceClear();
 			return;
 		}
 
-		const win = getCurrentWindow();
 		let timer: ReturnType<typeof setTimeout> | null = null;
 		// Only the focused window drives presence, so multiple map windows never fight
 		// over the single process-global connection -- the map in front always wins.
@@ -71,7 +70,7 @@ export function useDiscordPresence(): void {
 		};
 
 		if (getMapState().map && sessionStart === null) sessionStart = Math.floor(Date.now() / 1000);
-		void win.isFocused().then((f) => {
+		void appWindow.isFocused().then((f) => {
 			focused = f;
 			push();
 		});
@@ -88,7 +87,7 @@ export function useDiscordPresence(): void {
 			.filter((e) => e !== "map:open" && e !== "map:close")
 			.map((e) => subscribe(e, schedule));
 		// On focus gain, this window takes over presence; on blur, hold last state.
-		const unlistenFocus = win.onFocusChanged(({ payload }) => {
+		const unlistenFocus = appWindow.onFocusChanged(({ payload }) => {
 			focused = payload;
 			if (payload) push();
 		});

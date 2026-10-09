@@ -1,11 +1,22 @@
 import { waitForReady, closeMap, deleteMap, withApi } from "./helpers";
+import type { Tag } from "@/types";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
-import type { ImportPreviewEntry, MapMeta, Tag } from "@/bindings.gen";
-
+import type { ImportPreviewEntry, MapMeta } from "@/bindings.gen";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const FIXTURE_ZIP = resolve(__dirname, "../fixtures/mma-export-sample.zip");
+
+const mapIds = (): Promise<string[]> =>
+	withApi(async (api) => (await api.cmd.storeListMaps()).map((m: MapMeta) => m.id));
+
+/** Delete only what this block imported. The suite shares one app, so a cleanup that
+ *  walks the whole map list takes other specs' maps with it. */
+async function dropImported(before: string[]): Promise<void> {
+	for (const id of await mapIds()) {
+		if (!before.includes(id)) await deleteMap(id);
+	}
+}
 
 // ============================================================================
 // Rust bulk import — preview
@@ -61,8 +72,11 @@ describe("Rust bulk import — preview", () => {
 // ============================================================================
 
 describe("Rust bulk import — confirm and verify", () => {
+	let existing: string[] = [];
+
 	before(async () => {
 		await waitForReady();
+		existing = await mapIds();
 	});
 
 	it("imports selected maps into DB", async () => {
@@ -108,7 +122,7 @@ describe("Rust bulk import — confirm and verify", () => {
 			const locs = await api.fetchAllLocations();
 			return {
 				locationCount: locCount,
-				tagCount: Object.keys(api.getMapState().tags).length,
+				tagCount: Object.keys(api.getTags()).length,
 				firstLat: locs[0]?.lat,
 			};
 		});
@@ -121,7 +135,7 @@ describe("Rust bulk import — confirm and verify", () => {
 
 	it("imported tags have correct colors", async () => {
 		const result = await withApi(async (api) => {
-			const tags = Object.values(api.getMapState().tags);
+			const tags = Object.values(api.getTags());
 			return tags.map((t: Tag) => ({ name: t.name, color: t.color }));
 		});
 
@@ -135,7 +149,7 @@ describe("Rust bulk import — confirm and verify", () => {
 
 	it("location tag references resolve to valid tags", async () => {
 		const result = await withApi(async (api) => {
-			const tagIds = new Set(Object.keys(api.getMapState().tags));
+			const tagIds = new Set(Object.keys(api.getTags()));
 			const locs = await api.fetchAllLocations();
 			const tagged = locs.filter((l) => l.tags.length > 0);
 			const orphaned = tagged.filter((l) => l.tags.some((id) => !tagIds.has(String(id))));
@@ -172,12 +186,7 @@ describe("Rust bulk import — confirm and verify", () => {
 
 	after(async () => {
 		await closeMap();
-		const maps = await withApi(async (api) => {
-			return await api.cmd.storeListMaps();
-		});
-		for (const m of maps) {
-			await deleteMap(m.id);
-		}
+		await dropImported(existing);
 	});
 });
 
@@ -186,210 +195,27 @@ describe("Rust bulk import — confirm and verify", () => {
 // ============================================================================
 
 describe("Rust bulk import — selective import", () => {
+	let existing: string[] = [];
+
 	before(async () => {
 		await waitForReady();
+		existing = await mapIds();
 	});
 
 	it("imports only selected indices", async () => {
-		const result = await withApi(async (api, p) => {
+		const importedCount = await withApi(async (api, p) => {
 			await api.cmd.bulkImportPreview(p);
 			const imported = await api.cmd.bulkImportConfirm(p, [0, 2]);
 			await api.invalidateMapList();
-			const maps = await api.cmd.storeListMaps();
-			return { importedCount: imported.length, mapCount: maps.length };
+			return imported.length;
 		}, FIXTURE_ZIP);
 
-		expect(result.importedCount).toBe(2);
-		expect(result.mapCount).toBe(2);
+		expect(importedCount).toBe(2);
+		const added = (await mapIds()).filter((id) => !existing.includes(id));
+		expect(added.length).toBe(2);
 	});
 
 	after(async () => {
-		const maps = await withApi(async (api) => {
-			return await api.cmd.storeListMaps();
-		});
-		for (const m of maps) await deleteMap(m.id);
-	});
-});
-
-// ============================================================================
-// Benchmarks — selection resolution at scale
-// ============================================================================
-
-describe("Benchmarks — selection at scale", () => {
-	let mapId: string;
-	let benchTagId: number;
-
-	before(async () => {
-		await waitForReady();
-		mapId = await withApi(async (api) => {
-			const map = await api.cmd.storeCreateMap("Bench Selections 100K", null);
-			await api._test.openMap(map.meta.id);
-			const resolved = await api.createTags(["BenchTag"]);
-			const tagId = resolved[0].id;
-			const locs = [];
-			for (let i = 0; i < 100000; i++) {
-				locs.push({
-					lat: Math.random() * 170 - 85,
-					lng: Math.random() * 360 - 180,
-					heading: i % 10 === 0 ? 0 : Math.random() * 360,
-					pitch: 0,
-					zoom: 1,
-					panoId: null,
-					id: 0,
-					flags: i % 5 === 0 ? 1 : 0,
-					tags: i % 3 === 0 ? [tagId] : [],
-					createdAt: Math.floor(Date.now() / 1000),
-					extra: null,
-					modifiedAt: null,
-				});
-			}
-			await api.addLocations(locs);
-			return JSON.stringify({ mapId: map.meta.id, tagId });
-		});
-		if (mapId.startsWith("ERROR")) throw new Error(mapId);
-		const parsed = JSON.parse(mapId);
-		mapId = parsed.mapId;
-		benchTagId = parsed.tagId;
-	});
-
-	after(async () => {
-		await closeMap();
-		await deleteMap(mapId);
-	});
-
-	it("selectEverything on 100K", async () => {
-		const ms = await withApi(async (api) => {
-			const t0 = performance.now();
-			await api.addSelections([{ type: "Everything" }]);
-			const elapsed = performance.now() - t0;
-			api.resetSelections();
-			return elapsed;
-		});
-		console.log(`  [BENCH] selectEverything(100K): ${Math.round(ms)}ms`);
-		expect(ms).toBeLessThan(500);
-	});
-
-	it("selectTag on 100K (33% match)", async () => {
-		const ms = await withApi(async (api, tagId) => {
-			const t0 = performance.now();
-			await api.addSelections([{ type: "Tag", tagId: tagId }]);
-			const elapsed = performance.now() - t0;
-			const count = api.getMapState().selectedLocationIds.size;
-			api.resetSelections();
-			return { ms: elapsed, count };
-		}, benchTagId);
-		console.log(`  [BENCH] selectTag(100K, 33%): ${Math.round(ms.ms)}ms (${ms.count} matched)`);
-		expect(ms.ms).toBeLessThan(500);
-	});
-
-	it("selectUnpanned on 100K (10% match)", async () => {
-		const ms = await withApi(async (api) => {
-			const t0 = performance.now();
-			await api.addSelections([{ type: "Unpanned" }]);
-			const elapsed = performance.now() - t0;
-			const count = api.getMapState().selectedLocationIds.size;
-			api.resetSelections();
-			return { ms: elapsed, count };
-		});
-		console.log(
-			`  [BENCH] selectUnpanned(100K, 10%): ${Math.round(ms.ms)}ms (${ms.count} matched)`,
-		);
-		expect(ms.ms).toBeLessThan(500);
-	});
-
-	it("selectPanoIds on 100K (20% match)", async () => {
-		const ms = await withApi(async (api) => {
-			const t0 = performance.now();
-			await api.addSelections([{ type: "PanoIds" }]);
-			const elapsed = performance.now() - t0;
-			const count = api.getMapState().selectedLocationIds.size;
-			api.resetSelections();
-			return { ms: elapsed, count };
-		});
-		console.log(`  [BENCH] selectPanoIds(100K, 20%): ${Math.round(ms.ms)}ms (${ms.count} matched)`);
-		expect(ms.ms).toBeLessThan(500);
-	});
-
-	it("selectInverse on 100K", async () => {
-		const ms = await withApi(async (api, tagId) => {
-			await api.addSelections([{ type: "Tag", tagId: tagId }]);
-			const t0 = performance.now();
-			await api.selectInverse();
-			const elapsed = performance.now() - t0;
-			api.resetSelections();
-			return elapsed;
-		}, benchTagId);
-		console.log(`  [BENCH] selectInverse(100K): ${Math.round(ms)}ms`);
-		expect(ms).toBeLessThan(1000);
-	});
-
-	it("selectDuplicates on 100K (dist=1)", async () => {
-		const ms = await withApi(async (api) => {
-			const t0 = performance.now();
-			await api.addSelections([{ type: "Duplicates", distance: 1 }]);
-			const elapsed = performance.now() - t0;
-			api.resetSelections();
-			return elapsed;
-		});
-		console.log(`  [BENCH] selectDuplicates(100K, dist=1): ${Math.round(ms)}ms`);
-		expect(ms).toBeLessThan(5000);
-	});
-});
-
-// ============================================================================
-// Benchmarks — undo at scale
-// ============================================================================
-
-describe("Benchmarks — undo at scale", () => {
-	let mapId: string;
-
-	before(async () => {
-		await waitForReady();
-		mapId = await withApi(async (api) => {
-			const map = await api.cmd.storeCreateMap("Bench Undo 100K", null);
-			await api._test.openMap(map.meta.id);
-			const locs = [];
-			for (let i = 0; i < 100000; i++) {
-				locs.push({
-					lat: Math.random() * 170 - 85,
-					lng: Math.random() * 360 - 180,
-					heading: 0,
-					pitch: 0,
-					zoom: 1,
-					panoId: null,
-					id: 0,
-					flags: 0,
-					tags: [],
-					createdAt: Math.floor(Date.now() / 1000),
-					extra: null,
-					modifiedAt: null,
-				});
-			}
-			await api.addLocations(locs);
-			return map.meta.id;
-		});
-	});
-
-	after(async () => {
-		await closeMap();
-		await deleteMap(mapId);
-	});
-
-	it("undo 100K location add", async () => {
-		const result = await withApi(async (api) => {
-			const before = (await api.cmd.storeGetSummary()).locationCount;
-			const t0 = performance.now();
-			await api.undo();
-			const elapsed = performance.now() - t0;
-			const after = (await api.cmd.storeGetSummary()).locationCount;
-			await api.redo();
-			return { ms: elapsed, before, after };
-		});
-		console.log(
-			`  [BENCH] undo(100K add): ${Math.round(result.ms)}ms (${result.before} -> ${result.after})`,
-		);
-		expect(result.after).toBe(0);
-		//TODO not that slow
-		expect(result.ms).toBeLessThan(20000);
+		await dropImported(existing);
 	});
 });

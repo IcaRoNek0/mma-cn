@@ -1,54 +1,56 @@
-import { LocationFlag, isPinnedToPano } from "@/types";
-import type { Location } from "@/bindings.gen";
-import { registerSvResolver, runResolvers, type SvResolver } from "@/lib/sv/svRunner";
-import { newestOfficialPano } from "@/lib/sv/panoId";
-import { msg } from "@/lib/i18n";
+import type { Selector } from "@/bindings.gen";
+import { PanoType, type CapturePick } from "@/bindings.consts";
+import { all, has, panoIdSelector } from "@/store/selections";
+import { applyFieldOp } from "@/store/useMapStore";
+import { runProviders, type BatchOutcome, type BulkOpts } from "@/lib/data/procedures";
+import { panoResolveProvider } from "@/lib/sv/providers";
 
-export interface PinPanoConfig {
-	useLatest?: boolean;
+/** How a bulk pin settles each location's pano before pinning it. */
+export interface PinOpts extends BulkOpts {
+	/** Resolve pano ids first; off, only locations that already carry one are pinned. */
+	resolve?: boolean;
+	/** Move each resolved pano to this capture of its timeline. */
+	capture?: CapturePick | null;
+	/** Re-resolve already pinned locations too. */
+	force?: boolean;
 }
 
-/** Pin to pano ID: resolve the pano from coords, then set the LoadAsPanoId flag.
- *  With `useLatest`, fetches the timeline and picks the last official pano. */
-export const pinPanoResolver: SvResolver = {
-	id: "pinPano",
-	label: msg("Pin to pano ID"),
-	pending: (loc, force) => force || !isPinnedToPano(loc),
-	needsPanoResolve: () => true,
-	needsMetadata: (config) => !!(config as PinPanoConfig)?.useLatest,
-	resolve: (loc, data, ctx) => {
-		const config = ctx.config as PinPanoConfig | undefined;
-		if (config?.useLatest && data) {
-			const latest = newestOfficialPano(data.time ?? []);
-			if (latest) {
-				return {
-					panoId: latest.pano,
-					flags: loc.flags | LocationFlag.LoadAsPanoId,
-				};
-			}
-			return null;
-		}
-		if (ctx.resolvedPanoId) {
-			return { flags: loc.flags | LocationFlag.LoadAsPanoId };
-		}
-		return null;
-	},
-};
+/** What a bulk pin did: the locations newly pinned, the ones whose pano could not be
+ *  resolved, and how many pano ids the resolve wrote. */
+export interface PinOutcome extends BatchOutcome {
+	resolved: number;
+}
 
-registerSvResolver(pinPanoResolver);
-
-/** Pin each location to a resolved panorama (sets `panoId`), so it always loads the same pano. */
-export async function bulkPinToPano(
-	locations: Location[],
-	opts: {
-		signal?: AbortSignal;
-		force?: boolean;
-		useLatest?: boolean;
-		onProgress?: (done: number, total: number) => void;
-	} = {},
-): Promise<number> {
-	const { useLatest, ...runOpts } = opts;
-	const config: PinPanoConfig = { useLatest };
-	const result = await runResolvers(locations, [{ id: "pinPano", config }], runOpts);
-	return result.pinPano?.success.length ?? 0;
+/** Pin every location in the selector to its pano id, resolving pano ids first when asked. */
+export async function bulkPinToPano(selector: Selector, opts: PinOpts = {}): Promise<PinOutcome> {
+	const { resolve = true, capture = null, force = false, ...runOpts } = opts;
+	let resolved = 0;
+	let failed: number[] = [];
+	if (resolve) {
+		const target = force ? selector : all(selector, panoIdSelector(false));
+		// A pin searches official coverage only: the closest pano can be a photosphere.
+		const result = await runProviders(
+			[
+				{
+					provider: {
+						...panoResolveProvider,
+						procedure: { ...panoResolveProvider.procedure, select: target },
+					},
+					config: { sources: [PanoType.Official], ...(capture ? { capture } : {}) },
+					force: force || capture !== null,
+				},
+			],
+			selector,
+			runOpts,
+		);
+		resolved = result.panoResolve?.succeeded ?? 0;
+		failed = result.panoResolve?.failed ?? [];
+	}
+	if (runOpts.signal?.aborted) return { succeeded: 0, failed, resolved };
+	const pinned = await applyFieldOp(
+		all(selector, has("panoId")),
+		{ kind: "set", key: "loadAsPanoId", value: true },
+		true,
+	);
+	return { succeeded: pinned.changed, failed: [...failed, ...pinned.failed], resolved };
 }

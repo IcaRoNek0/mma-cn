@@ -1,0 +1,304 @@
+//! User-installed plugins under `{app_data}/plugins/{id}/`: manifest parsing,
+//! install from the marketplace repo, uninstall, and serving plugin files to the
+//! webview over `mma-plugin://`.
+
+use crate::net::proxy::{cors, proxy_client};
+use crate::plugins::sidecar;
+use crate::store::storage;
+use crate::types::{AppError, AppResult};
+use reqwest::blocking;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tauri::http::Response;
+use tokio::task;
+
+/// Marketplace files for one git ref. The registry pins older builds to the commit they
+/// shipped at, so an app under a plugin's `minAppVersion` floor installs from there
+/// instead of `master`.
+fn repo_base(git_ref: &str) -> String {
+    format!("https://raw.githubusercontent.com/ccmdi/mma/{git_ref}/plugins")
+}
+
+/// Refs come from the registry, which only ever emits full commit hashes. Anything else
+/// could reshape the URL.
+fn validate_git_ref(git_ref: &str) -> AppResult<()> {
+    let ok = git_ref.len() == 40 && git_ref.bytes().all(|b| b.is_ascii_hexdigit());
+    ok.then_some(())
+        .ok_or_else(|| AppError(format!("Invalid plugin ref: {git_ref}")))
+}
+
+/// A plugin's declared sidecar binary (downloaded from GitHub Releases on install).
+#[derive(serde::Serialize, Clone, specta::Type)]
+pub struct PluginSidecar {
+    name: String,
+    version: String,
+    /// Expected SHA-256 hex digest of the platform-specific zip archive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
+
+/// Manifest form of a sidecar: the digest is keyed per platform (`sha256-{platform_tag}`).
+#[derive(serde::Deserialize)]
+struct RawSidecar {
+    name: String,
+    version: String,
+    #[serde(flatten)]
+    digests: HashMap<String, serde_json::Value>,
+}
+
+impl<'de> serde::Deserialize<'de> for PluginSidecar {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = RawSidecar::deserialize(d)?;
+        let sha256 = sidecar::platform_tag().ok().and_then(|p| {
+            raw.digests
+                .get(&format!("sha256-{p}"))?
+                .as_str()
+                .map(str::to_string)
+        });
+        Ok(PluginSidecar {
+            name: raw.name,
+            version: raw.version,
+            sha256,
+        })
+    }
+}
+
+/// Metadata for a user-installed plugin, read from `plugins/{id}/manifest.json`.
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PluginManifest {
+    id: String,
+    name: String,
+    description: String,
+    icon: String,
+    main: String,
+    /// Enrichment procedure module this plugin ships, downloaded alongside `main`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    procedure: Option<String>,
+    version: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    experimental: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    coming_soon: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_app_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidecar: Option<PluginSidecar>,
+    /// Older builds, for apps below `minAppVersion`. Only present in the marketplace registry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    builds: Vec<PluginBuild>,
+}
+
+/// A published build of a plugin.
+// Carries only what picking a build and checking its install needs; the rest comes from the
+// manifest at `git_ref`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginBuild {
+    version: String,
+    #[serde(rename = "ref")]
+    git_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_app_version: Option<String>,
+    /// The sidecar this build ships, so a half-installed one can be repaired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sidecar: Option<PluginSidecar>,
+}
+
+impl Default for PluginManifest {
+    fn default() -> Self {
+        PluginManifest {
+            id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            icon: String::new(),
+            main: "index.js".to_string(),
+            procedure: None,
+            version: String::new(),
+            experimental: false,
+            coming_soon: false,
+            min_app_version: None,
+            sidecar: None,
+            builds: Vec::new(),
+        }
+    }
+}
+
+impl PluginManifest {
+    /// Folder name stands in for a missing id/name.
+    fn with_fallback(mut self, fallback: &str) -> Self {
+        if self.id.is_empty() {
+            self.id = fallback.to_string();
+        }
+        if self.name.is_empty() {
+            self.name = fallback.to_string();
+        }
+        self
+    }
+}
+
+/// Plugin ids, sidecar names, and sidecar commands all end up in paths, argv, or URL
+/// paths, so they share one conservative charset.
+fn validate_ident(kind: &str, value: &str) -> AppResult<()> {
+    let ok = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    ok.then_some(())
+        .ok_or_else(|| AppError(format!("Invalid {kind}: {value}")))
+}
+
+pub(crate) fn validate_plugin_id(id: &str) -> AppResult<()> {
+    validate_ident("plugin id", id)
+}
+
+pub(crate) fn validate_sidecar_name(name: &str) -> AppResult<()> {
+    validate_ident("sidecar name", name)
+}
+
+pub(crate) fn validate_sidecar_command(command: &str) -> AppResult<()> {
+    validate_ident("sidecar command", command)
+}
+
+fn plugins_dir() -> AppResult<PathBuf> {
+    Ok(storage::app_data_dir()?.join("plugins"))
+}
+
+fn read_manifest(dir: &Path) -> Option<PluginManifest> {
+    let path = dir.join("manifest.json");
+    let content = fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<PluginManifest>(&content) {
+        Ok(m) => Some(m.with_fallback(dir.file_name()?.to_str()?)),
+        Err(e) => {
+            log::warn!("Invalid manifest {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// True for the first caller per app run, which runs the background plugin update check.
+// Every webview boots the plugin loader, so without this a restored editor window plus the map
+// list run two full passes: double registry fetches, double downloads, and interleaved install
+// progress for the same plugin.
+#[tauri::command]
+#[specta::specta]
+pub fn claim_plugin_update_pass() -> bool {
+    static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    !CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Manifests of every installed plugin.
+#[tauri::command]
+#[specta::specta]
+pub fn list_user_plugins() -> Vec<PluginManifest> {
+    let Ok(entries) = plugins_dir().and_then(|d| Ok(fs::read_dir(d)?)) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter_map(|p| read_manifest(&p))
+        .collect()
+}
+
+fn fetch(url: &str, what: &str) -> AppResult<bytes::Bytes> {
+    Ok(proxy_client()
+        .get(url)
+        .send()
+        .and_then(blocking::Response::error_for_status)
+        .map_err(|e| format!("Failed to fetch {what}: {e}"))?
+        .bytes()?)
+}
+
+/// The files `install` downloads beside `manifest.json`. Each must be a plain filename:
+/// a separator or `..` could place the download outside the plugin's directory.
+fn install_files(manifest: &PluginManifest) -> AppResult<Vec<&str>> {
+    [
+        ("main", Some(manifest.main.as_str())),
+        ("procedure", manifest.procedure.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(field, file)| Some((field, file?)))
+    .map(|(field, file)| {
+        let ok =
+            !file.is_empty() && !file.contains("..") && !file.contains('/') && !file.contains('\\');
+        ok.then_some(file)
+            .ok_or_else(|| AppError(format!("Invalid {field} field in manifest: {file}")))
+    })
+    .collect()
+}
+
+/// Install a plugin from the marketplace: its manifest, main script, and procedure module.
+/// `gitRef` pins an older build; `null` installs the latest.
+#[tauri::command]
+#[specta::specta]
+pub async fn install_plugin(id: String, git_ref: Option<String>) -> AppResult<PluginManifest> {
+    validate_plugin_id(&id)?;
+    if let Some(r) = &git_ref {
+        validate_git_ref(r)?;
+    }
+    task::spawn_blocking(move || install(id, git_ref.as_deref())).await?
+}
+
+fn install(id: String, git_ref: Option<&str>) -> AppResult<PluginManifest> {
+    let base = repo_base(git_ref.unwrap_or("master"));
+    let dir = plugins_dir()?.join(&id);
+    fs::create_dir_all(&dir)?;
+
+    let manifest_bytes = fetch(&format!("{base}/{id}/manifest.json"), "manifest")?;
+    fs::write(dir.join("manifest.json"), &manifest_bytes)?;
+    let manifest: PluginManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| format!("Invalid manifest JSON: {e}"))?;
+
+    for file in install_files(&manifest)? {
+        fs::write(dir.join(file), fetch(&format!("{base}/{id}/{file}"), file)?)?;
+    }
+
+    let mut manifest = manifest.with_fallback(&id);
+    manifest.id = id;
+    Ok(manifest)
+}
+
+/// Delete a plugin's directory.
+#[tauri::command]
+#[specta::specta]
+pub async fn uninstall_plugin(id: String) -> AppResult<()> {
+    validate_plugin_id(&id)?;
+    let dir = plugins_dir()?.join(&id);
+    // A live sidecar holds the directory open on Windows, so delete under the
+    // plugin's process lock with everything stopped.
+    task::spawn_blocking(move || {
+        sidecar::with_plugin_stopped(&id, || {
+            if dir.exists() {
+                fs::remove_dir_all(&dir)?;
+            }
+            Ok(())
+        })
+    })
+    .await?
+}
+
+/// `mma-plugin://` handler: a file from inside the plugins dir, nothing outside it.
+pub(crate) fn serve_file(path: &str) -> Response<Vec<u8>> {
+    let status = |code: u16| Response::builder().status(code).body(vec![]).unwrap();
+    let Ok(root) = plugins_dir() else {
+        return status(403);
+    };
+    let Ok(canonical) = storage::resolve_within(&root, path.trim_start_matches('/')) else {
+        return status(403);
+    };
+    let Ok(data) = fs::read(&canonical) else {
+        return status(404);
+    };
+    let mime = match canonical.extension().and_then(|e| e.to_str()) {
+        Some("js" | "mjs") => "application/javascript",
+        _ => "application/octet-stream",
+    };
+    cors().header("Content-Type", mime).body(data).unwrap()
+}
+
+#[cfg(test)]
+#[path = "user.test.rs"]
+mod tests;

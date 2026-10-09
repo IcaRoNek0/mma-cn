@@ -1,0 +1,1067 @@
+use super::*;
+use serde_json::Value as Json;
+use std::fs;
+use std::time::Instant;
+
+/// One row, carrying every field the boundary promises a procedure.
+const ROWS: &str = r#"[{"id":7,"lat":1.5,"lng":2.5,"heading":90,"pitch":-1,"zoom":3,
+  "flags":2,"createdAt":1000,"modifiedAt":null,"panoId":"pano-a","tags":[4,9],
+  "extra":{"k":"v"}}]"#;
+
+fn rows() -> Vec<u8> {
+    ROWS.as_bytes().to_vec()
+}
+
+fn load(src: &str) -> AppResult<JsProcedure> {
+    JsProcedure::load_source(src, "fixture.js")
+}
+
+fn loaded(src: &str) -> JsProcedure {
+    load(src).expect("fixture loads")
+}
+
+/// The single patch a fixture answered with, parsed.
+fn only_patch(patches: &[PatchEntry]) -> Json {
+    assert_eq!(patches.len(), 1, "expected one patch, got {patches:?}");
+    serde_json::from_str(&patches[0].patch).expect("patch is JSON")
+}
+
+fn extra(patches: &[PatchEntry]) -> Json {
+    only_patch(patches)["extra"].clone()
+}
+
+#[derive(Default)]
+struct MockProcHost {
+    requests: Vec<HttpRequestSpec>,
+    /// Requests per `fetch` call, so a test can tell one batched call from many.
+    many: Vec<usize>,
+    /// Canned answer; without one the mock echoes the request URL back as the body.
+    response: Option<HttpResponse>,
+    /// URLs the mock refuses, so a test can watch a failed request come back.
+    refuse: Vec<String>,
+    progress: Vec<u32>,
+    failed: Vec<u32>,
+    abort: bool,
+    classified: Vec<(String, f64, f64)>,
+    classify_answer: Option<String>,
+    neighbor_calls: Vec<(f64, f64, f64, Vec<String>)>,
+    neighbor_answer: Option<String>,
+    sidecar_calls: Vec<(String, String, String)>,
+    sidecar_lines: Vec<String>,
+    /// Interleaving of `line` pulls and `progress` calls, to pin that a line handler's
+    /// progress reaches the host before the next line is pulled.
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    partials: Option<Arc<crate::procedure::engine::Partials>>,
+}
+
+impl ProcHost for MockProcHost {
+    fn fetch(&mut self, reqs: &[HttpRequestSpec]) -> Vec<AppResult<HttpResponse>> {
+        self.many.push(reqs.len());
+        reqs.iter()
+            .map(|req| {
+                self.requests.push(req.clone());
+                if self.refuse.contains(&req.url) {
+                    return Err(AppError(format!("mock refused {}", req.url)));
+                }
+                Ok(self.response.clone().unwrap_or(HttpResponse {
+                    status: 200,
+                    body: req.url.clone().into_bytes(),
+                }))
+            })
+            .collect()
+    }
+    fn panos(&mut self, queries: &[PanoQuery]) -> Vec<PanoAnswer> {
+        vec![PanoAnswer::Failed; queries.len()]
+    }
+    fn classify(&mut self, dataset: &str, lat: f64, lng: f64) -> AppResult<Option<String>> {
+        self.classified.push((dataset.to_string(), lat, lng));
+        Ok(self.classify_answer.clone())
+    }
+    fn neighbors(
+        &mut self,
+        lat: f64,
+        lng: f64,
+        radius_m: f64,
+        fields: &[String],
+    ) -> AppResult<String> {
+        self.neighbor_calls
+            .push((lat, lng, radius_m, fields.to_vec()));
+        Ok(self.neighbor_answer.clone().unwrap_or_else(|| "[]".into()))
+    }
+    fn sidecar(
+        &mut self,
+        plugin_id: &str,
+        command: &str,
+        payload_json: &str,
+    ) -> AppResult<SidecarStream> {
+        self.sidecar_calls.push((
+            plugin_id.to_string(),
+            command.to_string(),
+            payload_json.to_string(),
+        ));
+        let trace = self.trace.clone();
+        Ok(Box::new(self.sidecar_lines.clone().into_iter().map(
+            move |l| {
+                trace.lock().unwrap().push("line");
+                Ok(l)
+            },
+        )))
+    }
+    fn progress(&mut self, units: u32) {
+        self.trace.lock().unwrap().push("progress");
+        self.progress.push(units);
+    }
+    fn fail(&mut self, id: u32) {
+        self.failed.push(id);
+    }
+    fn emitter(&self) -> Option<Arc<crate::procedure::engine::Partials>> {
+        self.partials.clone()
+    }
+    fn aborted(&self) -> bool {
+        self.abort
+    }
+}
+
+/// Answers one patch per row, carrying `payload` as the patch's `extra`.
+fn echo_map(payload: &str) -> String {
+    format!(
+        "export function map(rows) {{
+           return rows.map(r => ({{ id: r.id, patch: {{ extra: {payload} }} }}));
+         }}"
+    )
+}
+
+// -----------------------------------------------------------------------
+// Shape detection
+// -----------------------------------------------------------------------
+
+#[test]
+fn a_lone_map_export_is_the_map_shape() {
+    assert_eq!(loaded(&echo_map("null")).shape(), ProcShape::Map);
+}
+
+#[test]
+fn a_run_export_is_the_run_shape() {
+    let proc = loaded("export function run(rows) { return []; }");
+    assert_eq!(proc.shape(), ProcShape::Run);
+}
+
+#[test]
+fn a_request_export_is_rejected_with_a_pointer_to_run() {
+    let err = load(&format!(
+        "export function request(rows) {{ return {{ method: 'GET', url: 'https://x.test/' }}; }}\n{}",
+        echo_map("null")
+    ))
+    .expect_err("request export");
+    assert!(err.0.contains("`mma.fetch`"), "unexpected error: {}", err.0);
+}
+
+#[test]
+fn run_wins_over_map_when_both_are_exported() {
+    let proc = loaded(&format!(
+        "export function run(rows) {{ return []; }}\n{}",
+        echo_map("null")
+    ));
+    assert_eq!(proc.shape(), ProcShape::Run);
+}
+
+#[test]
+fn a_module_with_no_entry_point_is_rejected() {
+    let err = load("export function helper() { return 1; }").expect_err("no entry point");
+    assert!(
+        err.0.contains("no procedure entry point"),
+        "unexpected error: {}",
+        err.0
+    );
+}
+
+#[test]
+fn a_module_exporting_configure_is_rejected() {
+    let err = load(&format!(
+        "export function configure(c) {{}}
+{}",
+        echo_map("null")
+    ))
+    .expect_err("configure export");
+    assert!(
+        err.0.contains("exports `configure`"),
+        "unexpected error: {}",
+        err.0
+    );
+}
+
+#[test]
+fn a_module_that_does_not_parse_is_rejected() {
+    let err = load("export function map( {").expect_err("syntax error");
+    assert!(
+        err.0.starts_with("fixture.js:"),
+        "unexpected error: {}",
+        err.0
+    );
+}
+
+// -----------------------------------------------------------------------
+// Entry points
+// -----------------------------------------------------------------------
+
+#[test]
+fn rows_arrive_as_parsed_objects() {
+    let mut proc = loaded(&echo_map(
+        "{ n: rows.length, lat: r.lat, pano: r.panoId, tags: r.tags,
+           carried: r.extra, mod: r.modifiedAt, flags: r.flags }",
+    ));
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(patches[0].id, 7);
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({
+            "n": 1, "lat": 1.5, "pano": "pano-a", "tags": [4, 9],
+            "carried": { "k": "v" }, "mod": null, "flags": 2,
+        })
+    );
+}
+
+#[test]
+fn run_answers_with_patches() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           return [{ id: rows[0].id, patch: { lat: 9.5, panoId: null } },
+                   { id: 42, patch: { extra: { a: 1 } } }];
+         }",
+    );
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(patches.len(), 2);
+    assert_eq!(patches[0].id, 7);
+    assert_eq!(patches[0].patch, r#"{"lat":9.5,"panoId":null}"#);
+    assert_eq!(
+        patches[1],
+        PatchEntry {
+            id: 42,
+            patch: r#"{"extra":{"a":1}}"#.into()
+        }
+    );
+}
+
+#[test]
+fn a_fetch_body_may_be_bytes_and_headers_may_be_absent() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           mma.fetch({ method: 'POST', url: 'https://x.test/' + rows[0].id,
+                       body: new Uint8Array([1, 2, 3]) });
+           return [];
+         }",
+    );
+    let mut host = MockProcHost::default();
+    proc.run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(host.requests[0].url, "https://x.test/7");
+    assert!(host.requests[0].headers.is_empty());
+    assert_eq!(host.requests[0].body, Some(vec![1, 2, 3]));
+}
+
+#[test]
+fn query_round_trips_json() {
+    let mut proc = loaded(&format!(
+        "export function query(input) {{ return {{ doubled: input.n * 2, list: input.list }}; }}\n{}",
+        echo_map("null")
+    ));
+    let mut host = MockProcHost::default();
+    let out = proc
+        .query(br#"{"n":21,"list":["a"]}"#, &mut host, NULL_CONFIG)
+        .expect("query succeeds");
+    assert_eq!(
+        serde_json::from_slice::<Json>(&out).expect("answer is JSON"),
+        serde_json::json!({ "doubled": 42, "list": ["a"] })
+    );
+}
+
+#[test]
+fn a_module_without_query_says_so() {
+    let mut proc = loaded(&echo_map("null"));
+    let mut host = MockProcHost::default();
+    let err = proc
+        .query(b"{}", &mut host, NULL_CONFIG)
+        .expect_err("no query export");
+    assert!(err.0.contains("no `query`"), "unexpected error: {}", err.0);
+}
+
+#[test]
+fn a_shape_only_answers_its_own_entry_points() {
+    let mut proc = loaded(&echo_map("null"));
+    let mut host = MockProcHost::default();
+    assert!(proc.run(&rows(), &mut host, NULL_CONFIG).is_err());
+}
+
+#[test]
+fn an_async_entry_point_settles_before_it_answers() {
+    let mut proc = loaded(
+        "export async function run(rows) {
+           await Promise.resolve();
+           return [{ id: rows[0].id, patch: { extra: { awaited: true } } }];
+         }",
+    );
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(extra(&patches), serde_json::json!({ "awaited": true }));
+}
+
+// -----------------------------------------------------------------------
+// Configuration
+// -----------------------------------------------------------------------
+
+const CONFIGURABLE: &str = "
+  export function map(rows, cfg) {
+    return [{ id: rows[0].id, patch: { extra: cfg } }];
+  }";
+
+const NULL_CONFIG: &str = r#"{"fields":[],"force":false,"config":null}"#;
+
+#[test]
+fn config_reaches_the_entry_point_as_a_parameter() {
+    let mut proc = loaded(CONFIGURABLE);
+    let mut host = MockProcHost::default();
+    let config = r#"{"fields":["a"],"force":true,"config":{"k":1}}"#;
+    let patches = proc.map(&rows(), &mut host, config).expect("map succeeds");
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({ "fields": ["a"], "force": true, "config": { "k": 1 } })
+    );
+}
+
+#[test]
+fn a_module_that_ignores_config_still_works() {
+    let mut proc = loaded(&echo_map("1"));
+    let mut host = MockProcHost::default();
+    assert!(proc.map(&rows(), &mut host, NULL_CONFIG).is_ok());
+}
+
+// -----------------------------------------------------------------------
+// Host services
+// -----------------------------------------------------------------------
+
+#[test]
+fn a_run_shape_reaches_fetch() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           const r = mma.fetch({ method: 'POST', url: 'https://example.test/v1',
+                                 headers: { 'X-Test': '1' }, body: 'hello' });
+           return [{ id: rows[0].id, patch: { extra: {
+             status: r.status, body: new TextDecoder().decode(r.body) } } }];
+         }",
+    );
+    let mut host = MockProcHost {
+        response: Some(HttpResponse {
+            status: 207,
+            body: br#"{"echo":1}"#.to_vec(),
+        }),
+        ..Default::default()
+    };
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(host.requests.len(), 1);
+    assert_eq!(host.requests[0].method, "POST");
+    assert_eq!(host.requests[0].url, "https://example.test/v1");
+    assert_eq!(
+        host.requests[0].headers,
+        vec![("X-Test".to_string(), "1".to_string())]
+    );
+    assert_eq!(host.requests[0].body, Some(b"hello".to_vec()));
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({ "status": 207, "body": "{\"echo\":1}" })
+    );
+}
+
+#[test]
+fn a_list_fetch_answers_in_order_and_reports_a_failure_as_status_zero() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           const d = new TextDecoder();
+           const rs = mma.fetch([
+             { method: 'GET', url: 'https://example.test/a' },
+             { method: 'GET', url: 'https://example.test/b' },
+             { method: 'GET', url: 'https://example.test/c' },
+           ]);
+           return [{ id: rows[0].id, patch: { extra: {
+             bodies: rs.map(r => d.decode(r.body)),
+             statuses: rs.map(r => r.status) } } }];
+         }",
+    );
+    let mut host = MockProcHost {
+        refuse: vec!["https://example.test/b".into()],
+        ..Default::default()
+    };
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    // One batched call, not three serial ones: that is the whole point of a list.
+    assert_eq!(host.many, vec![3]);
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({
+            "bodies": ["https://example.test/a", "", "https://example.test/c"],
+            "statuses": [200, 0, 200],
+        })
+    );
+}
+
+#[test]
+fn classify_reaches_the_host_from_map() {
+    let mut proc = loaded(&echo_map("{ name: mma.classify('borders', r.lat, r.lng) }"));
+    let mut host = MockProcHost {
+        classify_answer: Some("FR".into()),
+        ..Default::default()
+    };
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(host.classified, vec![("borders".to_string(), 1.5, 2.5)]);
+    assert_eq!(extra(&patches), serde_json::json!({ "name": "FR" }));
+}
+
+#[test]
+fn emit_reaches_the_hosts_emitter() {
+    let pages = Arc::new(Mutex::new(Vec::new()));
+    let seen = pages.clone();
+    let mut host = MockProcHost {
+        partials: Some(Arc::new(crate::procedure::engine::Partials::new(
+            3,
+            "m.js".into(),
+            Box::new(move |r| seen.lock().unwrap().push(r)),
+        ))),
+        ..Default::default()
+    };
+    let mut proc =
+        loaded("export function run(rows) { mma.emit(5, { hello: 'world' }); return []; }");
+    proc.run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    host.emitter().expect("emitter installed").flush();
+
+    let pages = pages.lock().unwrap();
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].run_id, 3);
+    assert_eq!(pages[0].entries[0].id, 5);
+    assert_eq!(pages[0].entries[0].json, r#"{"hello":"world"}"#);
+}
+
+#[test]
+fn emit_without_an_emitter_is_dropped() {
+    let mut proc = loaded("export function run(rows) { mma.emit(1, 2); return []; }");
+    let mut host = MockProcHost::default();
+    proc.run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+}
+
+#[test]
+fn classify_answers_null_outside_every_feature() {
+    let mut proc = loaded(&echo_map("{ name: mma.classify('borders', 0, 0) }"));
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(extra(&patches), serde_json::json!({ "name": null }));
+}
+
+#[test]
+fn tz_answers_null_outside_the_grid() {
+    let mut proc = loaded(&echo_map("{ zone: mma.tz(91, 0) }"));
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(extra(&patches), serde_json::json!({ "zone": null }));
+}
+
+#[test]
+fn neighbors_reaches_the_host_with_the_asked_for_fields() {
+    let mut proc = loaded(&echo_map(
+        "{ near: mma.neighbors(r.lat, r.lng, 150, ['heading']).length }",
+    ));
+    let mut host = MockProcHost {
+        neighbor_answer: Some(
+            r#"[{"id":7,"lat":1.0,"lng":2.0,"distM":12.5,"heading":100}]"#.into(),
+        ),
+        ..Default::default()
+    };
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(
+        host.neighbor_calls,
+        vec![(1.5, 2.5, 150.0, vec!["heading".to_string()])]
+    );
+    assert_eq!(extra(&patches), serde_json::json!({ "near": 1 }));
+}
+
+#[test]
+fn a_neighbor_arrives_as_an_object_carrying_its_fields() {
+    let mut proc = loaded(&echo_map(
+        "{ n: mma.neighbors(r.lat, r.lng, 150, ['heading'])[0] }",
+    ));
+    let mut host = MockProcHost {
+        neighbor_answer: Some(
+            r#"[{"id":7,"lat":1.25,"lng":2.5,"distM":12.5,"heading":100}]"#.into(),
+        ),
+        ..Default::default()
+    };
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({
+            "n": { "id": 7, "lat": 1.25, "lng": 2.5, "distM": 12.5, "heading": 100 }
+        })
+    );
+}
+
+#[test]
+fn neighbors_may_be_asked_for_no_fields_at_all() {
+    let mut proc = loaded(&echo_map(
+        "{ near: mma.neighbors(r.lat, r.lng, 25).length }",
+    ));
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(host.neighbor_calls, vec![(1.5, 2.5, 25.0, Vec::new())]);
+    assert_eq!(extra(&patches), serde_json::json!({ "near": 0 }));
+}
+
+#[test]
+fn neighbors_refuses_a_field_list_that_is_not_strings() {
+    let mut proc = loaded(&echo_map("{ near: mma.neighbors(r.lat, r.lng, 25, [7]) }"));
+    let mut host = MockProcHost::default();
+    let err = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("map fails");
+    assert!(
+        err.0.contains("field names must be strings"),
+        "unexpected error: {}",
+        err.0
+    );
+    assert!(host.neighbor_calls.is_empty());
+}
+
+#[test]
+fn sidecar_lines_reach_a_run_shape() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           const lines = mma.sidecar('plug', 'cmd', JSON.stringify({ a: 1 }));
+           return [{ id: rows[0].id, patch: { extra: { lines } } }];
+         }",
+    );
+    let mut host = MockProcHost {
+        sidecar_lines: vec!["one".into(), "two".into()],
+        ..Default::default()
+    };
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(
+        host.sidecar_calls,
+        vec![(
+            "plug".to_string(),
+            "cmd".to_string(),
+            r#"{"a":1}"#.to_string()
+        )]
+    );
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({ "lines": ["one", "two"] })
+    );
+}
+
+#[test]
+fn sidecar_lines_stream_to_a_handler_with_progress_serviced_between_them() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           const seen = [];
+           const lines = mma.sidecar('plug', 'cmd', '{}', (line) => {
+             seen.push(line + '!');
+             mma.progress(1);
+           });
+           return [{ id: rows[0].id, patch: { extra: { seen, lines } } }];
+         }",
+    );
+    let mut host = MockProcHost {
+        sidecar_lines: vec!["one".into(), "two".into()],
+        ..Default::default()
+    };
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({ "seen": ["one!", "two!"], "lines": ["one", "two"] })
+    );
+    assert_eq!(host.progress, vec![1, 1]);
+    assert_eq!(
+        *host.trace.lock().unwrap(),
+        vec!["line", "progress", "line", "progress"]
+    );
+}
+
+#[test]
+fn a_throwing_line_handler_fails_the_sidecar_call() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           mma.sidecar('plug', 'cmd', '{}', () => { throw new Error('bad line'); });
+           return [];
+         }",
+    );
+    let mut host = MockProcHost {
+        sidecar_lines: vec!["one".into()],
+        ..Default::default()
+    };
+    let err = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("handler error surfaces");
+    assert!(err.0.contains("bad line"), "{}", err.0);
+}
+
+#[test]
+fn a_line_handler_cannot_start_another_sidecar() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           mma.sidecar('plug', 'cmd', '{}', () => { mma.sidecar('plug', 'other', '{}'); });
+           return [];
+         }",
+    );
+    let mut host = MockProcHost {
+        sidecar_lines: vec!["one".into()],
+        ..Default::default()
+    };
+    let err = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("nested sidecar is refused");
+    assert!(err.0.contains("line handler"), "{}", err.0);
+}
+
+#[test]
+fn progress_and_fail_reach_the_host() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           mma.progress(3);
+           mma.progress(1);
+           mma.fail(9);
+           return [];
+         }",
+    );
+    let mut host = MockProcHost::default();
+    assert!(proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds")
+        .is_empty());
+    assert_eq!(host.progress, vec![3, 1]);
+    assert_eq!(host.failed, vec![9]);
+}
+
+#[test]
+fn aborted_reports_the_hosts_answer() {
+    let src = "export function run(rows) {
+                 let n = 0;
+                 while (!mma.aborted() && n < 5) n++;
+                 return [{ id: rows[0].id, patch: { extra: { n } } }];
+               }";
+    let mut host = MockProcHost {
+        abort: true,
+        ..Default::default()
+    };
+    let patches = loaded(src)
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(extra(&patches), serde_json::json!({ "n": 0 }));
+
+    let mut open = MockProcHost::default();
+    let patches = loaded(src)
+        .run(&rows(), &mut open, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(extra(&patches), serde_json::json!({ "n": 5 }));
+}
+
+// -----------------------------------------------------------------------
+// Effects gate
+// -----------------------------------------------------------------------
+
+/// The calls that reach outside the process, and the guest expression for each.
+const EFFECTS: [(&str, &str); 3] = [
+    (
+        "fetch",
+        "mma.fetch({ method: 'GET', url: 'https://x.test/' })",
+    ),
+    ("panos", "mma.panos([])"),
+    ("sidecar", "mma.sidecar('p', 'c', '{}')"),
+];
+
+fn assert_gated(name: &str, err: &AppError) {
+    let want = format!("mma.{name} is only available to `run`-shaped procedures");
+    assert!(
+        err.0.contains(&want),
+        "unexpected error for {name}: {}",
+        err.0
+    );
+}
+
+#[test]
+fn map_cannot_reach_the_effectful_host_calls() {
+    for (name, call) in EFFECTS {
+        let mut proc = loaded(&echo_map(&format!("{{ v: {call} }}")));
+        let mut host = MockProcHost::default();
+        let err = proc
+            .map(&rows(), &mut host, NULL_CONFIG)
+            .expect_err("gate rejects the call");
+        assert_gated(name, &err);
+        assert!(host.requests.is_empty());
+    }
+}
+
+#[test]
+fn query_reaches_the_effectful_host_calls() {
+    let mut proc = loaded(&format!(
+        "export function query(input) {{
+           const r = mma.fetch({{ method: 'GET', url: 'https://example.test/q' }});
+           return {{ status: r.status }};
+         }}\n{}",
+        echo_map("null")
+    ));
+    let mut host = MockProcHost::default();
+    let out = proc
+        .query(b"{}", &mut host, NULL_CONFIG)
+        .expect("query succeeds");
+    assert_eq!(host.requests.len(), 1);
+    assert_eq!(host.requests[0].url, "https://example.test/q");
+    assert_eq!(out, br#"{"status":200}"#);
+}
+
+// -----------------------------------------------------------------------
+// Failure modes
+// -----------------------------------------------------------------------
+
+#[test]
+fn a_throwing_guest_is_an_error_not_a_panic() {
+    let mut proc = loaded("export function map(rows) { throw new Error('boom'); }");
+    let mut host = MockProcHost::default();
+    let err = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("guest threw");
+    assert!(err.0.contains("boom"), "unexpected error: {}", err.0);
+}
+
+#[test]
+fn a_rejected_async_entry_point_is_an_error() {
+    let mut proc = loaded("export async function run(rows) { throw new Error('async boom'); }");
+    let mut host = MockProcHost::default();
+    let err = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("guest rejected");
+    assert!(err.0.contains("async boom"), "unexpected error: {}", err.0);
+}
+
+#[test]
+fn a_non_array_answer_is_rejected() {
+    let mut proc = loaded("export function map(rows) { return 5; }");
+    let mut host = MockProcHost::default();
+    let err = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("not an array");
+    assert!(
+        err.0.contains("array of patches"),
+        "unexpected error: {}",
+        err.0
+    );
+}
+
+#[test]
+fn a_fetch_the_host_refuses_throws_into_the_guest() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           try { mma.fetch({ method: 'GET', url: 'https://example.test/no' }); }
+           catch (e) { return [{ id: rows[0].id, patch: { extra: { caught: String(e) } } }]; }
+           return [];
+         }",
+    );
+    let mut host = MockProcHost {
+        refuse: vec!["https://example.test/no".into()],
+        ..Default::default()
+    };
+    let patches = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    let caught = extra(&patches)["caught"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        caught.contains("mock refused"),
+        "unexpected throw: {caught}"
+    );
+}
+
+#[test]
+fn an_aborted_run_interrupts_a_runaway_guest() {
+    let mut proc = loaded("export function run(rows) { while (true) {} }");
+    let mut host = MockProcHost {
+        abort: true,
+        ..Default::default()
+    };
+    let started = Instant::now();
+    let err = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("interrupted");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the interrupt did not stop the guest"
+    );
+    assert!(
+        err.0.starts_with("fixture.js:"),
+        "unexpected error: {}",
+        err.0
+    );
+}
+
+#[test]
+fn memory_limit_returns_an_error_not_an_oom() {
+    let mut proc =
+        loaded("export function run(rows) { let s = 'x'; while (true) s += s; return []; }");
+    let mut host = MockProcHost::default();
+    let err = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("memory limit hit");
+    assert!(!err.0.is_empty(), "error should carry a message: {}", err.0);
+}
+
+#[test]
+fn stack_limit_returns_an_error_not_a_panic() {
+    let mut proc =
+        loaded("export function run(rows) { function f(n) { return f(n + 1); } f(0); return []; }");
+    let mut host = MockProcHost::default();
+    let err = proc
+        .run(&rows(), &mut host, NULL_CONFIG)
+        .expect_err("stack overflow");
+    assert!(!err.0.is_empty(), "error should carry a message: {}", err.0);
+}
+
+#[test]
+fn a_procedure_still_works_after_an_interrupt() {
+    let mut proc = loaded(
+        "export function run(rows) {
+           if (rows[0].id === 7) { while (true) {} }
+           return [{ id: rows[0].id, patch: { extra: { ok: true } } }];
+         }",
+    );
+    let mut aborting = MockProcHost {
+        abort: true,
+        ..Default::default()
+    };
+    assert!(proc.run(&rows(), &mut aborting, NULL_CONFIG).is_err());
+
+    let mut host = MockProcHost::default();
+    let other = br#"[{"id":8,"lat":0,"lng":0,"heading":0,"pitch":0,"zoom":0,"flags":0,
+      "createdAt":0,"modifiedAt":null,"panoId":"","tags":[],"extra":null}]"#;
+    let patches = proc
+        .run(other, &mut host, NULL_CONFIG)
+        .expect("run succeeds");
+    assert_eq!(extra(&patches), serde_json::json!({ "ok": true }));
+}
+
+// -----------------------------------------------------------------------
+// Runtime prelude
+// -----------------------------------------------------------------------
+
+#[test]
+fn the_prelude_carries_the_globals_bundled_code_expects() {
+    let mut proc = loaded(&echo_map(
+        r"{
+          round: new TextDecoder().decode(new TextEncoder().encode('héllo 😀 ✓')),
+          bytes: new TextEncoder().encode('😀').length,
+          b64: btoa('Man'),
+          unb64: atob(btoa('hello world')),
+          padded: btoa('a'),
+          replaced: new TextDecoder().decode(new Uint8Array([0xff, 0x41])),
+          types: typeof console.log + typeof console.warn,
+        }",
+    ));
+    let mut host = MockProcHost::default();
+    let patches = proc
+        .map(&rows(), &mut host, NULL_CONFIG)
+        .expect("map succeeds");
+    assert_eq!(
+        extra(&patches),
+        serde_json::json!({
+            "round": "héllo 😀 ✓",
+            "bytes": 4,
+            "b64": "TWFu",
+            "unb64": "hello world",
+            "padded": "YQ==",
+            "replaced": "\u{fffd}A",
+            "types": "functionfunction",
+        })
+    );
+}
+
+#[test]
+fn console_output_does_not_fault_at_module_scope() {
+    // The module body runs before any host is attached, so `console` must work there.
+    let mut proc = loaded(&format!(
+        "console.log('loaded', {{ a: 1 }});\n{}",
+        echo_map("null")
+    ));
+    let mut host = MockProcHost::default();
+    assert!(proc.map(&rows(), &mut host, NULL_CONFIG).is_ok());
+}
+
+// -----------------------------------------------------------------------
+// Module cache
+// -----------------------------------------------------------------------
+
+/// Loads counted around a body, so a test reads the pool's effect directly.
+fn loads(body: impl FnOnce()) -> u32 {
+    let before = LOADS.with(Cell::get);
+    body();
+    LOADS.with(Cell::get) - before
+}
+
+/// Distinguishable module bodies: same exports, different sizes, so a rewrite
+/// changes both halves of the stamp.
+const SMALL: &str = "export function map(rows) { return []; }";
+const LARGE: &str = "
+  const padding = 'padding that makes the file a different length';
+  export function map(rows) { return padding.length ? [] : []; }";
+
+fn write_module(path: &Path, src: &str) {
+    fs::write(path, src).expect("write module");
+}
+
+#[test]
+fn a_warm_path_is_loaded_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("warm.js");
+    write_module(&path, SMALL);
+
+    assert_eq!(loads(|| drop(checkout(&path).expect("first"))), 1);
+    assert_eq!(loads(|| drop(checkout(&path).expect("second"))), 0);
+    assert_eq!(loads(|| drop(checkout(&path).expect("third"))), 0);
+}
+
+#[test]
+fn a_rewritten_module_is_reloaded() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("rebuilt.js");
+    write_module(&path, SMALL);
+    drop(checkout(&path).expect("first"));
+
+    write_module(&path, LARGE);
+    assert_eq!(loads(|| drop(checkout(&path).expect("after rebuild"))), 1);
+    // The rebuilt module is now the warm one; the stale copy is not handed back out.
+    assert_eq!(loads(|| drop(checkout(&path).expect("warm again"))), 0);
+}
+
+#[test]
+fn a_module_rewritten_while_on_loan_is_not_pooled() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("swapped.js");
+    write_module(&path, SMALL);
+
+    let borrowed = checkout(&path).expect("first");
+    write_module(&path, LARGE);
+    drop(borrowed);
+    assert_eq!(loads(|| drop(checkout(&path).expect("after rebuild"))), 1);
+}
+
+#[test]
+fn a_second_live_checkout_gets_its_own_procedure() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("concurrent.js");
+    write_module(&path, SMALL);
+
+    let first = checkout(&path).expect("first");
+    assert_eq!(loads(|| drop(checkout(&path).expect("second"))), 1);
+    drop(first);
+    let a = checkout(&path).expect("third");
+    assert_eq!(loads(|| drop(checkout(&path).expect("fourth"))), 0);
+    drop(a);
+}
+
+#[test]
+fn a_pooled_procedure_sees_each_calls_own_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("configured.js");
+    write_module(&path, CONFIGURABLE);
+    let mut host = MockProcHost::default();
+
+    let mut first = checkout(&path).expect("first");
+    let cfg_a = r#"{"fields":["a"],"force":true,"config":{"k":1}}"#;
+    assert_eq!(
+        extra(&first.map(&rows(), &mut host, cfg_a).expect("map")),
+        serde_json::json!({ "fields": ["a"], "force": true, "config": { "k": 1 } })
+    );
+    drop(first);
+
+    let mut second = checkout(&path).expect("second");
+    let cfg_b = r#"{"fields":[],"force":false,"config":null}"#;
+    assert_eq!(
+        extra(&second.map(&rows(), &mut host, cfg_b).expect("map")),
+        serde_json::json!({ "fields": [], "force": false, "config": null })
+    );
+}
+
+#[test]
+fn a_missing_module_is_an_error_and_is_not_pooled() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("absent.js");
+    assert!(checkout(&path).is_err());
+    write_module(&path, SMALL);
+    assert_eq!(loads(|| drop(checkout(&path).expect("present now"))), 1);
+}
+
+#[test]
+fn load_from_path_matches_load_source() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("frompath.js");
+    write_module(&path, SMALL);
+    assert_eq!(
+        JsProcedure::load(&path).expect("loads from path").shape(),
+        ProcShape::Map
+    );
+}
+
+#[test]
+fn mma_surface_is_identical_with_and_without_a_host() {
+    let keys = |bridge: Option<Rc<Bridge>>, allow_effects: bool| -> Vec<String> {
+        let runtime = Runtime::new().expect("runtime");
+        let context = Context::full(&runtime).expect("context");
+        context.with(|ctx| {
+            install_mma(&ctx, bridge, allow_effects).expect("mma installs");
+            let mut names: Vec<String> = ctx.eval("Object.keys(mma)").expect("keys");
+            names.sort();
+            names
+        })
+    };
+    let bridge = || {
+        let (tx, _) = mpsc::channel();
+        let (_, rx) = mpsc::channel();
+        Some(Rc::new(Bridge { tx, rx }))
+    };
+
+    let bridged = keys(bridge(), true);
+    let mut expected: Vec<String> = EFFECT_CALLS
+        .iter()
+        .chain(PLAIN_CALLS)
+        .map(ToString::to_string)
+        .chain(["log".to_string(), "tz".to_string()])
+        .collect();
+    expected.sort();
+    assert_eq!(bridged, expected);
+    assert_eq!(keys(bridge(), false), bridged);
+    assert_eq!(keys(None, false), bridged);
+}

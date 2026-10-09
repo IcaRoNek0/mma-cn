@@ -1,3 +1,4 @@
+import { t } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import { VectorTile } from "@mapbox/vector-tile";
@@ -215,28 +216,32 @@ export function QQCoveragePage() {
 			setStatus("error");
 		});
 
-		map.on("load", async () => {
-			append("Huawei basemap loaded");
-			setStatus("probing local PMTiles");
-			try {
-				const header = await archive.getHeader();
-				append("PMTiles header loaded", {
-					specVersion: header.specVersion,
-					minZoom: header.minZoom,
-					maxZoom: header.maxZoom,
-					tileType: header.tileType,
-					bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
-				});
-			} catch (error) {
-				append("direct PMTiles probe failed", errorText(error));
-				setStatus("PMTiles probe failed");
-				return;
-			}
-			if (disposed) return;
+		map.on("load", () => {
+			void (async () => {
+				append("Huawei basemap loaded");
+				setStatus("probing local PMTiles");
+				try {
+					const header = await archive.getHeader();
+					append("PMTiles header loaded", {
+						specVersion: header.specVersion,
+						minZoom: header.minZoom,
+						maxZoom: header.maxZoom,
+						tileType: header.tileType,
+						bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
+					});
+				} catch (error) {
+					append("direct PMTiles probe failed", errorText(error));
+					setStatus("PMTiles probe failed");
+					return;
+				}
+				if (disposed) return;
 
-			append("deck.gl coverage overlay added");
-			map.on("moveend", loadVisibleCoverage);
-			await loadVisibleCoverage();
+				append("deck.gl coverage overlay added");
+				map.on("moveend", () => {
+					void loadVisibleCoverage();
+				});
+				await loadVisibleCoverage();
+			})();
 		});
 
 		return () => {
@@ -252,30 +257,30 @@ export function QQCoveragePage() {
 			<div ref={mapContainer} className="qqcoverage-map" />
 			<header className="qqcoverage-header">
 				<div>
-					<strong>QQ Coverage Lab</strong>
-					<span>Huawei + deck.gl decoded Tencent PMTiles</span>
+					<strong>{t("QQ Coverage Lab")}</strong>
+					<span>{t("Huawei + deck.gl decoded Tencent PMTiles")}</span>
 				</div>
-				<a href="/">Return to MMA</a>
+				<a href="/">{t("Return to MMA")}</a>
 			</header>
 			<section className="qqcoverage-status">
 				<div>
-					<span>Status</span>
+					<span>{t("Status")}</span>
 					<b>{status}</b>
 				</div>
 				<div>
-					<span>Decoded features</span>
+					<span>{t("Decoded features")}</span>
 					<b>{tileStats}</b>
 				</div>
 				<div>
-					<span>Center</span>
+					<span>{t("Center")}</span>
 					<b>
 						{CENTER[0]}, {CENTER[1]}
 					</b>
 				</div>
 			</section>
 			<aside className="qqcoverage-log">
-				<h2>Live trace</h2>
-				{logs.length === 0 && <p>Waiting for initialization...</p>}
+				<h2>{t("Live trace")}</h2>
+				{logs.length === 0 && <p>{t("Waiting for initialization...")}</p>}
 				{logs.map((entry, index) => (
 					<div className="qqcoverage-log-row" key={`${entry.time}-${index}`}>
 						<time>{entry.time}</time>

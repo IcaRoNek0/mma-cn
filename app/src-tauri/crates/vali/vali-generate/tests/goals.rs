@@ -62,18 +62,16 @@ fn subdivision_goals_match_oracle() {
                 case.goal,
                 available.as_deref(),
             );
-            if got != as_i32(expected) {
-                if failures.len() < 10 {
-                    failures.push(format!(
-                        "{} {} goal={} available={:?}: {} != {}",
-                        case.country,
-                        sub,
-                        case.goal,
-                        case.available,
-                        got,
-                        as_i32(expected)
-                    ));
-                }
+            if got != as_i32(expected) && failures.len() < 10 {
+                failures.push(format!(
+                    "{} {} goal={} available={:?}: {} != {}",
+                    case.country,
+                    sub,
+                    case.goal,
+                    case.available,
+                    got,
+                    as_i32(expected)
+                ));
             }
         }
     }

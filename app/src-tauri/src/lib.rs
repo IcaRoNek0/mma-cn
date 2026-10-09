@@ -1,76 +1,51 @@
-//! Tauri command layer and URI scheme proxies for the MMA desktop app.
-//!
-//! This is the application entry point. It registers all IPC commands (via tauri-specta),
-//! custom URI scheme handlers (svtile, gmaps, googl, mma-buf, mma-plugin), and Tauri plugins.
-//! No business logic lives here -- commands delegate to `location_store`, `map_meta`, `import`, etc.
+//! Application entry point: module tree, the IPC command surface (tauri-specta),
+//! Tauri plugin setup, and the event loop. No business logic lives here.
 
-use crate::types::{AppError, AppResult};
-use tauri::Manager;
+use crate::types::TsConst;
+use specta_typescript::semantic::Configuration;
+use std::collections::BTreeMap;
+use std::error;
+use std::fs;
+use std::panic;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::thread;
+use std::time::Instant;
+use tauri::plugin::TauriPlugin;
+
+mod types;
+
+#[cfg(feature = "e2e")]
+mod e2e;
+mod io;
+mod net;
+mod plugins;
+mod procedure;
+mod selections;
+#[cfg(all(debug_assertions, windows))]
+mod stall_reporter;
+mod store;
+mod sv;
+mod sync;
+mod tencent_coverage;
+#[cfg(test)]
+mod test_util;
+mod util;
+
+#[cfg(feature = "web-serve")]
+pub use net::serve;
+#[cfg(feature = "bench")]
+pub use store::engine::bench as bench_api;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(debug_assertions)]
-pub fn promote_serialize_bindings(path: &std::path::Path) {
-    let src = std::fs::read_to_string(path).expect("read bindings");
-    let mut out = String::with_capacity(src.len());
-    for line in src.lines() {
-        // Drop union alias lines: `export type Foo = Foo_Serialize | Foo_Deserialize;`
-        if line.starts_with("export type ")
-            && line.contains("_Serialize | ")
-            && line.contains("_Deserialize;")
-        {
-            continue;
-        }
-        out.push_str(&line.replace("_Serialize", ""));
-        out.push('\n');
-    }
-    std::fs::write(path, out.as_bytes()).expect("write bindings");
-}
-
-mod arrow_bridge;
-mod arrow_migrate;
-mod selections;
-mod spatial;
-#[macro_use]
-mod storage;
-mod types;
-mod util;
-#[macro_use]
-mod location_store;
-mod borders;
-mod export;
-mod gdoc;
-mod geocoder;
-mod geoguessr;
-mod import;
-mod map_meta;
-mod plugins;
-mod presence;
-mod remote_api;
-mod remote_mapping;
-mod review;
-mod seen;
-mod sidecar;
-mod sync;
-mod sync_diff;
-mod sync_engine;
-mod sync_geoguessr;
-mod sync_keying;
-mod sync_map_making;
-mod tencent_coverage;
-#[cfg(test)]
-mod test_util;
-mod vcs;
-mod vcs_delta;
-
-#[cfg(feature = "web-serve")]
-pub mod serve;
-
 /// App handle, captured once in `setup()`. Private: the only capability exposed is
 /// event emission via [`emit_event`], so commands don't carry an `AppHandle`
 /// parameter just to emit.
-static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+static START_INSTANT: OnceLock<Instant> = OnceLock::new();
+static STARTUP_MS: OnceLock<u32> = OnceLock::new();
 
 /// The app handle, available once `setup()` has run.
 pub(crate) fn app_handle() -> Option<&'static tauri::AppHandle> {
@@ -78,9 +53,10 @@ pub(crate) fn app_handle() -> Option<&'static tauri::AppHandle> {
 }
 
 /// Emit an app-wide event to all windows. No-op before setup completes.
-pub(crate) fn emit_event(event: &str, payload: impl serde::Serialize + Clone) {
+pub(crate) fn emit_event<E: tauri_specta::Event + serde::Serialize + Clone>(payload: E) {
     use tauri::Emitter;
-    // Browser tabs aren't app webviews, so app.emit can't reach them — bridge the
+    let event = E::NAME;
+    // Browser tabs aren't app webviews, so app.emit can't reach them; bridge the
     // event to the web-serve SSE channel (no-op when no browser is connected).
     #[cfg(feature = "web-serve")]
     if let Ok(value) = serde_json::to_value(&payload) {
@@ -91,466 +67,7 @@ pub(crate) fn emit_event(event: &str, payload: impl serde::Serialize + Clone) {
     }
 }
 
-/// Write arbitrary text content to a named temp file (`mma_{name}`). Returns the path.
-/// Used by JS to pass large payloads via file instead of IPC serialization.
-#[tauri::command]
-#[specta::specta]
-fn write_temp_file(name: String, content: String) -> AppResult<String> {
-    let path = std::env::temp_dir().join(format!("mma_{name}"));
-    std::fs::write(&path, &content)?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-/// Read a file from disk as UTF-8 text. Used by JS to read temp files and plugin sources.
-#[tauri::command]
-#[specta::specta]
-fn read_file(path: String) -> AppResult<String> {
-    std::fs::read_to_string(&path).map_err(AppError::from)
-}
-
-/// Return the platform-specific app data directory path (e.g., `%LOCALAPPDATA%/app.map-making.local`).
-#[tauri::command]
-#[specta::specta]
-fn get_app_data_dir() -> AppResult<String> {
-    storage::app_data_dir().map(|p| p.to_string_lossy().into_owned())
-}
-
-/// The active and default data-folder paths, plus whether a custom override is in effect.
-#[derive(serde::Serialize, specta::Type)]
-struct DataLocation {
-    /// Folder currently in use this session (default or override).
-    path: String,
-    /// OS default, ignoring any override -- used for the "reset" affordance.
-    default_path: String,
-    /// True when `path` differs from the OS default.
-    is_custom: bool,
-}
-
-/// Report where map data is currently stored.
-#[tauri::command]
-#[specta::specta]
-fn get_data_location() -> AppResult<DataLocation> {
-    let path = storage::app_data_dir()?;
-    let default_path = storage::default_data_dir()?;
-    Ok(DataLocation {
-        is_custom: path != default_path,
-        path: path.to_string_lossy().into_owned(),
-        default_path: default_path.to_string_lossy().into_owned(),
-    })
-}
-
-/// Set (`Some`) or clear (`None`) the data-folder override. Takes effect after relaunch.
-/// Does not move existing data -- the caller warns the user.
-#[tauri::command]
-#[specta::specta]
-fn set_data_location(path: Option<String>) -> AppResult<()> {
-    storage::set_data_location(path.as_deref().map(std::path::Path::new))
-}
-
-/// Hand a path to the OS shell (file explorer / default handler).
-fn os_open(path: &std::path::Path) -> AppResult<()> {
-    #[cfg(target_os = "windows")]
-    let program = "explorer";
-    #[cfg(target_os = "macos")]
-    let program = "open";
-    #[cfg(target_os = "linux")]
-    let program = "xdg-open";
-    #[cfg(target_os = "android")]
-    let program = "termux-open";
-    std::process::Command::new(program).arg(path).spawn()?;
-    Ok(())
-}
-
-/// Open the app data directory in the OS file explorer.
-#[tauri::command]
-#[specta::specta]
-fn open_data_folder() -> AppResult<()> {
-    os_open(&storage::app_data_dir()?)
-}
-
-/// Open the current log file in the OS default handler.
-#[tauri::command]
-#[specta::specta]
-fn open_log_file(app: tauri::AppHandle) -> AppResult<()> {
-    os_open(&app.path().app_log_dir()?.join("mma.log"))
-}
-
-/// A plugin's declared sidecar binary (downloaded from GitHub Releases on install).
-#[derive(serde::Serialize, Clone, specta::Type)]
-struct PluginSidecar {
-    name: String,
-    version: String,
-    /// Expected SHA-256 hex digest of the platform-specific zip archive.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sha256: Option<String>,
-}
-
-/// Manifest form of a sidecar: the digest is keyed per platform (`sha256-{platform_tag}`).
-#[derive(serde::Deserialize)]
-struct RawSidecar {
-    name: String,
-    version: String,
-    #[serde(flatten)]
-    digests: std::collections::HashMap<String, serde_json::Value>,
-}
-
-impl<'de> serde::Deserialize<'de> for PluginSidecar {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = RawSidecar::deserialize(d)?;
-        let sha256 = sidecar::platform_tag().ok().and_then(|p| {
-            raw.digests
-                .get(&format!("sha256-{p}"))?
-                .as_str()
-                .map(str::to_string)
-        });
-        Ok(PluginSidecar {
-            name: raw.name,
-            version: raw.version,
-            sha256,
-        })
-    }
-}
-
-/// Metadata for a user-installed plugin, read from `plugins/{id}/manifest.json`.
-#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase", default)]
-struct PluginManifest {
-    id: String,
-    name: String,
-    description: String,
-    icon: String,
-    main: String,
-    version: String,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    experimental: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    coming_soon: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    min_app_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sidecar: Option<PluginSidecar>,
-}
-
-impl Default for PluginManifest {
-    fn default() -> Self {
-        PluginManifest {
-            id: String::new(),
-            name: String::new(),
-            description: String::new(),
-            icon: String::new(),
-            main: "index.js".to_string(),
-            version: String::new(),
-            experimental: false,
-            coming_soon: false,
-            min_app_version: None,
-            sidecar: None,
-        }
-    }
-}
-
-/// Plugin ids, sidecar names, and sidecar commands all end up in paths, argv, or URL
-/// paths, so they share one conservative charset.
-fn validate_ident(kind: &str, value: &str) -> AppResult<()> {
-    if value.is_empty()
-        || !value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(AppError(format!("Invalid {kind}: {value}")));
-    }
-    Ok(())
-}
-
-fn validate_sidecar_name(name: &str) -> AppResult<()> {
-    validate_ident("sidecar name", name)
-}
-
-pub(crate) fn validate_sidecar_command(command: &str) -> AppResult<()> {
-    validate_ident("sidecar command", command)
-}
-
-/// Scan the `plugins/` directory under app data and return manifests for all installed plugins.
-#[tauri::command]
-#[specta::specta]
-fn list_user_plugins() -> Vec<PluginManifest> {
-    let dir = match storage::app_data_dir() {
-        Ok(d) => d.join("plugins"),
-        Err(_) => return vec![],
-    };
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return vec![],
-    };
-    let mut plugins = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let manifest_path = path.join("manifest.json");
-        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-            match serde_json::from_str::<PluginManifest>(&content) {
-                Ok(mut manifest) => {
-                    let folder_name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown");
-                    if manifest.id.is_empty() {
-                        manifest.id = folder_name.to_string();
-                    }
-                    if manifest.name.is_empty() {
-                        manifest.name = folder_name.to_string();
-                    }
-                    plugins.push(manifest);
-                }
-                Err(e) => log::warn!("Invalid manifest {}: {e}", manifest_path.display()),
-            }
-        }
-    }
-    plugins
-}
-
-/// Base URL for the plugin marketplace repository on GitHub.
-const PLUGIN_REPO_BASE: &str = "https://raw.githubusercontent.com/ccmdi/mma/master/plugins";
-
-pub(crate) fn validate_plugin_id(id: &str) -> AppResult<()> {
-    validate_ident("plugin id", id)
-}
-
-/// Download a plugin from the GitHub plugin repository and install it to the local plugins directory.
-/// Fetches `manifest.json` and the main JS file specified in the manifest.
-#[tauri::command]
-#[specta::specta]
-fn install_plugin(id: String) -> AppResult<PluginManifest> {
-    validate_plugin_id(&id)?;
-    let dir = storage::app_data_dir()?.join("plugins").join(&id);
-    std::fs::create_dir_all(&dir)?;
-
-    let manifest_url = format!("{PLUGIN_REPO_BASE}/{id}/manifest.json");
-    let manifest_bytes = proxy_client()
-        .get(&manifest_url)
-        .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Failed to fetch manifest: {e}"))?
-        .bytes()?;
-    std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
-
-    let mut manifest: PluginManifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| format!("Invalid manifest JSON: {e}"))?;
-    let main = manifest.main.clone();
-    if main.contains("..") || main.contains('/') || main.contains('\\') {
-        return Err(AppError(format!("Invalid main field in manifest: {main}")));
-    }
-
-    let main_url = format!("{PLUGIN_REPO_BASE}/{id}/{main}");
-    let main_bytes = proxy_client()
-        .get(&main_url)
-        .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Failed to fetch {main}: {e}"))?
-        .bytes()?;
-    std::fs::write(dir.join(&main), &main_bytes)?;
-
-    if manifest.name.is_empty() {
-        manifest.name = id.clone();
-    }
-    manifest.id = id;
-    Ok(manifest)
-}
-
-/// Remove a plugin by deleting its directory from the local plugins folder.
-#[tauri::command]
-#[specta::specta]
-fn uninstall_plugin(id: String) -> AppResult<()> {
-    validate_plugin_id(&id)?;
-    let dir = storage::app_data_dir()?.join("plugins").join(&id);
-    // A live sidecar holds the directory open on Windows, so delete under the
-    // plugin's process lock with everything stopped.
-    sidecar::with_plugin_stopped(&id, || {
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// HTTP clients
-// ---------------------------------------------------------------------------
-
-fn build_http_client(follow_redirects: bool) -> reqwest::blocking::Client {
-    let redirect = if follow_redirects {
-        reqwest::redirect::Policy::default()
-    } else {
-        reqwest::redirect::Policy::none()
-    };
-    reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .redirect(redirect)
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .expect("failed to build http client")
-}
-
-/// Follows redirects (svtile tiles, gmaps RPC, gdoc).
-pub(crate) fn proxy_client() -> &'static reqwest::blocking::Client {
-    static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| build_http_client(true))
-}
-
-/// Sync transfers move whole maps, far past the proxy client's 15s total cap, so this client
-/// bounds the CONNECT, not the transfer.
-pub(crate) fn sync_client() -> &'static reqwest::blocking::Client {
-    static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .use_rustls_tls()
-            .connect_timeout(std::time::Duration::from_secs(20))
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .expect("failed to build sync http client")
-    })
-}
-
-/// Does NOT follow redirects, so the `Location` header is readable (googl).
-fn resolve_client() -> &'static reqwest::blocking::Client {
-    static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| build_http_client(false))
-}
-
-/// Response builder pre-seeded with the CORS header every scheme handler sends.
-fn cors() -> tauri::http::response::Builder {
-    tauri::http::Response::builder().header("Access-Control-Allow-Origin", "*")
-}
-
-/// CORS response with a status and body, no content type.
-fn cors_resp(status: u16, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
-    cors().status(status).body(body).unwrap()
-}
-
-/// Run a blocking scheme-handler body off the webview thread.
-fn respond_async(
-    responder: tauri::UriSchemeResponder,
-    f: impl FnOnce() -> tauri::http::Response<Vec<u8>> + Send + 'static,
-) {
-    std::thread::spawn(move || responder.respond(f()));
-}
-
-/// Build a 502 error response with CORS headers for failed proxy requests.
-pub(crate) fn proxy_error(msg: String) -> tauri::http::Response<Vec<u8>> {
-    cors_resp(502, msg.into_bytes())
-}
-
-/// Relays an upstream response body + content-type back to the webview with CORS.
-pub(crate) fn relay(
-    resp: reqwest::blocking::Response,
-    default_ct: &str,
-) -> tauri::http::Response<Vec<u8>> {
-    let status = resp.status().as_u16();
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or(default_ct)
-        .to_string();
-    match resp.bytes() {
-        Ok(body) => cors()
-            .status(status)
-            .header("Content-Type", content_type)
-            .body(body.to_vec())
-            .unwrap(),
-        Err(e) => proxy_error(format!("read error: {e}")),
-    }
-}
-
-/// mma-buf POST: write an uploaded file into its session dir. The target must
-/// sit directly inside a valid `mma_upload_*` session dir (see
-/// [`export::upload_session_dir`]) -- anything else is rejected.
-pub(crate) fn write_upload(path: &str, body: &[u8]) -> tauri::http::Response<Vec<u8>> {
-    let target = std::path::Path::new(path);
-    let session_ok = target
-        .parent()
-        .and_then(|p| p.to_str())
-        .is_some_and(|p| crate::export::upload_session_dir(p).is_ok());
-    if !session_ok {
-        return cors_resp(403, b"upload outside session dir".to_vec());
-    }
-    match std::fs::write(target, body) {
-        Ok(()) => cors_resp(200, vec![]),
-        Err(e) => cors_resp(500, format!("upload write failed: {e}").into_bytes()),
-    }
-}
-
-/// svtile: StreetView photosphere tiles via lh3.ggpht.com.
-pub(crate) fn fetch_svtile(url: &str) -> tauri::http::Response<Vec<u8>> {
-    match proxy_client().get(url).send() {
-        Ok(resp) => {
-            let mut out = relay(resp, "image/jpeg");
-            if let Ok(v) = "private, max-age=86400".parse() {
-                out.headers_mut()
-                    .insert(tauri::http::header::CACHE_CONTROL, v);
-            }
-            out
-        }
-        Err(e) => proxy_error(format!("svtile fetch error: {e}")),
-    }
-}
-
-/// gmaps: forward a request (POST batchexecute etc.) to www.google.com.
-pub(crate) fn proxy_gmaps(
-    method: reqwest::Method,
-    url: &str,
-    content_type: String,
-    user_agent: String,
-    body: Vec<u8>,
-) -> tauri::http::Response<Vec<u8>> {
-    match proxy_client()
-        .request(method, url)
-        .header(reqwest::header::CONTENT_TYPE, content_type)
-        .header(reqwest::header::USER_AGENT, user_agent)
-        .body(body)
-        .send()
-    {
-        Ok(resp) => relay(resp, "text/plain"),
-        Err(e) => proxy_error(format!("gmaps fetch error: {e}")),
-    }
-}
-
-/// googl: resolve a goo.gl / maps.app.goo.gl short link by reading its redirect
-/// `Location` header; returns the target URL as a JSON string.
-pub(crate) fn resolve_googl(id: &str, mapsapp: bool) -> tauri::http::Response<Vec<u8>> {
-    let url = if mapsapp {
-        format!("https://maps.app.goo.gl/{id}")
-    } else {
-        format!("https://goo.gl/maps/{id}")
-    };
-    match resolve_client().get(&url).send() {
-        Ok(resp) => match resp
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-        {
-            Some(location) => cors()
-                .status(200)
-                .header("Content-Type", "application/json")
-                .body(
-                    serde_json::to_string(location)
-                        .unwrap_or_default()
-                        .into_bytes(),
-                )
-                .unwrap(),
-            None => cors_resp(404, Vec::new()),
-        },
-        Err(e) => proxy_error(format!("googl fetch error: {e}")),
-    }
-}
-
-/// Application entry point. Configures panic logging, URI scheme protocols, Tauri plugins,
-/// the IPC command handler (with specta binding generation in debug builds), and window setup.
-static START_INSTANT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-static STARTUP_MS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-
+/// Milliseconds from app launch until the window was ready.
 #[tauri::command]
 #[specta::specta]
 fn app_ready() -> u32 {
@@ -560,425 +77,605 @@ fn app_ready() -> u32 {
             .map(|t| t.elapsed().as_millis() as u32)
             .unwrap_or(0);
         log::info!("[startup] app ready in {ms}ms");
+        store::engine::delta_legacy::warn_of_set_aside_deltas();
         ms
     })
 }
 
+/// Seconds the app has been running, counted from launch rather than from whenever a
+/// window last loaded its page.
+#[tauri::command]
+#[specta::specta]
+fn app_uptime() -> u32 {
+    START_INSTANT
+        .get()
+        .map_or(0, |t| t.elapsed().as_secs() as u32)
+}
+
 /// Single source of truth for the IPC command surface. Used by both the desktop
 /// app (`run`) and the web sidecar (`serve`), so adding a command here wires it
-/// for both transports automatically — no second list.
+/// for both transports automatically.
 pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new()
         .dangerously_cast_bigints_to_number()
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
-        .semantic_types(
-            specta_typescript::semantic::Configuration::default().enable_lossless_floats(),
-        )
+        .semantic_types(Configuration::default().enable_lossless_floats())
         // Exported for TS but not carried by any command signature.
-        .typ::<map_meta::CameraType>()
-        .constant("KNOWN_FIELDS", map_meta::KNOWN_FIELDS)
-        .constant("BUILTIN_FIELDS", selections::BUILTIN_FIELDS)
+        .typ::<store::maps::CameraType>()
+        .typ::<sv::pano::Pano>()
+        .typ::<sv::pano::PanoQuery>()
+        .typ::<sv::pano::PanoAnswer>()
+        .typ::<procedure::engine::ProcedureConfig<serde_json::Value>>()
         .commands(tauri_specta::collect_commands![
-            write_temp_file,
-            read_file,
-            // --- Utility ---
             app_ready,
-            get_app_data_dir,
-            get_data_location,
-            set_data_location,
-            open_data_folder,
-            open_log_file,
-            list_user_plugins,
-            install_plugin,
-            uninstall_plugin,
-            sidecar::sidecar_install,
-            sidecar::sidecar_installed_version,
-            sidecar::sidecar_request,
-            sidecar::sidecar_stop,
-            sidecar::sidecar_stop_all,
-            sidecar::sidecar_cancel,
-            borders::check_border_file,
-            borders::download_border_file,
-            borders::border_lookup,
-            borders::border_classify,
-            geocoder::reverse_geocode,
-            presence::discord_presence_set,
-            presence::discord_presence_clear,
-            remote_api::remote_api_start,
-            remote_api::remote_api_stop,
-            remote_api::remote_api_respond,
-            // --- Map lifecycle ---
-            location_store::store_open_map,
-            location_store::store_close_map,
-            location_store::store_save_dirty,
-            location_store::store_copy_locations_to_map,
-            location_store::store_get_summary,
-            // --- Map metadata ---
-            map_meta::store_list_maps,
-            map_meta::store_get_map,
-            map_meta::store_create_map,
-            map_meta::store_delete_map,
-            map_meta::store_update_map_meta,
-            map_meta::store_touch_map_opened,
-            map_meta::store_rename_folder,
-            map_meta::store_delete_folder,
-            map_meta::store_db_table_info,
-            // --- Location CRUD ---
-            location_store::store_add_locations,
-            location_store::store_remove_locations,
-            location_store::store_update_locations,
-            location_store::store_set_active,
-            location_store::store_set_marker_color,
-            location_store::store_get_location,
-            location_store::store_get_locations_by_ids,
-            location_store::store_get_all_locations,
-            location_store::store_country_distribution,
-            location_store::store_bounds,
-            location_store::store_find_nearby,
-            location_store::store_near_any,
-            location_store::store_extra_field_values,
-            // --- Tag CRUD ---
-            location_store::store_create_tags,
-            location_store::store_update_tags,
-            location_store::store_delete_tags,
-            location_store::store_reorder_tags,
-            // --- Undo / redo ---
-            location_store::store_undo,
-            location_store::store_redo,
-            location_store::store_reset_undo,
-            location_store::store_commit_diff,
-            // --- Selections ---
-            location_store::store_sync_selections,
-            location_store::store_get_selected_ids_list,
-            location_store::store_pick_spaced,
-            location_store::store_resolve_selection,
-            location_store::store_partition,
-            location_store::store_duplicate_groups,
-            location_store::store_merge_duplicates,
-            location_store::store_prune_duplicates,
-            // --- Render ---
-            location_store::store_fill_render_file,
-            location_store::store_resolve_pick,
-            // --- Import / export ---
-            import::bulk_import_preview,
-            import::bulk_import_confirm,
-            import::bulk_import_cancel,
-            import::store_import_preview,
-            import::store_import_paste_preview,
-            import::store_import_staged_location,
-            import::store_import_file,
-            export::store_export_json,
-            export::store_export_csv,
-            export::store_export_geojson,
-            export::store_save_export_file,
-            export::store_export_bulk_zip,
-            export::store_upload_begin,
-            export::store_upload_finish,
-            export::store_upload_abort,
-            // --- Version control ---
-            map_meta::store_db_clear_table,
-            map_meta::store_db_stats,
-            seen::store_seen_write,
-            seen::store_seen_list,
-            seen::store_seen_count,
-            seen::store_seen_countries,
-            seen::store_seen_maps,
-            seen::store_seen_clear,
-            review::store_review_create,
-            review::store_review_get,
-            review::store_review_list,
-            review::store_review_update,
-            review::store_review_delete,
-            remote_mapping::remote_mapping_get,
-            remote_mapping::remote_mapping_upsert,
-            remote_mapping::remote_mapping_delete,
-            remote_mapping::remote_mapping_clear,
-            sync_engine::sync_reconcile,
-            geoguessr::geoguessr_login,
-            geoguessr::geoguessr_me,
-            geoguessr::geoguessr_logout,
-            geoguessr::geoguessr_has_session,
-            vcs::store_commit,
-            vcs::store_list_commits,
-            vcs::store_checkout_commit,
-            vcs::store_get_commit_delta,
-            // --- Plugins (vali) ---
-            plugins::vali_generate,
-            plugins::vali_download,
-            plugins::vali_cancel,
-            plugins::vali_subdivisions,
+            app_uptime,
+            store::storage::write_temp_file,
+            store::storage::read_file,
+            store::storage::get_app_data_dir,
+            store::storage::get_data_location,
+            store::storage::set_data_location,
+            store::storage::open_data_folder,
+            store::storage::open_log_file,
+            plugins::user::claim_plugin_update_pass,
+            plugins::user::list_user_plugins,
+            plugins::user::install_plugin,
+            plugins::user::uninstall_plugin,
+            plugins::sidecar::sidecar_install,
+            plugins::sidecar::sidecar_installed_version,
+            plugins::sidecar::sidecar_request,
+            plugins::sidecar::sidecar_stop,
+            plugins::sidecar::sidecar_stop_all,
+            plugins::sidecar::sidecar_cancel,
+            plugins::borders::check_border_file,
+            plugins::borders::download_border_file,
+            plugins::borders::border_lookup,
+            plugins::borders::border_classify,
+            net::geocoder::reverse_geocode,
+            util::timezone_at,
+            util::reveal_window,
+            net::presence::discord_presence_set,
+            net::presence::discord_presence_clear,
+            net::github::github_start_login,
+            net::github::github_poll_login,
+            net::github::github_me,
+            net::github::github_logout,
+            net::github::github_has_session,
+            net::github::github_create_issue,
+            net::github::github_issue_thread,
+            net::feedback::feedback_log_tail,
+            net::feedback::feedback_anonymous_available,
+            net::feedback::feedback_submit_anonymous,
+            net::feedback::feedback_upload_attachment,
+            net::feedback::feedback_request_label,
+            net::feedback::feedback_anonymous_thread,
+            net::update::update_check,
+            net::update::update_install,
+            net::remote_api::remote_api_start,
+            net::remote_api::remote_api_stop,
+            net::remote_api::remote_api_respond,
+            store::commands::store_open_map,
+            store::commands::store_close_map,
+            store::commands::store_save_dirty,
+            store::commands::store_copy_locations_to_map,
+            store::commands::store_add_locations_to_map,
+            store::commands::store_get_summary,
+            store::commands::store_add_locations,
+            store::commands::store_add_locations_uploaded,
+            store::commands::store_remove_locations,
+            store::commands::store_update_locations,
+            store::commands::store_set_active,
+            store::commands::store_set_marker_color,
+            store::commands::store_resolve,
+            store::commands::store_count,
+            store::commands::store_sample,
+            store::commands::store_spaced,
+            store::commands::store_evenly_spaced,
+            store::commands::honeycomb_points,
+            store::commands::polygon_random_points,
+            store::commands::polygon_poisson_points,
+            store::commands::polygon_contains_points,
+            store::commands::polygon_bounds,
+            store::commands::polygon_fill,
+            store::commands::store_group_by,
+            store::commands::store_count_by,
+            store::commands::store_values,
+            store::commands::store_coverage,
+            store::commands::store_columns,
+            store::commands::store_bounds,
+            store::commands::store_collect,
+            store::commands::store_apply_field_op,
+            selections::field_expr::field_expr_error,
+            store::commands::store_country_distribution,
+            store::commands::store_find_nearby,
+            store::commands::store_find_nearest,
+            store::commands::store_near_any,
+            store::commands::store_patch_field_values,
+            store::commands::store_undo,
+            store::commands::store_redo,
+            store::commands::store_commit_diff,
+            store::commands::store_sync_selections,
+            store::commands::store_duplicate_groups,
+            store::commands::store_merge_duplicates,
+            store::commands::store_prune_duplicates,
+            store::commands::store_subscribe_frames,
+            store::commands::store_resolve_pick,
+            store::maps::store_list_maps,
+            store::maps::store_get_map,
+            store::maps::store_create_map,
+            store::maps::store_scratch_map,
+            store::maps::store_delete_map,
+            store::maps::store_duplicate_map,
+            store::maps::store_update_map_meta,
+            store::maps::store_touch_map_opened,
+            store::maps::store_rename_folder,
+            store::maps::store_delete_folder,
+            store::maps::store_db_stats,
+            store::map_defaults::store_get_map_defaults,
+            store::map_defaults::store_set_map_defaults,
+            io::import::bulk_import_preview,
+            io::import::bulk_import_confirm,
+            io::import::bulk_import_cancel,
+            io::import::store_import_preview,
+            io::import::store_import_paste_preview,
+            io::import::store_import_staged_location,
+            io::import::store_import_file,
+            io::import::store_import_cancel,
+            io::maps_url::parse_maps_url,
+            io::export::store_export_json,
+            io::export::store_export_csv,
+            io::export::store_export_geojson,
+            io::export::store_save_export_file,
+            io::export::store_export_bulk_zip,
+            io::export::store_upload_begin,
+            io::export::store_upload_finish,
+            io::export::store_upload_abort,
+            store::vcs::store_commit,
+            store::vcs::store_list_commits,
+            store::vcs::store_checkout_commit,
+            store::vcs::store_get_commit_delta,
+            store::seen::store_seen_write,
+            store::seen::store_seen_list,
+            store::seen::store_seen_count,
+            store::seen::store_seen_countries,
+            store::seen::store_seen_maps,
+            store::seen::store_seen_clear,
+            store::review::store_review_create,
+            store::review::store_review_get,
+            store::review::store_review_list,
+            store::review::store_review_update,
+            store::review::store_review_delete,
+            selections::saved::store_list_saved_selections,
+            selections::saved::store_get_saved_selections,
+            selections::saved::store_save_selection,
+            selections::saved::store_delete_saved_selection,
+            selections::saved::legacy::store_import_legacy_saved_selections,
+            sync::remote_mapping::remote_mapping_get,
+            sync::remote_mapping::remote_mapping_upsert,
+            sync::remote_mapping::remote_mapping_delete,
+            sync::remote_mapping::remote_mapping_clear,
+            sync::engine::sync_reconcile,
+            sync::log::sync_log_append,
+            sync::log::sync_log_list,
+            sync::map_making::map_making_me,
+            sync::map_making::map_making_validate,
+            sync::map_making::map_making_maps,
+            sync::map_making::map_making_create_map,
+            sync::map_making::map_making_set_key,
+            sync::map_making::map_making_has_key,
+            sync::file::file_source_probe,
+            net::geoguessr::geoguessr_login,
+            net::geoguessr::geoguessr_me,
+            net::geoguessr::geoguessr_logout,
+            net::geoguessr::geoguessr_has_session,
+            plugins::vali::vali_generate,
+            plugins::vali::vali_download,
+            plugins::vali::vali_cancel,
+            plugins::vali::vali_subdivisions,
+            plugins::vali::vali_countries,
+            plugins::vali::vali_data_status,
+            plugins::vali::vali_download_stale,
+            procedure::engine::procedure_run,
+            procedure::engine::procedure_run_rows,
+            procedure::engine::procedure_cancel,
+            procedure::engine::procedure_query,
+            procedure::engine::procedure_reserve_run,
+            procedure::engine::procedure_activity,
         ])
         .events(tauri_specta::collect_events![
-            sidecar::SidecarProgress,
-            sidecar::SidecarLine,
-            sidecar::SidecarLog,
-            sidecar::SidecarDone,
-            import::ImportProgress,
-            export::ExportProgress,
-            location_store::ExternalMutation,
-            plugins::ValiProgress,
+            plugins::sidecar::SidecarProgress,
+            plugins::sidecar::SidecarLine,
+            plugins::sidecar::SidecarLog,
+            plugins::sidecar::SidecarDone,
+            io::import::ImportProgress,
+            io::export::ExportProgress,
+            store::engine::ExternalMutation,
+            store::engine::StoreWarning,
+            plugins::vali::ValiProgress,
+            procedure::engine::ProcedureProgress,
+            procedure::engine::ProcedureResult,
+            net::update::UpdateProgress,
         ])
+}
+
+/// Regenerate `../src/bindings.gen.ts` from [`specta_builder`].
+#[cfg(debug_assertions)]
+#[allow(clippy::print_stderr)]
+pub fn export_bindings() -> Result<(), String> {
+    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/bindings.gen.ts");
+    specta_builder()
+        .export(specta_typescript::Typescript::default(), &out)
+        .map_err(|e| format!("{e:?}"))?;
+    // Collapse specta's `Foo_Serialize | Foo_Deserialize` unions into one `Foo`. The
+    // union line carries its own copy of the type's doc comment, which would be left
+    // orphaned above the real declaration, so it goes with the line.
+    let src = fs::read_to_string(&out).expect("read bindings");
+    let mut kept: Vec<&str> = Vec::new();
+    for line in src.lines() {
+        let is_union = line.starts_with("export type ")
+            && line.contains("_Serialize | ")
+            && line.contains("_Deserialize;");
+        if !is_union {
+            kept.push(line);
+            continue;
+        }
+        while kept.last().is_some_and(|l| l.trim().is_empty()) {
+            kept.pop();
+        }
+        if kept.last().is_some_and(|l| l.trim_end().ends_with("*/")) {
+            while let Some(l) = kept.pop() {
+                if l.trim_start().starts_with("/**") {
+                    break;
+                }
+            }
+        }
+    }
+    let promoted: String = kept
+        .iter()
+        .map(|l| l.replace("_Serialize", "") + "\n")
+        .collect();
+    let names = wire_string_enums().map(|(name, _)| name);
+    let cleaned = owned_by_consts(&promoted, &names)
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&out, cleaned.trim_end().to_owned() + "\n").expect("write bindings");
+    eprintln!("[specta] bindings exported to {}", out.display());
+    export_consts()
+}
+
+fn wire_string_enums() -> [(&'static str, TsConst); 12] {
+    [
+        ("CameraType", store::maps::CameraType::ts_const()),
+        ("CapturePick", store::maps::CapturePick::ts_const()),
+        ("DatePart", selections::DatePart::ts_const()),
+        ("FieldType", store::maps::FieldType::ts_const()),
+        ("FirstSyncMode", sync::FirstSyncMode::ts_const().unstable()),
+        ("IssueState", net::github::IssueState::ts_const().unstable()),
+        ("MapShape", types::shape::MapShape::ts_const()),
+        ("MergeWinner", store::engine::MergeWinner::ts_const()),
+        ("RateCost", net::fetch::RateCost::ts_const()),
+        (
+            "ResolutionSide",
+            sync::engine::ResolutionSide::ts_const().unstable(),
+        ),
+        ("Sink", procedure::engine::Sink::ts_const()),
+        ("SyncTrigger", sync::log::SyncTrigger::ts_const().unstable()),
+    ]
+}
+
+fn owned_by_consts(src: &str, names: &[&str]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
+        if !names
+            .iter()
+            .any(|n| line.starts_with(&format!("export type {n} = ")))
+        {
+            out.push(line.to_string());
+            continue;
+        }
+        let mut end = line;
+        while !end.trim_end().ends_with(';') {
+            match lines.next() {
+                Some(next) => end = next,
+                None => break,
+            }
+        }
+        while out.last().is_some_and(|l| l.trim().is_empty()) {
+            out.pop();
+        }
+        if out.last().is_some_and(|l| l.trim_end().ends_with("*/")) {
+            while let Some(l) = out.pop() {
+                if l.trim_start().starts_with("/**") {
+                    break;
+                }
+            }
+        }
+    }
+    let at = out
+        .iter()
+        .position(|l| l.starts_with("import * as __TAURI_EVENT"))
+        .map_or(0, |i| i + 1);
+    out.insert(
+        at,
+        format!(
+            "import type {{ {} }} from \"./bindings.consts\";",
+            names.join(", ")
+        ),
+    );
+    out.join("\n") + "\n"
+}
+
+/// Values Rust owns that TypeScript mirrors, in their own file because it must stay
+/// import-free: the procedure sandbox bundles it and may not reach Tauri.
+#[allow(clippy::print_stderr)]
+fn export_consts() -> Result<(), String> {
+    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/bindings.consts.ts");
+    let mut ts = String::from(
+        "// Generated by `npm run gen:bindings`. Do not edit.
+// No imports, ever: procedures bundle this file and must not reach Tauri.
+",
+    );
+    for (name, konst) in wire_string_enums().into_iter().chain([
+        ("LocationFlag", types::LocationFlags::ts_const()),
+        ("PanoType", sv::schema::PanoType::ts_const()),
+        ("RankingStrategy", sv::schema::RankingStrategy::ts_const()),
+        ("ValidationFlag", types::ValidationFlag::ts_const()),
+        ("SyncDirection", sync::SyncDirection::ts_const().unstable()),
+        ("BUILTIN_FIELDS", TsConst::value(selections::BUILTIN_FIELDS)),
+        ("FrameKind", store::engine::FrameKind::ts_const().unstable()),
+        ("NO_SEL", TsConst::value(store::engine::NO_SEL).unstable()),
+        (
+            "OFFICIAL_ID_PATTERN",
+            TsConst::value(sv::pano_id::OFFICIAL_ID_PATTERN),
+        ),
+        (
+            "CLEARABLE_BUILTINS",
+            TsConst::value(store::engine::clearable_builtins()).unstable(),
+        ),
+        (
+            "EFFECT_CALLS",
+            TsConst::value(procedure::quickjs::EFFECT_CALLS).unstable(),
+        ),
+        (
+            "PLAIN_CALLS",
+            TsConst::value(procedure::quickjs::PLAIN_CALLS).unstable(),
+        ),
+        (
+            "DEFAULT_DUPLICATE_SCORE",
+            TsConst::value(selections::DEFAULT_DUPLICATE_SCORE).unstable(),
+        ),
+        ("KNOWN_FIELDS", TsConst::value(store::maps::KNOWN_FIELDS)),
+        (
+            "PROJECTIONS",
+            TsConst::value(selections::PROJECTIONS).unstable(),
+        ),
+        (
+            "SYNC_PROVIDERS",
+            TsConst::value(
+                sync::engine::PROVIDERS
+                    .iter()
+                    .map(|s| (s.id, s))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+            .with_doc(&[
+                "Every sync provider: which way it carries changes, and what it keeps of a map.",
+            ])
+            .unstable(),
+        ),
+        (
+            "SCRATCH_MAP_ID",
+            TsConst::value(store::maps::SCRATCH_MAP_ID).unstable(),
+        ),
+        (
+            "ERROR_CODES",
+            TsConst::value(
+                types::ErrCode::ALL
+                    .iter()
+                    .map(|c| c.wire())
+                    .collect::<Vec<_>>(),
+            )
+            .unstable(),
+        ),
+    ]) {
+        ts.push_str(&konst.render(name));
+    }
+    for (name, value, doc) in types::LocationFlags::WIRE_CONSTS {
+        ts.push_str(&TsConst::value(value).with_doc(doc).unstable().render(name));
+    }
+    fs::write(&out, ts).map_err(|e| e.to_string())?;
+    eprintln!("[specta] constants exported to {}", out.display());
+    Ok(())
+}
+
+fn log_plugin() -> TauriPlugin<tauri::Wry> {
+    tauri_plugin_log::Builder::default()
+        .level(if cfg!(debug_assertions) {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Info
+        })
+        // updater dumps full release manifests at debug
+        .level_for("tauri_plugin_updater", log::LevelFilter::Info)
+        .max_file_size(2_000_000)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+        // default targets include LogDir{None} ("Map Making App.log"); .target()
+        // appends, so without clearing, every line is written to two files
+        .clear_targets()
+        .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Stdout,
+        ))
+        .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::LogDir {
+                file_name: Some("mma".to_string()),
+            },
+        ))
+        .build()
+}
+
+/// Raise whatever window the running instance already has, so a second launch reads as
+/// "the app is over here" rather than as nothing happening.
+#[cfg(not(feature = "e2e"))]
+fn focus_existing(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(window) = app
+        .webview_windows()
+        .into_values()
+        .next()
+        .map(|w| w.as_ref().window())
+    else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+fn setup(app: &mut tauri::App) -> Result<(), Box<dyn error::Error>> {
+    let t = Instant::now();
+    init_backend(app.handle())?;
+    let swept = store::storage::sweep_orphaned_tmp();
+    if swept > 0 {
+        log::info!("[startup] swept {swept} orphaned .tmp files");
+    }
+    match store::maps::purge_scratch_map() {
+        Ok(true) => log::info!("[startup] dropped last session's scratch map"),
+        Ok(false) => {}
+        Err(e) => log::warn!("[startup] scratch map purge failed: {e}"),
+    }
+    log::info!("[startup] migrations: {}ms", t.elapsed().as_millis());
+
+    #[cfg(feature = "e2e")]
+    e2e::seed_gg_session();
+
+    thread::spawn(|| {
+        plugins::borders::update_border_files();
+        plugins::borders::warm();
+    });
+    thread::spawn(net::geocoder::warm);
+
+    #[cfg(all(debug_assertions, windows))]
+    stall_reporter::start();
+
+    #[cfg(desktop)]
+    {
+        app.handle().plugin(tauri_plugin_process::init())?;
+    }
+
+    if let Some(t0) = START_INSTANT.get() {
+        log::info!(
+            "[startup] setup done: {}ms since run()",
+            t0.elapsed().as_millis()
+        );
+    }
+    Ok(())
+}
+
+/// reqwest is built with rustls-no-provider; every entry point installs the process-wide
+/// provider up front instead of leaving it to whichever client initializes first.
+pub(crate) fn install_crypto_provider() {
+    use rustls::crypto::ring;
+    let _ = ring::default_provider().install_default();
+}
+
+/// The state every command handler reads, shared by every entry point that serves them.
+pub(crate) fn manage_command_state(
+    builder: tauri::Builder<tauri::Wry>,
+) -> tauri::Builder<tauri::Wry> {
+    builder
+        .manage(store::engine::StoreState::new(
+            store::engine::StoreManager::new(),
+        ))
+        .manage(plugins::vali::ValiState::new())
+}
+
+/// Startup shared by every entry point that serves commands.
+pub(crate) fn init_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn error::Error>> {
+    // GTK adopts the user's LC_NUMERIC, and QuickJS parses numbers with strtod.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
+    }
+    let _ = APP_HANDLE.set(app.clone());
+    store::storage::init_paths(app)?;
+    store::storage::run_migrations()?;
+    store::engine::delta_legacy::convert_msgpack_deltas();
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = START_INSTANT.set(std::time::Instant::now());
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
+    let _ = START_INSTANT.set(Instant::now());
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
         log::error!("[PANIC] {info}");
         default_hook(info);
     }));
-    let builder = tauri::Builder::default()
-        .register_asynchronous_uri_scheme_protocol("mma-tencent-archive", |ctx, req, responder| {
-            let app = ctx.app_handle().clone();
-            let query = req.uri().query().unwrap_or_default().to_string();
-            respond_async(responder, move || {
-                crate::tencent_coverage::response(&app, &query)
-            });
-        })
-        .register_asynchronous_uri_scheme_protocol("mma-buf", |_ctx, req, responder| {
-            let raw = percent_encoding::percent_decode_str(req.uri().path())
-                .decode_utf8_lossy()
-                .into_owned();
-            // Uploads POST binary bodies (image/jpeg), which makes the browser
-            // preflight the cross-origin request first.
-            if req.method() == tauri::http::Method::OPTIONS {
-                responder.respond(
-                    cors()
-                        .status(204)
-                        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                        .header("Access-Control-Allow-Headers", "*")
-                        .body(Vec::new())
-                        .unwrap(),
-                );
-                return;
-            }
-            let post_body = (req.method() == tauri::http::Method::POST).then(|| req.body().clone());
-            respond_async(responder, move || {
-                let _t = std::time::Instant::now();
-                let trimmed = raw.trim_start_matches('/');
-                let clean = if trimmed.starts_with(|c: char| c.is_ascii_alphabetic())
-                    && trimmed.as_bytes().get(1) == Some(&b':')
-                {
-                    trimmed
-                } else {
-                    &raw
-                };
-                if let Some(body) = post_body {
-                    return write_upload(clean, &body);
-                }
-                match std::fs::read(clean) {
-                    Ok(data) => {
-                        log::debug!(
-                            "[mma-buf] read {} bytes in {:.1}ms",
-                            data.len(),
-                            _t.elapsed().as_secs_f64() * 1000.0
-                        );
-                        cors()
-                            .header("Content-Type", "application/octet-stream")
-                            .body(data)
-                            .unwrap()
-                    }
-                    Err(e) => cors_resp(404, format!("file not found: {clean} — {e}").into_bytes()),
-                }
-            });
-        })
-        .register_uri_scheme_protocol("mma-plugin", |_ctx, req| {
-            let plugins_dir = storage::app_data_dir().unwrap_or_default().join("plugins");
-            let path = percent_encoding::percent_decode_str(req.uri().path()).decode_utf8_lossy();
-            let resolved = plugins_dir.join(path.trim_start_matches('/'));
-            let canonical = resolved.canonicalize().unwrap_or_default();
-            if !canonical.starts_with(&plugins_dir) {
-                return tauri::http::Response::builder()
-                    .status(403)
-                    .body(vec![])
-                    .unwrap();
-            }
-            match std::fs::read(&canonical) {
-                Ok(data) => {
-                    let mime = if canonical
-                        .extension()
-                        .is_some_and(|e| e == "js" || e == "mjs")
-                    {
-                        "application/javascript"
-                    } else {
-                        "application/octet-stream"
-                    };
-                    cors().header("Content-Type", mime).body(data).unwrap()
-                }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .body(vec![])
-                    .unwrap(),
-            }
-        })
-        .register_asynchronous_uri_scheme_protocol("svtile", |_ctx, req, responder| {
-            let path = req.uri().path().trim_start_matches('/').to_string();
-            let query = req
-                .uri()
-                .query()
-                .map(|q| format!("?{q}"))
-                .unwrap_or_default();
-            let url = format!("https://lh3.ggpht.com/jsapi2/a/b/c/{path}{query}");
-            respond_async(responder, move || fetch_svtile(&url));
-        })
-        .register_asynchronous_uri_scheme_protocol("gmaps", |_ctx, req, responder| {
-            let path = req.uri().path().to_string();
-            let query = req
-                .uri()
-                .query()
-                .map(|q| format!("?{q}"))
-                .unwrap_or_default();
-            let url = format!("https://www.google.com{path}{query}");
-            let method = req.method().clone();
-            let content_type = req
-                .headers()
-                .get(tauri::http::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("application/x-www-form-urlencoded")
-                .to_string();
-            let user_agent = req
-                .headers()
-                .get(tauri::http::header::USER_AGENT)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let body = req.body().clone();
-            respond_async(responder, move || {
-                proxy_gmaps(method, &url, content_type, user_agent, body)
-            });
-        })
-        .register_asynchronous_uri_scheme_protocol("ggapi", |_ctx, req, responder| {
-            if req.method() == tauri::http::Method::OPTIONS {
-                responder.respond(
-                    cors()
-                        .status(204)
-                        .header(
-                            "Access-Control-Allow-Methods",
-                            "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                        )
-                        .header("Access-Control-Allow-Headers", "*")
-                        .body(Vec::new())
-                        .unwrap(),
-                );
-                return;
-            }
-            let path = req.uri().path().to_string();
-            let query = req.uri().query().map(str::to_string);
-            let method = req.method().clone();
-            let content_type = req
-                .headers()
-                .get(tauri::http::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            let body = req.body().clone();
-            respond_async(responder, move || {
-                geoguessr::proxy(method, &path, query.as_deref(), content_type, body)
-            });
-        })
-        .register_asynchronous_uri_scheme_protocol("gdoc", |_ctx, req, responder| {
-            let doc_id = req.uri().path().trim_start_matches('/').to_string();
-            respond_async(responder, move || gdoc::fetch_gdoc(&doc_id));
-        })
-        .register_asynchronous_uri_scheme_protocol("googl", |_ctx, req, responder| {
-            let id = req.uri().path().trim_start_matches('/').to_string();
-            let mapsapp = req
-                .uri()
-                .query()
-                .unwrap_or("")
-                .split('&')
-                .any(|kv| kv == "source=mapsapp");
-            respond_async(responder, move || resolve_googl(&id, mapsapp));
-        })
+
+    install_crypto_provider();
+
+    #[cfg(debug_assertions)]
+    if let Err(e) = export_bindings() {
+        log::error!("[specta] export FAILED: {e}");
+    }
+
+    let builder = net::proxy::register_schemes(tauri::Builder::default());
+
+    // Registered first, before any plugin that opens a file: a second process would hold its
+    // own overlay over the same delta files, and whichever autosaved last would silently
+    // discard the other's uncommitted edits. Exempt under `e2e`, where running a second
+    // process beside a live app is the point.
+    #[cfg(not(feature = "e2e"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        focus_existing(app);
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(location_store::StoreState::new(
-            location_store::StoreManager::new(),
-        ))
-        .manage(plugins::ValiState::new())
-        .invoke_handler({
-            let specta_builder = specta_builder();
-
-            #[cfg(debug_assertions)]
-            {
-                let out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../src/bindings.gen.ts");
-                eprintln!("[specta] exporting to {}", out.display());
-                match specta_builder.export(specta_typescript::Typescript::default(), &out) {
-                    Ok(()) => {
-                        promote_serialize_bindings(&out);
-                        eprintln!("[specta] bindings exported OK");
-                    }
-                    Err(e) => {
-                        eprintln!("[specta] export FAILED: {e}");
-                        eprintln!("[specta] debug: {e:?}");
-                    }
-                }
-            }
-
-            specta_builder.invoke_handler()
-        })
+        .plugin(log_plugin())
         .plugin(
-            tauri_plugin_log::Builder::default()
-                .level(if cfg!(debug_assertions) {
-                    log::LevelFilter::Debug
-                } else {
-                    log::LevelFilter::Info
-                })
-                // updater dumps full release manifests at debug
-                .level_for("tauri_plugin_updater", log::LevelFilter::Info)
-                .max_file_size(2_000_000)
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
-                // default targets include LogDir{None} ("Map Making App.log"); .target()
-                // appends, so without clearing, every line is written to two files
-                .clear_targets()
-                .target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::Stdout,
-                ))
-                .target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("mma".to_string()),
-                    },
-                ))
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    // MAXIMIZED excluded: tao's SW_MAXIMIZE reveals a hidden window, so the
+                    // creation-time restore would defeat the first-frame show gate. The
+                    // frontend re-applies it right before showing (window.ts).
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::VISIBLE
+                        - tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
                 .build(),
-        );
-
-    #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
-
-    let builder = builder.setup(|app| {
-        let t = std::time::Instant::now();
-        let _ = APP_HANDLE.set(app.handle().clone());
-        storage::init_paths(app.handle())?;
-        storage::run_migrations()?;
-        log::info!("[startup] migrations: {}ms", t.elapsed().as_millis());
-
-        #[cfg(desktop)]
-        {
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
-            app.handle().plugin(tauri_plugin_process::init())?;
-        }
-
-        if let Some(t0) = START_INSTANT.get() {
-            log::info!(
-                "[startup] setup done: {}ms since run()",
-                t0.elapsed().as_millis()
-            );
-        }
-        Ok(())
-    });
+        )
+        .invoke_handler(specta_builder().invoke_handler())
+        .setup(setup);
+    let builder = manage_command_state(builder);
 
     #[cfg(feature = "e2e")]
     let builder = builder.plugin(tauri_plugin_webdriver::init());
 
     builder
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application")
         .run(|_app, event| {
+            #[cfg(all(debug_assertions, windows))]
+            stall_reporter::beat();
             if let tauri::RunEvent::Exit = event {
-                sidecar::kill_all_sidecars();
-                presence::shutdown();
+                plugins::sidecar::kill_all_sidecars();
+                net::presence::shutdown();
             }
         });
+}
+
+// The bindings gate reuses the library test executable instead of linking the desktop app.
+#[cfg(all(test, debug_assertions))]
+#[test]
+#[ignore = "regenerates committed bindings; run by the bindings gate"]
+fn export_bindings_for_gate() {
+    export_bindings().expect("bindings export failed");
+}
+
+// Use one macro expansion so macOS embeds one Info.plist in both entry points.
+pub(crate) fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }

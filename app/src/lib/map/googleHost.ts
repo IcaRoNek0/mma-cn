@@ -5,6 +5,7 @@ import type { GoogleMapsOverlayProps } from "@deck.gl/google-maps";
 import type { PickingInfo } from "@deck.gl/core";
 import { registerDeckStats, type DeckMetrics } from "@/lib/render/renderStats";
 import { google } from "@/lib/sv/opensv";
+import { releaseDeckContext } from "@/lib/render/webglContexts";
 import { resolveStackForPrefs } from "@/lib/geo/mapStack";
 import { getStyleBackgroundColor } from "@/lib/geo/mapStyles";
 import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
@@ -32,6 +33,7 @@ const EVENT_NAMES: Record<keyof MapHostEvents, string> = {
 	mouseout: "mouseout",
 	zoom: "zoom_changed",
 	camera: "bounds_changed",
+	idle: "idle",
 	tilesloaded: "tilesloaded",
 };
 
@@ -43,12 +45,11 @@ class GoogleDeckOverlay implements DeckOverlayHandle {
 	private raf = 0;
 	private finalized = false;
 	private unregisterStats: () => void;
+	private onFinalize: (self: GoogleDeckOverlay) => void;
 	props: Partial<DeckOverlayProps> = {};
 
-	constructor(
-		map: google.maps.Map,
-		private onFinalize: (self: GoogleDeckOverlay) => void,
-	) {
+	constructor(map: google.maps.Map, onFinalize: (self: GoogleDeckOverlay) => void) {
+		this.onFinalize = onFinalize;
 		this.unregisterStats = registerDeckStats({
 			getLayerCount: () => this.props.layers?.length ?? 0,
 			getMetrics: () =>
@@ -100,6 +101,10 @@ class GoogleDeckOverlay implements DeckOverlayHandle {
 		this.finalized = true;
 		this.unregisterStats();
 		if (this.raf) cancelAnimationFrame(this.raf);
+		releaseDeckContext(
+			(this.overlay as unknown as { _deck?: Parameters<typeof releaseDeckContext>[0] } | null)
+				?._deck,
+		);
 		this.overlay?.setMap(null);
 		this.overlay?.finalize();
 		this.overlay = null;
@@ -241,9 +246,7 @@ class GoogleMapHost implements MapHostContract<"google"> {
 	}
 
 	applyPrefs(prefs: MapEmbedPrefs, opts: BasemapOpts) {
-		const { mapType: stack } = resolveStackForPrefs(prefs, {
-			customStyles: opts.customStyles,
-		});
+		const stack = resolveStackForPrefs(prefs, { customStyles: opts.customStyles });
 		this.map.mapTypes.set("stack", stack);
 		this.map.setMapTypeId("stack");
 		const bg = getStyleBackgroundColor(prefs.mapStyleName);

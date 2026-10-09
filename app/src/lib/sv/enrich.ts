@@ -1,241 +1,142 @@
-import { fetchSvMetadata } from "@/lib/sv/svMeta";
-import { resolveExactTimestamp } from "@/lib/sv/exactDate";
-import { resolveTimezone } from "@/lib/util/timezone";
-import { ymFromDate } from "@/lib/util/date";
-import { getMapState, updateLocations, fetchLocationsByIds } from "@/store/useMapStore";
-import {
-	filterEnrichPatch,
-	isFieldEnabled,
-	getEnrichmentProviders,
-	getDefaultEnrichKeys,
-	knownFieldDefs,
-	registerEnrichmentProvider,
-	providerWaves,
-	type EnrichmentProvider,
-} from "@/lib/data/fieldDefs";
-import { registerSvResolver, runResolvers, type SvResolver } from "@/lib/sv/svRunner";
-import { SV_CONCURRENCY } from "@/lib/sv/constants";
+import { chinaPano, locationSource } from "@/lib/pano/bridge";
+import { getPanoramaProvider, isPanoSource, parsePanoDate } from "@/lib/pano";
 import { runConcurrent } from "@/lib/util/concurrent";
-import { log } from "@/lib/util/log";
-import { cmd } from "@/lib/commands";
-import { toast } from "@/lib/util/toast";
-import type { Location } from "@/bindings.gen";
-import { msg, t } from "@/lib/i18n";
+import { msg } from "@/lib/i18n";
+import { getMapState, query, updateLocations } from "@/store/useMapStore";
+import { getProviders, getDefaultEnrichKeys } from "@/lib/data/fieldDefs";
+import { runProviders, type ProcedureOutcome, type RunOpts } from "@/lib/data/procedures";
+import { enrichRuns, panoResolveProvider } from "@/lib/sv/providers";
+import { all, any, lacks } from "@/store/selections";
+import type { Location, Selector } from "@/bindings.gen";
 
-/** True when the location is missing any of the given enrich fields (default: the enabled set). */
-export function needsEnrichment(loc: Location, enrichFields?: string[]): boolean {
-	const fields = enrichFields ?? getDefaultEnrichKeys();
-	return fields.some((key) => loc.extra?.[key] == null);
-}
-
-export function buildPatch(
-	data: google.maps.StreetViewPanoramaData,
-	loc: Location,
-	enrichFields: string[] | null,
-): Record<string, unknown> | null {
-	if (!data.extra) return null;
-	const fullPatch: Record<string, unknown> = {
-		altitude: data.extra.altitude ?? 0,
-		countryCode: data.extra.countryCode ?? null,
-		cameraType: data.extra.cameraType ?? null,
-		panoType: data.extra.panoType ?? null,
-		drivingDirection: data.extra.drivingDirection ?? null,
-		uploaderName: data.extra.uploaderName ?? null,
-		imageDate: data.imageDate || null,
-		coverageDates: data.time?.filter((t) => t.date).map((t) => ymFromDate(t.date!)) ?? [],
-	};
-	const filtered = filterEnrichPatch(fullPatch, enrichFields);
-	// Stale exact-date data is wrong once imageDate changes; clear it regardless of the
-	// active enrich set (the filter would otherwise drop the null when datetime is off).
-	if (loc.extra?.imageDate !== fullPatch.imageDate && loc.extra?.datetime != null) {
-		filtered.datetime = null;
-		filtered.timezone = null;
-	}
-	return filtered;
-}
-
-/** Enrich a single location (used on pano load). */
+/** Enrich a single location with the map's enabled metadata fields. Existing fields are
+ *  kept unless `force` re-derives all of them. Returns the enriched location without
+ *  writing it. Returns the location unchanged when enrichment is disabled. */
 export async function enrich(
 	loc: Location,
-	data?: google.maps.StreetViewPanoramaData | null,
-): Promise<boolean> {
-	if (!data) {
-		if (!loc.panoId) return false;
-		[data] = await fetchSvMetadata([loc.panoId]);
-		if (!data) return false;
-	}
+	opts: Omit<RunOpts, "onProgress"> = {},
+): Promise<Location> {
 	const map = getMapState().map;
-	if (!map || !map.meta.settings.enrichMetadata) return false;
-	const enrichFields = map.meta.settings.enrichFields ?? getDefaultEnrichKeys();
-	const write = (extra: Record<string, unknown>) =>
-		updateLocations([{ id: loc.id, patch: { extra } }], { undoable: false });
-
-	const corePatch = buildPatch(data, loc, enrichFields);
-	if (corePatch && Object.keys(corePatch).length > 0) await write(corePatch);
-
-	// Providers run in dependency waves against fresh store data, same as the bulk
-	// path: core fields (imageDate) are in place before wave 1, and a provider that
-	// `requires` another provider's field sees it written before its wave runs.
-	for (const wave of providerWaves(getEnrichmentProviders())) {
-		const [fresh] = await fetchLocationsByIds([loc.id]);
-		if (!fresh) break;
-		const results = await Promise.all(
-			wave.map((provider) => provider.enrich([fresh], enrichFields).then((m) => m.get(loc.id))),
-		);
-		const merged = Object.assign({}, ...results.filter(Boolean));
-		if (Object.keys(merged).length > 0) await write(merged);
-	}
-	return true;
+	if (!map || !map.settings.enrichMetadata) return loc;
+	if (isPanoSource(loc.extra?.source)) return enrichChina(loc, opts);
+	const runs = enrichRuns(map.settings.enrichFields ?? getDefaultEnrichKeys());
+	const { rows } = await runProviders(runs, [loc], opts);
+	return rows[0];
 }
 
-// --- Resolvers ---
-
-/** Core metadata enrichment: pano data -> `extra` fields. Drives the provider pass. */
-export const enrichMetaResolver: SvResolver = {
-	id: "enrichMeta",
-	label: msg("Enrich metadata"),
-	pending: (loc, force) => {
-		if (force) return true;
-		const map = getMapState().map;
-		const fields = map?.meta.settings.enrichFields ?? getDefaultEnrichKeys();
-		return needsEnrichment(loc, fields);
-	},
-	needsPanoResolve: (loc) => !loc.panoId,
-	needsMetadata: true,
-	runsProviders: true,
-	resolve: (loc, data, ctx) => {
-		if (!data) return null;
-		const patch = buildPatch(data, loc, (ctx.config as string[] | null) ?? null);
-		return patch ? { extra: patch } : null;
-	},
-};
-
-/** Exact capture timestamp: binary-searches Google's SingleImageSearch per location.
- *  A slow enrichment provider -- runs in a dependency wave after the core metadata
- *  pass has written `imageDate`. */
-export const exactDateProvider: EnrichmentProvider = {
-	id: "exactDate",
-	label: msg("Exact dates"),
-	requires: ["imageDate"],
-	fieldDefs: knownFieldDefs("datetime", "timezone"),
-	units: (locations, enrichFields, force) =>
-		isFieldEnabled(enrichFields, "datetime")
-			? locations.filter((l) => l.extra?.imageDate && (force || l.extra?.datetime == null)).length
-			: 0,
-	async enrich(locations, enrichFields, ctx) {
-		const out = new Map<number, Record<string, unknown>>();
-		if (!isFieldEnabled(enrichFields, "datetime")) return out;
-		const pending = locations.filter(
-			(l) => l.extra?.imageDate && (ctx?.force || l.extra?.datetime == null),
-		);
-		// On abort, stop early and return what resolved so far -- the runner persists
-		// partial results before propagating the abort, so the signal isn't passed to
-		// runConcurrent (which would throw instead).
-		await runConcurrent(
-			pending,
-			async (loc) => {
-				if (ctx?.signal?.aborted) return;
-				try {
-					const ts = await resolveExactTimestamp(
-						loc.lat,
-						loc.lng,
-						loc.extra!.imageDate as string,
-						ctx?.signal,
-					);
-					const tz = resolveTimezone(loc.lat, loc.lng);
-					const patch = filterEnrichPatch({ datetime: ts, timezone: tz }, enrichFields);
-					if (Object.keys(patch).length > 0) out.set(loc.id, patch);
-				} catch (e) {
-					// An abort mid-search is not a failure -- bail without recording one.
-					if (ctx?.signal?.aborted) return;
-					log.warn(
-						`[exactDate] failed for ${loc.id} (${loc.lat},${loc.lng} ${loc.extra!.imageDate}):`,
-						e,
-					);
-					ctx?.onFail?.(loc.id);
-				}
-				ctx?.onUnit?.();
-			},
-			{ concurrency: SV_CONCURRENCY },
-		);
-		return out;
-	},
-};
-
-let adm1Ready: Promise<boolean> | null = null;
-function ensureAdm1(): Promise<boolean> {
-	adm1Ready ??= (async () => {
-		if (await cmd.checkBorderFile("adm1")) return true;
-		toast(t("Subdivision borders missing - downloading..."));
-		try {
-			await cmd.downloadBorderFile("adm1");
-			return true;
-		} catch {
-			toast(t("Couldn't download subdivision borders - check your connection"));
-			adm1Ready = null;
-			return false;
+async function enrichChina(loc: Location, opts: Omit<RunOpts, "onProgress">): Promise<Location> {
+	const map = getMapState().map!;
+	{
+		const source = locationSource(loc);
+		let resolved = loc;
+		if (!loc.panoId) {
+			const nearest = await getPanoramaProvider(source).findNearest(loc, 18, opts.signal);
+			if (!nearest) return loc;
+			resolved = { ...loc, panoId: nearest.panoId };
 		}
-	})();
-	return adm1Ready;
+		const pano = await chinaPano(resolved, opts.signal);
+		if (!pano) return loc;
+		const wanted = new Set(map.settings.enrichFields ?? getDefaultEnrichKeys());
+		const values: Record<string, unknown> = {
+			imageDate: pano.imageDate,
+			coverageDates: pano.coverageDates,
+			altitude: pano.altitude,
+			cameraType: pano.cameraType,
+			drivingDirection: pano.centerHeading,
+			datetime: pano.date ? parsePanoDate(pano.id, source).toISOString() : null,
+		};
+		const extra = { ...loc.extra };
+		for (const [key, value] of Object.entries(values)) {
+			if (wanted.has(key) && value != null && (opts.force || extra[key] == null))
+				extra[key] = value;
+		}
+		const row = { ...resolved, extra: { ...extra, source: pano.source } };
+		opts.onPartial?.([row]);
+		return row;
+	}
 }
-
-/** Subdivision (adm1) via offline point-in-polygon against the local border dataset.
- *  No Google dependency; downloads the adm1 archive on first use. */
-export const subdivisionProvider: EnrichmentProvider = {
-	id: "subdivision",
-	fieldDefs: {
-		subdivision: { type: "string", label: msg("Subdivision") },
-	},
-	async enrich(locations, enrichFields, ctx) {
-		const out = new Map<number, Record<string, unknown>>();
-		if (!isFieldEnabled(enrichFields, "subdivision")) return out;
-		const pending = locations.filter((l) => ctx?.force || l.extra?.subdivision == null);
-		if (pending.length === 0 || !(await ensureAdm1())) return out;
-		const names = await cmd.borderClassify(
-			"adm1",
-			pending.map((l) => [l.lat, l.lng] as [number, number]),
-		);
-		pending.forEach((l, i) => {
-			if (names[i] != null) out.set(l.id, { subdivision: names[i] });
-		});
-		return out;
-	},
-};
-
-registerSvResolver(enrichMetaResolver);
-registerEnrichmentProvider(exactDateProvider);
-registerEnrichmentProvider(subdivisionProvider);
 
 /** One summary row per pass that did work: the core metadata pass, then every
  *  provider that updated or failed at least one location. */
-export interface EnrichOutcome {
+export interface EnrichOutcome extends ProcedureOutcome {
 	id: string;
 	label: string;
-	success: number[];
-	failed: number[];
 }
-export type EnrichResult = EnrichOutcome[];
-
-/** Bulk enrich: selector over the resolver engine. Runs `enrichMeta`, then the
- *  enrichment providers (exact date among them) in dependency waves. */
-export async function enrichAll(
-	locations: Location[],
-	opts: {
-		signal?: AbortSignal;
-		force?: boolean;
-		onProgress?: (done: number, total: number, label?: string) => void;
-	} = {},
-): Promise<EnrichResult> {
+/** Bulk-enrich a selector: resolve missing pano ids, then run every field-producing
+ *  provider (metadata, exact date, timezone, subdivision). */
+export async function enrichAll(selector: Selector, opts: RunOpts = {}): Promise<EnrichOutcome[]> {
 	const map = getMapState().map;
 	if (!map) return [];
-	const enrichFields = map.meta.settings.enrichFields ?? getDefaultEnrichKeys();
+	const rows = await query(selector).locations();
+	const china = rows.filter((row) => isPanoSource(row.extra?.source));
+	if (china.length > 0) {
+		const failed: number[] = [];
+		let done = 0;
+		const updates: { id: number; patch: { panoId: string | null; extra: Location["extra"] } }[] =
+			[];
+		await runConcurrent(
+			china,
+			async (row) => {
+				try {
+					const enriched = await enrichChina(row, opts);
+					opts.signal?.throwIfAborted();
+					updates.push({ id: row.id, patch: { panoId: enriched.panoId, extra: enriched.extra } });
+				} catch (error) {
+					if (opts.signal?.aborted) throw error;
+					failed.push(row.id);
+				}
+				done++;
+				opts.onProgress?.(done, china.length, [
+					{
+						label: msg("Metadata"),
+						done,
+						total: china.length,
+						failed: failed.length,
+						finished: done === china.length,
+					},
+				]);
+			},
+			{ concurrency: 8, signal: opts.signal },
+		);
+		opts.signal?.throwIfAborted();
+		if (updates.length) await updateLocations(updates);
+		const other = rows.filter((row) => !isPanoSource(row.extra?.source));
+		const rest = other.length
+			? await enrichAll(
+					{ type: "Locations", locations: other.map((row) => row.id), name: null },
+					opts,
+				)
+			: [];
+		return [
+			{
+				id: "chinaMetadata",
+				label: msg("Metadata"),
+				succeeded: china.length - failed.length,
+				failed,
+			},
+			...rest,
+		];
+	}
+	const enrichFields = map.settings.enrichFields ?? getDefaultEnrichKeys();
 
-	const run = await runResolvers(locations, [{ id: "enrichMeta", config: enrichFields }], opts);
-	const labelOf = (id: string) =>
-		id === "enrichMeta"
-			? msg("Metadata")
-			: (getEnrichmentProviders().find((p) => p.id === id)?.label ?? id);
+	// Resolving is a means to a row's metadata, not a goal: a row holding every wanted
+	// field keeps its coordinates-only state. Force re-derives fields, never panos.
+	const resolve = opts.force
+		? panoResolveProvider
+		: {
+				...panoResolveProvider,
+				procedure: {
+					...panoResolveProvider.procedure,
+					select: all(selector, any(...enrichFields.map(lacks))),
+				},
+			};
+	const run = await runProviders(
+		[{ provider: resolve, force: false }, ...enrichRuns(enrichFields)],
+		selector,
+		opts,
+	);
+	const labelOf = (id: string) => getProviders().find((p) => p.id === id)?.label ?? id;
 	return Object.entries(run)
-		.filter(([, o]) => o.success.length > 0 || o.failed.length > 0)
+		.filter(([, o]) => o.succeeded > 0 || o.failed.length > 0)
 		.map(([id, o]) => ({ id, label: labelOf(id), ...o }));
 }

@@ -25,16 +25,8 @@ const PAD_ID: i64 = 1;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PanoEntry {
-    pub pano_id: String,
-    pub world_width: u32,
-    pub world_height: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct EmbedInput {
-    pub panos: Vec<PanoEntry>,
+    pub pano_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -55,7 +47,9 @@ pub struct EmbedStatus {
 use std::sync::Mutex;
 use crate::project::RemapTable;
 
-static REMAP_CACHE: Mutex<Vec<((u32, u32), Vec<RemapTable>)>> = Mutex::new(Vec::new());
+type RemapEntry = ((u32, u32), Vec<RemapTable>);
+
+static REMAP_CACHE: Mutex<Vec<RemapEntry>> = Mutex::new(Vec::new());
 
 pub fn debug_extract_crops(pano: &image::RgbImage) -> Vec<image::RgbImage> {
     extract_crops(pano)
@@ -178,8 +172,18 @@ pub fn embed_image_batch(session: &mut Session, images: &[image::RgbImage]) -> R
     Ok(results)
 }
 
+/// SigLIP canonicalizes captions (delete punctuation, collapse whitespace, lowercase).
+fn canonicalize_text(text: &str) -> String {
+    let folded: String = text
+        .chars()
+        .filter(|c| !c.is_ascii_punctuation())
+        .flat_map(char::to_lowercase)
+        .collect();
+    folded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub fn embed_text(session: &mut Session, tokenizer: &tokenizers::Tokenizer, text: &str) -> Result<[f32; EMBED_DIM], String> {
-    let encoding = tokenizer.encode(text, true).map_err(|e| e.to_string())?;
+    let encoding = tokenizer.encode(canonicalize_text(text), true).map_err(|e| e.to_string())?;
     let mut ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
     ids.truncate(TEXT_SEQ_LEN);
     ids.resize(TEXT_SEQ_LEN, PAD_ID);
@@ -285,15 +289,16 @@ pub fn run(
     mut emit: impl FnMut(EmbedStatus),
 ) {
     let mut cache = EmbedCache::load(cache_dir);
-    let to_compute: Vec<&PanoEntry> = input.panos.iter()
-        .filter(|p| !cache.entries.contains_key(p.pano_id.as_str()))
+    let to_compute: Vec<&str> = input.pano_ids.iter()
+        .map(String::as_str)
+        .filter(|p| !cache.entries.contains_key(*p))
         .collect();
 
-    let cached_count = input.panos.len() - to_compute.len();
+    let cached_count = input.pano_ids.len() - to_compute.len();
     if cached_count > 0 {
         emit(EmbedStatus {
             pano_id: String::new(), status: "cache_hit".into(),
-            error: None, done: Some(cached_count), total: Some(input.panos.len()),
+            error: None, done: Some(cached_count), total: Some(input.pano_ids.len()),
         });
     }
     if to_compute.is_empty() { return; }
@@ -304,10 +309,7 @@ pub fn run(
 
     for chunk in to_compute.chunks(CHUNK_SIZE) {
         let t_fetch = std::time::Instant::now();
-        let fetch_args: Vec<(&str, u32, u32)> = chunk.iter()
-            .map(|p| (p.pano_id.as_str(), p.world_width, p.world_height))
-            .collect();
-        let fetched = fetch_panos_concurrent(&fetch_args);
+        let fetched = fetch_panos_concurrent(chunk);
         let fetch_ms = t_fetch.elapsed().as_millis();
 
         let t_crop = std::time::Instant::now();
@@ -316,7 +318,7 @@ pub fn run(
         let mut fetch_errors = 0;
 
         for entry in chunk {
-            let pid = entry.pano_id.as_str();
+            let pid = *entry;
             let result = fetched.get(pid);
             match result {
                 None => {
@@ -352,15 +354,22 @@ pub fn run(
         const BATCH_SIZE: usize = 32;
         let mut pid_offset = 0usize;
         let mut all_embs: Vec<[f32; EMBED_DIM]> = Vec::with_capacity(batch_crops.len());
+        // Parallel to all_embs: marks entries from a failed inference batch, so
+        // they can be excluded from the cache instead of poisoning it with zeros.
+        let mut failed: Vec<bool> = Vec::with_capacity(batch_crops.len());
         let t_infer = std::time::Instant::now();
 
         for crop_batch in batch_crops.chunks(BATCH_SIZE) {
             match embed_image_batch(&mut session, crop_batch) {
-                Ok(embs) => all_embs.extend_from_slice(&embs),
+                Ok(embs) => {
+                    all_embs.extend_from_slice(&embs);
+                    failed.extend(std::iter::repeat_n(false, crop_batch.len()));
+                }
                 Err(e) => {
-                    // Fill with zeros so indexing stays aligned
+                    // Zero-fill so indexing stays aligned; `failed` keeps these out of the cache.
                     for _ in 0..crop_batch.len() {
                         all_embs.push([0f32; EMBED_DIM]);
+                        failed.push(true);
                     }
                     eprintln!("batch inference error: {e}");
                 }
@@ -369,14 +378,22 @@ pub fn run(
             while pid_offset < batch_pids.len() && (pid_offset + 1) * NUM_CROPS <= all_embs.len() {
                 let pid = batch_pids[pid_offset];
                 let start = pid_offset * NUM_CROPS;
-                let crop_embs: Vec<[f32; EMBED_DIM]> = all_embs[start..start + NUM_CROPS].to_vec();
-                cache.entries.insert(pid.to_string(), crop_embs);
+                let pano_failed = failed[start..start + NUM_CROPS].iter().any(|&f| f);
                 done += 1;
                 pid_offset += 1;
-                emit(EmbedStatus {
-                    pano_id: pid.to_string(), status: "computed".into(),
-                    error: None, done: Some(done), total: Some(total),
-                });
+                if pano_failed {
+                    emit(EmbedStatus {
+                        pano_id: pid.to_string(), status: "error".into(),
+                        error: Some("inference failed".into()), done: Some(done), total: Some(total),
+                    });
+                } else {
+                    let crop_embs: Vec<[f32; EMBED_DIM]> = all_embs[start..start + NUM_CROPS].to_vec();
+                    cache.entries.insert(pid.to_string(), crop_embs);
+                    emit(EmbedStatus {
+                        pano_id: pid.to_string(), status: "computed".into(),
+                        error: None, done: Some(done), total: Some(total),
+                    });
+                }
             }
         }
         // Handle any remaining (shouldn't happen if math is right, but be safe)

@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use vali_core::{GoogleData, Location, NominatimData, OsmData};
 use vali_expr::CompiledInt;
+
+/// One generated group: its locations paired with their tags, the region goal, and
+/// the min distance achieved.
+pub type Group = (Vec<(Location, Option<String>)>, i32, i32);
 #[derive(Serialize, Clone)]
 pub struct GeoMapLocation {
     pub lat: f64,
@@ -36,17 +40,13 @@ pub struct MapOutput {
 }
 pub fn store_map(
     prepared: &Prepared,
-    groups: &[(Vec<(Location, Option<String>)>, i32, i32)],
+    groups: &[Group],
     definition_path: &Path,
     deterministic: bool,
 ) -> anyhow::Result<StoreSummary> {
     build_output(prepared, groups, deterministic).write(definition_path)
 }
-pub fn build_output(
-    prepared: &Prepared,
-    groups: &[(Vec<(Location, Option<String>)>, i32, i32)],
-    deterministic: bool,
-) -> MapOutput {
+pub fn build_output(prepared: &Prepared, groups: &[Group], deterministic: bool) -> MapOutput {
     let mut seen: FxHashSet<i64> = FxHashSet::default();
     let mut locations: Vec<(&Location, Option<&str>)> = Vec::new();
     for (group, _, _) in groups {
@@ -69,30 +69,28 @@ pub fn build_output(
     let country_heading: FxHashMap<&str, CompiledInt> = prepared
         .country_heading_expressions
         .iter()
-        .map(|(cc, e)| (
-            cc.as_str(),
-            vali_expr::compile_int(e).expect("validated earlier"),
-        ))
+        .map(|(cc, e)| {
+            (
+                cc.as_str(),
+                vali_expr::compile_int(e).expect("validated earlier"),
+            )
+        })
         .collect();
     let records: Vec<GeoMapLocation> = locations
         .iter()
         .map(|&(l, tag)| {
             let heading_int = l.google.default_heading.round_ties_even() as i32;
-            let heading_value = match country_heading
-                .get(l.nominatim.country_code.as_str())
-            {
+            let heading_value = match country_heading.get(l.nominatim.country_code.as_str()) {
                 Some(compiled) => eval_heading(compiled, l, heading_int),
-                None => {
-                    match &global_heading {
-                        Some(compiled) => eval_heading(compiled, l, heading_int),
-                        None => heading_int,
-                    }
-                }
+                None => match &global_heading {
+                    Some(compiled) => eval_heading(compiled, l, heading_int),
+                    None => heading_int,
+                },
             };
             let pano = prepared
                 .pano_id_country_codes
                 .iter()
-                .any(|c| c == &l.nominatim.country_code)
+                .any(|c| c == l.nominatim.country_code)
                 || prepared.pano_id_country_codes.iter().any(|c| c == "*");
             GeoMapLocation {
                 lat: l.google.lat,
@@ -108,31 +106,31 @@ pub fn build_output(
         .collect();
     let mut country_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for (l, _) in &locations {
-        *country_counts.entry(l.nominatim.country_code.as_str()).or_default() += 1;
+        *country_counts
+            .entry(l.nominatim.country_code.as_str())
+            .or_default() += 1;
     }
-    let country_distribution = (country_counts.len() > 1)
-        .then(|| {
-            let lines: Vec<String> = country_counts
-                .iter()
-                .map(|(cc, count)| {
-                    let goal = country_location_count_goal(
-                        &prepared.country_distribution,
-                        prepared.location_count_goal,
-                        cc,
-                    );
-                    format!("{cc}\t{count}\t{goal}")
-                })
-                .collect();
-            lines.join("\n") + "\n"
-        });
+    let country_distribution = (country_counts.len() > 1).then(|| {
+        let lines: Vec<String> = country_counts
+            .iter()
+            .map(|(cc, count)| {
+                let goal = country_location_count_goal(
+                    &prepared.country_distribution,
+                    prepared.location_count_goal,
+                    cc,
+                );
+                format!("{cc}\t{count}\t{goal}")
+            })
+            .collect();
+        lines.join("\n") + "\n"
+    });
     let mut regional: FxHashMap<&str, (i32, i32)> = FxHashMap::default();
     for (group, goal, min_distance) in groups {
         if let Some((first, _)) = group.first() {
-            regional
-                .insert(
-                    first.nominatim.subdivision_code.as_str(),
-                    (*goal, *min_distance),
-                );
+            regional.insert(
+                first.nominatim.subdivision_code.as_str(),
+                (*goal, *min_distance),
+            );
         }
     }
     let mut subdivision_counts: BTreeMap<&str, usize> = BTreeMap::new();

@@ -1,9 +1,16 @@
 import { useState } from "react";
-import * as Popover from "@radix-ui/react-popover";
+import { Popover } from "@base-ui-components/react/popover";
 import { RgbColorPicker } from "react-colorful";
 import { useDebouncedCallback } from "@/lib/hooks/useDebouncedCallback";
-import type { RGB } from "@/lib/util/color";
+import { rgbCss, type RGB } from "@/lib/util/color";
 import { t } from "@/lib/i18n";
+
+/** A color picker surface without a swatch. Takes and returns an `[r, g, b]` tuple, debounced. @unstable */
+export function RgbPicker({ color, onChange }: { color: RGB; onChange: (color: RGB) => void }) {
+	const debounced = useDebouncedCallback(onChange, 60, { flush: true });
+	const [r, g, b] = color;
+	return <RgbColorPicker color={{ r, g, b }} onChange={(c) => debounced([c.r, c.g, c.b])} />;
+}
 
 /** A color swatch that opens the picker in a popover on click. */
 export function ColorPicker({
@@ -16,26 +23,24 @@ export function ColorPicker({
 	ariaLabel?: string;
 }) {
 	const [open, setOpen] = useState(false);
-	const debouncedOnChange = useDebouncedCallback(onChange, 60, { flush: true });
 	return (
 		<Popover.Root open={open} onOpenChange={setOpen}>
-			<Popover.Trigger asChild>
-				<button
-					type="button"
-					className="color-picker__swatch"
-					aria-label={ariaLabel}
-					style={{ backgroundColor: `rgb(${color.r}, ${color.g}, ${color.b})` }}
-				/>
-			</Popover.Trigger>
+			<Popover.Trigger
+				className="color-picker__swatch"
+				aria-label={ariaLabel}
+				style={{ backgroundColor: rgbCss(color) }}
+			/>
 			<Popover.Portal>
-				<Popover.Content
-					className="color-picker__popover"
+				<Popover.Positioner
+					className="picker-positioner"
 					sideOffset={4}
 					align="start"
 					collisionPadding={8}
 				>
-					<RgbColorPicker color={color} onChange={debouncedOnChange} />
-				</Popover.Content>
+					<Popover.Popup className="color-picker__popover popover-surface">
+						<RgbPicker color={color} onChange={onChange} />
+					</Popover.Popup>
+				</Popover.Positioner>
 			</Popover.Portal>
 		</Popover.Root>
 	);

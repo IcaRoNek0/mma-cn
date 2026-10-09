@@ -1,3 +1,4 @@
+import { createFieldDef } from "@/types";
 import {
 	closeMap,
 	addLocs,
@@ -13,25 +14,22 @@ describe("Extra field definitions", () => {
 	const map = useMap("E2E Extra Fields");
 
 	it("registers field definitions that persist after reopen", async () => {
-		await withApi(async (api) => {
-			const cur = api.getMapState().map!.meta.extra?.fields ?? {};
+		const defs = {
+			altitude: createFieldDef("number", { label: "Altitude" }),
+			country: createFieldDef("string", { label: "Country" }),
+		};
+		await withApi(async (api, defs) => {
+			const cur = api.getMapState().map!.extra?.fields ?? {};
 			await api.updateMapMeta({
-				extra: {
-					...api.getMapState().map!.meta.extra,
-					fields: {
-						...cur,
-						altitude: { label: "Altitude", type: "number" },
-						country: { label: "Country", type: "string" },
-					},
-				},
+				extra: { ...api.getMapState().map!.extra, fields: { ...cur, ...defs } },
 			});
-		});
+		}, defs);
 
 		await flushAndWait();
 		await closeMap();
 		await openMap(map.id);
 
-		const fields = await withApi(async (api) => api.getMapState().map!.meta.extra?.fields);
+		const fields = await withApi(async (api) => api.getMapState().map!.extra?.fields);
 		expect(fields).toBeTruthy();
 		expect(fields!.altitude).toBeTruthy();
 		expect(fields!.altitude.label).toBe("Altitude");
@@ -48,8 +46,8 @@ describe("Extra field definitions", () => {
 		]);
 
 		const loc = await getLoc(ids[0]);
-		expect(loc.extra.altitude).toBe(500);
-		expect(loc.extra.country).toBe("Switzerland");
+		expect(loc.extra?.altitude).toBe(500);
+		expect(loc.extra?.country).toBe("Switzerland");
 	});
 
 	it("extra patches merge into existing fields", async () => {
@@ -69,8 +67,8 @@ describe("Extra field definitions", () => {
 		}, loc);
 
 		const reloaded = await getLoc(ids[0]);
-		expect(reloaded.extra.altitude).toBe(100);
-		expect(reloaded.extra.country).toBe("France");
+		expect(reloaded.extra?.altitude).toBe(100);
+		expect(reloaded.extra?.country).toBe("France");
 	});
 
 	it("null values in the merge patch delete keys", async () => {
@@ -91,9 +89,9 @@ describe("Extra field definitions", () => {
 		}, loc);
 
 		const reloaded = await getLoc(ids[0]);
-		expect(reloaded.extra.newField).toBe("value");
-		expect(reloaded.extra.country).toBe("Italy");
-		expect(reloaded.extra.altitude).toBeUndefined();
+		expect(reloaded.extra?.newField).toBe("value");
+		expect(reloaded.extra?.country).toBe("Italy");
+		expect(reloaded.extra?.altitude).toBeUndefined();
 	});
 
 	it("extra fields survive save/close/reopen", async () => {
@@ -110,9 +108,9 @@ describe("Extra field definitions", () => {
 		await openMap(map.id);
 
 		const loc = await getLoc(ids[0]);
-		expect(loc.extra.altitude).toBe(8848);
-		expect(loc.extra.country).toBe("Nepal");
-		expect(loc.extra.custom).toBe(true);
+		expect(loc.extra?.altitude).toBe(8848);
+		expect(loc.extra?.country).toBe("Nepal");
+		expect(loc.extra?.custom).toBe(true);
 	});
 });
 

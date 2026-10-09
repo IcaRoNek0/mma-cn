@@ -5,8 +5,7 @@
 
 import type { MMA } from "@/api";
 import { createLocation } from "../../src/types";
-import type { Location, SelectionProps } from "@/bindings.gen";
-
+import type { Location, Selector, FieldDef } from "@/bindings.gen";
 /**
  * Run an async function in the browser with the MMA API injected as `api`.
  * The result type is inferred from whatever the callback returns.
@@ -17,23 +16,25 @@ export async function withApi<A extends unknown[], R>(
 	fn: (api: MMA, ...args: A) => R,
 	...args: A
 ): Promise<Awaited<R>> {
+	// Arguments and result cross as one JSON string each: WebDriver BiDi serializes
+	// structured values node by node, which makes a large batch take minutes.
 	const wrapped = new Function(
-		"...___a",
-		`const ___d = ___a.pop();
-     const api = window.MMA;
-     (async () => { try { ___d(await (${fn.toString()})(api, ...___a)); } catch(e) { ___d({ __withApiError: (e && e.message) || String(e) }); } })();`,
+		"___json",
+		"___d",
+		`const api = window.MMA;
+     (async () => { try { const r = await (${fn.toString()})(api, ...JSON.parse(___json)); ___d({ __withApiJson: r === undefined ? null : JSON.stringify(r) }); } catch(e) { ___d({ __withApiError: (e && e.message) || String(e) }); } })();`,
 	);
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- callback is serialized and re-evaluated in the browser; this bridge can't be statically typed
-	const result = (await browser.executeAsync(wrapped as any, ...args)) as unknown;
-	if (result !== null && typeof result === "object" && "__withApiError" in result) {
-		throw new Error(String((result as { __withApiError: unknown }).__withApiError));
-	}
-	return result as Awaited<R>;
+	const result = (await browser.executeAsync(wrapped as any, JSON.stringify(args))) as {
+		__withApiJson?: string | null;
+		__withApiError?: unknown;
+	};
+	if ("__withApiError" in result) throw new Error(String(result.__withApiError));
+	return (result.__withApiJson == null ? null : JSON.parse(result.__withApiJson)) as Awaited<R>;
 }
 
 export async function waitForReady() {
-	await browser.waitUntil(async () => browser.execute(() => window.MMA?.ready === true), {
-		timeout: 30000,
+	await browser.waitUntil(async () => browser.execute(() => window.MMA?.isReady() === true), {
 		timeoutMsg: "App did not boot in time",
 	});
 }
@@ -52,19 +53,8 @@ export async function clearInput(selector: string) {
 }
 
 export async function createAndOpenMap(name: string): Promise<string> {
-	const id = await withApi(async (api, n) => {
-		const map = await api.cmd.storeCreateMap(n, null);
-		await api._test.openMap(map.meta.id);
-		return map.meta.id;
-	}, name);
-	// The editor mounts asynchronously after open and runs init effects (render fill,
-	// plugin activation). Seeding/selecting before that settles is racy, so gate here
-	// centrally: wait for the editor DOM, then a short settle for its post-mount effects.
-	// (helpers.ts is exempt from the no-fixed-sleep rule; this is the one sanctioned spot.)
-	await browser
-		.$(".page-map-editor")
-		.waitForExist({ timeout: 10000, timeoutMsg: "map editor never mounted after open" });
-	await browser.pause(300);
+	const id = await withApi(async (api, n) => (await api.cmd.storeCreateMap(n, null)).id, name);
+	await openMap(id);
 	return id;
 }
 
@@ -89,8 +79,12 @@ export function useMap(name: string, opts: { closeLocation?: boolean } = {}) {
 	return ref;
 }
 
+/** Open a map and wait for its editor to load the scene, which selected ids resolve against. */
 export async function openMap(id: string) {
 	await withApi(async (api, mapId) => api._test.openMap(mapId), id);
+	await browser.waitUntil(() => withApi((api) => api._test.mapOpen.seen.has("markers")), {
+		timeoutMsg: `map ${id} never loaded its scene`,
+	});
 }
 
 export async function closeMap() {
@@ -185,27 +179,44 @@ export async function getLocCount(): Promise<number> {
 	return withApi(async (api) => (await api.cmd.storeGetSummary()).locationCount);
 }
 
+/** Node-side spellings of the simple selector shapes; the pinned composite carries
+ *  derived keys, so tests build it in the browser via `api.panoIdSelector`. */
+export const tagSelector = (tagId: number): Selector => ({
+	type: "Filter",
+	field: "tags",
+	test: { op: "contains", value: tagId },
+});
+
+export const untaggedSelector = (): Selector => ({
+	type: "Filter",
+	field: "tags",
+	test: { op: "nothas" },
+});
+
+export const unpannedSelector = (): Selector => ({
+	type: "Filter",
+	field: "heading",
+	test: { op: "eq", value: 0 },
+});
+
 /** Add selections to the live map. */
-export async function select(...props: SelectionProps[]) {
-	await withApi(async (api, p) => api.addSelections(p), props);
+export async function select(...selector: Selector[]) {
+	await withApi(async (api, p) => api.applySelectionUpdate(api.addSelection(...p)), selector);
 }
 
 /** Add selections and return how many locations they resolve to. */
-export async function selectCount(...props: SelectionProps[]): Promise<number> {
+export async function selectCount(...selector: Selector[]): Promise<number> {
 	return withApi(async (api, p) => {
-		await api.addSelections(p);
+		await api.applySelectionUpdate(api.addSelection(...p));
 		return api.getMapState().selectedLocationIds.size;
-	}, props);
+	}, selector);
 }
 
 export async function refreshSelections(): Promise<number[]> {
 	return withApi(async (api) => {
-		const sels = api
-			.getActiveSelections()
-			.map((s) => ({ key: s.key, props: s.props, color: s.color }));
-		if (sels.length === 0) return [] as number[];
-		await api.cmd.storeSyncSelections(sels);
-		return api.cmd.storeGetSelectedIdsList();
+		if (api.getActiveSelections().length === 0) return [] as number[];
+		await api.syncSelections();
+		return api.resolveIds(api.currentSelection());
 	});
 }
 
@@ -219,7 +230,7 @@ export async function createTag(
 // Each polls the real post-condition via the MMA API or DOM, so it finishes as soon as
 // the condition holds and fails loud (not silently) if it never does.
 
-const WAIT = { timeout: 5000, interval: 50 } as const;
+const WAIT = { interval: 50 } as const;
 
 /** Wait until the active location id equals `id` (null = back to overview). */
 export async function waitForActive(id: number | null) {
@@ -230,6 +241,74 @@ export async function waitForActive(id: number | null) {
 }
 
 /** Wait until the store's work area matches (e.g. "overview" | "location"). */
+export async function updateMapSettings(patch: Record<string, unknown>) {
+	await withApi(async (api, p) => {
+		const map = api.getMapState().map!;
+		await api.updateMapMeta({ settings: { ...map.settings, ...p } });
+		return "ok";
+	}, patch);
+}
+
+export async function registerFields(defs: Record<string, FieldDef>) {
+	await withApi(async (api, d) => {
+		const map = api.getMapState().map!;
+		const cur = map.extra?.fields ?? {};
+		await api.updateMapMeta({
+			extra: { ...map.extra, fields: { ...cur, ...d } },
+		});
+		return "ok";
+	}, defs);
+}
+
+/** Wait for the date count badge to show a positive number. */
+export async function waitForDates() {
+	await browser.waitUntil(
+		async () => {
+			const badge = await browser.$(".location-preview__date .badge--number");
+			if (!(await badge.isExisting())) return false;
+			return parseInt(await badge.getText()) > 0;
+		},
+		{ timeoutMsg: "Date picker never populated with dates" },
+	);
+}
+
+/** Wait until the open location's draft exists and its enrichment has answered. */
+export async function waitForEnriched() {
+	const settled = await browser.$(".location-preview:not([data-enriching])");
+	await settled.waitForExist({
+		timeoutMsg: "the draft's enrichment never answered",
+	});
+}
+
+/** Save the open location once its enrichment has answered, so every enabled field
+ *  reaches the store, and wait for the write to land; Save itself writes the draft as it stands. */
+export async function saveLocation() {
+	await waitForEnriched();
+	await withApi((api) => {
+		const id = api.getMapState().activeLocation?.id;
+		const saved = window as unknown as { __e2eSaved?: boolean };
+		saved.__e2eSaved = false;
+		const off = api.on("location:update", (updates) => {
+			if (!updates.some((u) => u.id === id)) return;
+			off();
+			saved.__e2eSaved = true;
+		});
+	});
+	const btn = await browser.$("[data-qa='location-save']");
+	await btn.waitForExist();
+	await btn.click();
+	await browser.waitUntil(
+		() =>
+			browser.execute(() => (window as unknown as { __e2eSaved?: boolean }).__e2eSaved === true),
+		{ timeoutMsg: "Save never wrote the location" },
+	);
+}
+
+export async function waitForPreview() {
+	const el = await browser.$(".location-preview");
+	await el.waitForExist();
+}
+
 export async function waitForWorkArea(area: string) {
 	await browser.waitUntil(() => withApi((api, a) => api.getMapState().workArea === a, area), {
 		...WAIT,

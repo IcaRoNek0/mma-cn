@@ -1,31 +1,49 @@
-import { describe, it, expect } from "vitest";
-import { getActiveSelections, getMapState, toggleGhostSelection } from "@/store/useMapStore";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { applySelectionUpdate, getActiveSelections, getMapState } from "@/store/useMapStore";
+import { toggleGhost } from "@/store/selections";
+import type { ListedSelection } from "@/bindings.gen";
 
-// Store hooks use their value as the useSyncExternalStore snapshot, so consumers
-// re-render iff the reference changes. Two invariants keep that correct:
-// mutations must reassign published references, and getters must return cached
-// references (never construct per call).
+vi.mock("@/lib/commands", async () => {
+	const { selectionChange } = await import("./fixtures/mocks");
+	return { cmd: { storeSyncSelections: vi.fn(async () => selectionChange()) } };
+});
+
+const fakeRow = (key: string): ListedSelection => ({
+	selection: { key, color: [0, 0, 0], selector: { type: "Everything" } },
+	ghosted: false,
+});
+
+beforeEach(() => {
+	const s = getMapState() as Record<string, unknown>;
+	s.map = { id: "test" };
+	s.selectionList = [fakeRow("tag:1"), fakeRow("tag:2")];
+});
+
+afterEach(() => {
+	const s = getMapState() as Record<string, unknown>;
+	s.map = null;
+	s.selectionList = [];
+});
 
 describe("store snapshot invariants", () => {
-	it("ghostedSelections is reassigned on every change, never mutated in place", () => {
-		const before = getMapState().ghostedSelections;
-		toggleGhostSelection("tag:1");
-		const ghosted = getMapState().ghostedSelections;
+	it("selectionList is reassigned on every change, never mutated in place", async () => {
+		const before = getMapState().selectionList;
+		await applySelectionUpdate(toggleGhost(0));
+		const ghosted = getMapState().selectionList;
 		expect(ghosted).not.toBe(before);
-		expect(ghosted.has("tag:1")).toBe(true);
+		expect(ghosted[0].ghosted).toBe(true);
+		expect(before[0].ghosted).toBe(false);
 
-		toggleGhostSelection("tag:1");
-		const unghosted = getMapState().ghostedSelections;
+		await applySelectionUpdate(toggleGhost(0));
+		const unghosted = getMapState().selectionList;
 		expect(unghosted).not.toBe(ghosted);
-		expect(unghosted.has("tag:1")).toBe(false);
+		expect(unghosted[0].ghosted).toBe(false);
 	});
 
-	it("getActiveSelections returns a stable reference between mutations", () => {
+	it("getActiveSelections returns a stable reference between mutations", async () => {
 		expect(getActiveSelections()).toBe(getActiveSelections());
-		// The filtered (ghosted non-empty) branch must be cached too.
-		toggleGhostSelection("tag:2");
-		expect(getMapState().ghostedSelections.size).toBeGreaterThan(0);
+		await applySelectionUpdate(toggleGhost(1));
+		expect(getActiveSelections().map((s) => s.key)).toEqual(["tag:1"]);
 		expect(getActiveSelections()).toBe(getActiveSelections());
-		toggleGhostSelection("tag:2");
 	});
 });

@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import type React from "react";
 import { act, useRef } from "react";
-import { createRoot } from "react-dom/client";
+import { mount as mountRoot } from "./fixtures/harness";
 import { useHoverExpand } from "@/lib/hooks/useHoverExpand";
-
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const DELAY = 250;
 const BOX = { left: 0, top: 0, right: 100, bottom: 100 } as DOMRect;
@@ -21,13 +20,10 @@ let unmount: () => void;
 
 beforeEach(() => {
 	vi.useFakeTimers();
-	const container = document.createElement("div");
-	document.body.appendChild(container);
-	const root = createRoot(container);
-	act(() => root.render(<Probe />));
-	const box = container.querySelector("div")!;
+	const mounted = mountRoot(<Probe />);
+	const box = mounted.container.querySelector("div")!;
 	box.getBoundingClientRect = () => BOX;
-	unmount = () => act(() => root.unmount());
+	unmount = mounted.unmount;
 });
 
 afterEach(() => {
@@ -35,7 +31,8 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-const enter = () => act(() => api.hoverProps.onPointerEnter());
+const enter = (buttons = 0) =>
+	act(() => api.hoverProps.onPointerEnter({ buttons } as React.PointerEvent));
 const leave = () => act(() => api.hoverProps.onPointerLeave());
 const pointerDown = () => act(() => api.hoverProps.onPointerDown());
 const pointerUpAt = (clientX: number, clientY: number) =>
@@ -44,49 +41,56 @@ const pointerUpAt = (clientX: number, clientY: number) =>
 	});
 
 describe("useHoverExpand", () => {
-	it("expands on enter and collapses after the delay on leave", () => {
+	it("expands on enter and collapses after the delay on leave", async () => {
 		enter();
 		expect(api.expanded).toBe(true);
 
 		leave();
 		expect(api.expanded).toBe(true);
-		act(() => vi.advanceTimersByTime(DELAY));
+		await act(() => vi.advanceTimersByTime(DELAY));
 		expect(api.expanded).toBe(false);
 	});
 
-	it("re-entering cancels a pending close", () => {
+	it("ignores an enter while a mouse button is held, so panning across it does not open it", () => {
+		enter(1);
+		expect(api.expanded).toBe(false);
 		enter();
-		leave();
-		enter();
-		act(() => vi.advanceTimersByTime(DELAY));
 		expect(api.expanded).toBe(true);
 	});
 
-	it("collapses when a drag releases outside, with no leave event", () => {
+	it("re-entering cancels a pending close", async () => {
+		enter();
+		leave();
+		enter();
+		await act(() => vi.advanceTimersByTime(DELAY));
+		expect(api.expanded).toBe(true);
+	});
+
+	it("collapses when a drag releases outside, with no leave event", async () => {
 		enter();
 		pointerDown();
 		pointerUpAt(500, 500);
-		act(() => vi.advanceTimersByTime(DELAY));
+		await act(() => vi.advanceTimersByTime(DELAY));
 		expect(api.expanded).toBe(false);
 	});
 
-	it("stays open for the whole drag, however far it wanders", () => {
+	it("stays open for the whole drag, however far it wanders", async () => {
 		enter();
 		pointerDown();
 		leave();
-		act(() => vi.advanceTimersByTime(DELAY * 4));
+		await act(() => vi.advanceTimersByTime(DELAY * 4));
 		expect(api.expanded).toBe(true);
 
 		pointerUpAt(500, 500);
-		act(() => vi.advanceTimersByTime(DELAY));
+		await act(() => vi.advanceTimersByTime(DELAY));
 		expect(api.expanded).toBe(false);
 	});
 
-	it("stays open when a drag releases inside", () => {
+	it("stays open when a drag releases inside", async () => {
 		enter();
 		pointerDown();
 		pointerUpAt(50, 50);
-		act(() => vi.advanceTimersByTime(DELAY));
+		await act(() => vi.advanceTimersByTime(DELAY));
 		expect(api.expanded).toBe(true);
 	});
 });

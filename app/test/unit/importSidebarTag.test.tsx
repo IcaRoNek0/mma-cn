@@ -1,19 +1,21 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import type { Tag } from "@/types";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
-import type { EditorImportPreview, Tag } from "@/bindings.gen";
-
+import { mount as mountRoot } from "./fixtures/harness";
+import type { EditorImportPreview } from "@/bindings.gen";
 // trace().end() logs through tauri-plugin-log, which needs a host.
 Object.assign(window, { __TAURI_INTERNALS__: { invoke: async () => {} } });
 
-const confirmImport = vi.fn(async () => ({ importedCount: 1 }));
+const confirmImport = vi.fn(async (_dropped?: string[], _tagNames?: string[]) => ({
+	importedCount: 1,
+}));
 let staging: { preview: EditorImportPreview; source: "file" } | null = null;
 let tags: Tag[] = [];
 
 vi.mock("@/store/importStaging", () => ({
 	getImportStaging: () => staging,
-	confirmImport: (dropped: string[], tagName?: string) => confirmImport(dropped, tagName),
+	confirmImport: (dropped: string[], tagNames?: string[]) => confirmImport(dropped, tagNames),
 	cancelImport: () => {},
 }));
 
@@ -23,8 +25,6 @@ vi.mock("@/store/useMapStore", () => ({
 }));
 
 const { ImportSidebar } = await import("@/components/editor/ImportSidebar");
-
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const preview: EditorImportPreview = {
 	locationCount: 3,
@@ -39,11 +39,9 @@ const preview: EditorImportPreview = {
 let container: HTMLDivElement;
 
 function mount() {
-	container = document.createElement("div");
-	document.body.appendChild(container);
-	const root = createRoot(container);
-	act(() => root.render(<ImportSidebar />));
-	return () => act(() => root.unmount());
+	const mounted = mountRoot(<ImportSidebar />);
+	container = mounted.container;
+	return mounted.unmount;
 }
 
 function type(text: string) {
@@ -55,9 +53,25 @@ function type(text: string) {
 	});
 }
 
-function clickImport() {
+function submitTag() {
+	const form = container.querySelector<HTMLFormElement>(".form-add-tag")!;
+	act(() => {
+		form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+	});
+}
+
+function removeTag(name: string) {
+	const pill = [...container.querySelectorAll(".tag")].find(
+		(e) => e.querySelector(".tag__text")?.textContent === name,
+	)!;
+	act(() => {
+		pill.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+	});
+}
+
+async function clickImport() {
 	const button = [...container.querySelectorAll("button")].find((b) => b.textContent === "Import")!;
-	act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+	await act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 }
 
 function pills() {
@@ -74,11 +88,11 @@ beforeEach(() => {
 // #105: the typed tag is the tag. There is no commit step, so nothing can be
 // silently dropped by skipping one.
 describe("import bulk tag", () => {
-	it("applies a typed tag without pressing enter", () => {
+	it("applies a typed tag without pressing enter", async () => {
 		const unmount = mount();
 		type("france");
-		clickImport();
-		expect(confirmImport).toHaveBeenCalledWith([], "france");
+		await clickImport();
+		expect(confirmImport).toHaveBeenCalledWith([], ["france"]);
 		unmount();
 	});
 
@@ -101,21 +115,72 @@ describe("import bulk tag", () => {
 		unmount();
 	});
 
-	it("treats a whitespace-only tag as no tag", () => {
+	it("treats a whitespace-only tag as no tag", async () => {
 		const unmount = mount();
 		type("   ");
 		expect(pills()).toEqual([]);
-		clickImport();
-		expect(confirmImport).toHaveBeenCalledWith([], "");
+		await clickImport();
+		expect(confirmImport).toHaveBeenCalledWith([], []);
 		unmount();
 	});
 
-	it("trims the tag it imports with", () => {
+	it("trims the tag it imports with", async () => {
 		const unmount = mount();
 		type("  france  ");
 		expect(pills()).toEqual(["france"]);
-		clickImport();
-		expect(confirmImport).toHaveBeenCalledWith([], "france");
+		await clickImport();
+		expect(confirmImport).toHaveBeenCalledWith([], ["france"]);
+		unmount();
+	});
+});
+
+// #231: several tags, each added with Enter or +.
+describe("import bulk tags", () => {
+	it("adds the typed tag as a chip and clears the input", () => {
+		const unmount = mount();
+		type("france");
+		submitTag();
+		expect(pills()).toEqual(["france"]);
+		expect(container.querySelector<HTMLInputElement>(".form-add-tag__input")!.value).toBe("");
+		unmount();
+	});
+
+	it("imports with every added tag plus the one still typed", async () => {
+		const unmount = mount();
+		type("france");
+		submitTag();
+		type("urban");
+		submitTag();
+		type("2024");
+		expect(pills()).toEqual(["france", "urban", "2024"]);
+		await clickImport();
+		expect(confirmImport).toHaveBeenCalledWith([], ["france", "urban", "2024"]);
+		unmount();
+	});
+
+	it("collapses repeats case-insensitively", async () => {
+		const unmount = mount();
+		type("france");
+		submitTag();
+		type("France");
+		submitTag();
+		type("FRANCE");
+		expect(pills()).toEqual(["france"]);
+		await clickImport();
+		expect(confirmImport).toHaveBeenCalledWith([], ["france"]);
+		unmount();
+	});
+
+	it("drops a removed chip from the import", async () => {
+		const unmount = mount();
+		type("france");
+		submitTag();
+		type("urban");
+		submitTag();
+		removeTag("france");
+		expect(pills()).toEqual(["urban"]);
+		await clickImport();
+		expect(confirmImport).toHaveBeenCalledWith([], ["urban"]);
 		unmount();
 	});
 });

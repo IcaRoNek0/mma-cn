@@ -1,3 +1,331 @@
+## v0.11.6 - 2026-10-06
+- Street View tiles and panorama info retry after a dropped connection, and canceling stops right away
+- Heatmap's Reset asks before clearing its layers and custom gradients
+- Fixed undo after a long edit like enrichment only reverting part of it after reopening the map
+- Fixed unsaved edits from older versions being set aside when they could not be converted
+- Fixed editing an empty tag folder losing its place in the tag order
+- Fixed a selected marker losing its highlight after moving on the map
+- Fixed a window closed while minimized reopening unmaximized
+
+## v0.11.5 - 2026-10-03
+- Map opening & closing is significantly faster - **breaking change** - upon update, undo history is cleared once on map open.
+- Importing locations updates their markers without redrawing the whole map
+- Panorama downloads behavior changes
+- Fixed reopening after an app crash restoring undo history that did not match the autosaved edits
+
+## v0.11.4 - 2026-10-01
+- Each map layer gets its own button beside the opacity slider
+- Validation reports every finding for a location instead of just one, and the validate dialog picks which categories to report, adding "pinned away from the default pano" and "default pano is not the newest"
+- Generator, heatmap, and Vali settings are saved with each map
+- New maps start from saved default preferences, set from the current map in Settings
+- Duplicate a map from the map list, or save the open one as a copy
+- Opening and closing large maps is much faster
+- Undoing an enrichment run takes one step instead of one per batch
+- The tag menu can remove only the clicked tag from the selection when several are selected
+- Empty tag folders keep their place in the tag order and can be reordered
+- Hotkeys work on non-Latin keyboard layouts
+- A map can create its GeoGuessr draft or map-making.app map instead of linking an existing one
+- The sync sidebar keeps a history of every sync pass
+- A map can follow a map file on disk or at a URL, taking its changes
+- Tags created by a sync pull take the source's color and order
+- The map generator imports and exports its regions and settings as one file, and can target a spacing instead of a count
+- Faster blue-line sampling
+- Faster group disambiguation on large maps
+- Selected markers get their own opacity on the layer slider
+- Vali editor UI updated to 3.2.1
+- Fixed the active marker not showing while markers are below full opacity
+- Fixed a press the map takes as a pan closing the polygon on the next click
+- Fixed Street View links that carry a Plus Code or no position at all failing to import
+- Fixed the first image added to a report not attaching
+- Fixed importing a Vali definition erroring
+- Fixed a modal returning to the wrong place after shrinking and growing back
+
+Upgrading clears existing undo histories once.
+
+## v0.11.3 - 2026-09-28
+- The export dialog now can save three formats: GeoGuessr, map-making.app, or local
+- Map clicks can create a location, select only, or snap to the nearest location via map settings
+- Pivot table rows and columns each take all locations, the active selections, or a field
+- Map list shows which sync providers a map is linked to, and can show uncommitted changes
+- The tag menu acts on every selected tag, including recoloring them all at once
+- Rename in selection can merge several tags into one, moving only the selected locations
+- "Remove from this tag only" allows a folder tag to be removed on its own, keeping the tags under it
+- Bulk tagging on import can take several tags
+- LocalGuessr guess pins are now ringed badges, with the answer carrying a flag and the guess icon optionally using your GitHub avatar
+- The trail's position indicator follows your marker style
+- Copyright results stream in as each panorama finishes
+- Pano look speed can be set up to 20
+- Escape cancels any in-progress drag
+- A commit without a message stays blank instead of getting a generated summary
+- Faster bulk checks of dead panoramas
+- Fixed syncing against an empty remote map deleting every synced location
+- Fixed a failed save during commit marking changes as saved
+- Fixed a failed version restore leaving the window without a map or its selections
+- Fixed a polygon that crosses itself shading a different area than it selects
+- Fixed markers and the sidebar disagreeing on an inverted selection's color
+- Fixed a slow location switch overwriting a newer one
+- Fixed previewing several import files keeping only the last one parsed
+- Fixed import previews being shared between windows
+- Fixed cancelling a run leaving its requests queued on the rate limiter
+- Fixed one plugin failing to activate stopping the rest
+- Fixed resuming a review losing its place when its location was deleted
+- Fixed a tag folder created through an alias disappearing once emptied
+- Fixed a slow command in one browser tab stalling every other tab, and opening a map in one tab swapping another's
+
+## v0.11.2 - 2026-09-20
+- Duplicate preference and review order explain themselves on hover instead of a line under them
+- The bottom corner bars are dark again, with their buttons dim until hovered
+- Fixed tooltip arrows floating beside the tooltip instead of meeting it
+
+## v0.11.1 - 2026-09-20
+- Apply metadata as tags accepts list fields, making one tag per item and giving each location every tag its list names
+- Every search field has a clear button and clears on Escape, not just the map list's
+- Dropdowns can be focused from the keyboard, and every control shares one focus ring
+- Plugin options that apply instantly are switches; the ones that apply on run stay checkboxes
+- Third-party plugin interfaces follow the app's theme
+- Fixed ending a polygon, lasso or rectangle selection over coverage opening a location
+- Fixed the editor freezing on tag selections with a large unsaved working set
+- Fixed hovering one option in a group highlighting the first one
+- Fixed the doclink spinner not spinning
+
+## v0.11.0 - 2026-09-17
+- LocalGuessr keeps a history of finished games, with stats across rounds, countries, modes and maps
+- LocalGuessr can resume more than one unfinished game
+- LocalGuessr's game breakdown shows each round on a map summary, and a round's starting view thumbnail
+- LocalGuessr can show the map's locations on the guess map
+- LocalGuessr can open the panorama behind either pin, guess or location, on the result map
+- LocalGuessr rounds now show up in seen history
+- Sun position has the option to draw a ray toward the sun on each marker
+- Grid mode in the map generator
+- The map generator can filter for locations on road bends
+- Coverage generation can spread locations via configuration: from following density to evenly
+- The map generator shows its live hit rate and speed
+- The map generator's throughput is massively increased - generators and speed settings were superseded
+- Coverage generation streams tile fetch stage, resulting in lower felt latency
+- Generator region rates show recent speed instead of the whole-run average
+- "Pick evenly spaced locations" command, pairing with the existing "thin selection by minimum distance" command
+- The Street View trail marks your current position, with settings for its visibility and color
+- Modifier-click a tag folder to open or close everything inside it
+- Stats for nerds shows live engine activity and query retries
+- Country flag emoji display on every platform, including Windows
+- Apply metadata as tags previews how many locations have the field, and how many tags it will create
+- Pin to pano ID now separates panorama resolution from the pin/unpin
+- Pin to pano ID now supports unpinning in bulk
+- Load as pano ID is now bulk settable
+- Dialogs have a fixed width and smoothly animate between heights
+- Sun position now shows its label during enrichment
+- Fixed the app font loading incorrectly
+- Fixed new locations landing at truncated coordinates on Linux
+- Fixed adding a tag reordering a location's tag list
+- Fixed the lasso tool drawing stray lines
+- Fixed drawing previews staying on the map after turning a tool off
+- Fixed a stopped or restarted generator sometimes continuing to generate
+- Fixed the minimum-distance picker rejecting fractional distances
+- Fixed stats for nerds reporting wrong database sizes
+
+## v0.10.8 - 2026-09-12
+- Fixed pin-to-pano relocating locations onto a photosphere when one is the default at their coordinates
+- Fixed some contributor panoramas failing to resolve, pin, or validate
+- Fixed validation reporting newer coverage for pinned locations when the nearby pano is older or unofficial
+- Generator region counters show the real count as finds land; the smoothed animation is gone, the rate stays
+- The enrichment progress list shows every provider from the start instead of popping in
+- Fixed the walk trail drawing over the active location marker
+- Fixed the merge-duplicates dialog flashing empty while it counts
+- Fixed the failed-count in provider rows coloring its separator red
+
+## v0.10.7 - 2026-09-12
+- Bulk operations and map generation continue in the background, with a progress tray in the corner
+- Closing a map or the app with background work running asks for confirmation
+- Validation can check pinned locations for newer coverage, behind a checkbox that is on by default
+- Generator region rows show a live generation rate
+- Bulk Street View operations retry transient network errors instead of failing the row
+- Error messages are now translated
+- The map-making.app sync API key moved into the system credential store
+- Fixed the date picker offering capture dates merged in from nearby panoramas
+- Fixed cancelling a bulk operation sometimes hanging the run
+- Fixed the generator's camera-generation filter misclassifying some panoramas
+- Fixed some field labels not being translated
+
+## v0.10.6 - 2026-09-08
+- A crashed plugin no longer crashes the app, only the containing view
+- The app is ~8 megabytes smaller
+- Timezone enrichment is ~50x faster
+- Windows open faster, especially the map list
+- Searching the manual now ignores accents and word order like every other search
+- Fixed files exported from Excel misparsing on import
+- Fixed seen thumbnails becoming stale after refreshing a panorama
+- Fixed maximized map windows flashing open
+
+## v0.10.5 - 2026-09-07
+- Review order: a formula in map settings decides what a review pass walks first
+- Plugins show up in the command palette
+- Text search now works the same everywhere: accents are ignored, and words can be typed in any order
+- Copyright detection keeps its models loaded between requests instead of reloading them every time
+- Fixed the active location's marker sitting slightly off from the same location's selection marker
+- Fixed undo and redo staying greyed out after a commit
+- Fixed the command palette shrinking as you type
+- Fixed plugin updates sometimes running twice at startup
+- Fixed copyright detection hanging on a batch with no official panoramas
+- Fixed the export toast naming the wrong file
+- Plugin SDK: a generated API reference ships beside the type definitions, and the support floor is 0.10.5
+
+## v0.10.4 - 2026-09-05
+- Enrichment fields no longer wait behind unrelated slow ones; each starts as soon as what it needs is ready
+- The location panel fills in each field as it resolves instead of all at once
+- The bulk dialog shows every field's own progress, speed and failures, with the overall bar counting fully finished locations
+- Fixed Save waiting for in-flight enrichment
+
+## v0.10.3 - 2026-09-05
+- Editing a location's position or panorama clears the fields derived from the old one
+- Fixed a fast zoom-out on the map freezing, sometimes crashing, the app
+- Fixed exported files dropping their field definitions on re-import
+- Fixed ghosted selections not updating count after an edit
+- Fixed enrichment reporting success for locations whose same pano ID failed
+- Fixed a plugin error during cleanup disabling every other plugin until restart
+- Fixed plugin listeners stacking up as maps close and reopen
+- Fixed the Pano ID selection allowing matches with a pinned pano flag, but without a pano ID
+- Fixed the generator's settings summary being untranslated
+- Fixed readouts holding a stale value when a lookup returned nothing
+- Plugin SDK: selection composition ops are curried now, and the support floor is 0.10.3
+
+## v0.10.2 - 2026-09-03
+- The map type control is now always the narrow variant, with map styles inside
+- J and K step through the basemaps
+- Commit message is no longer default save behavior; Shift + click expresses this instead
+- Date filters and date grouping tell you how many locations were skipped for lacking a timezone
+- Field expressions, such as the duplicate preference score, can compare values and test whether a field is present
+- Every bulk operation offers a Select failed button for the locations it could not process
+- Tags can be dragged into folders in any sort mode
+- Dropping a tag onto another with the same name/path merges them
+- Pruning duplicates ranks by the duplicate preference, the same way merging does
+- Drop marker copies the panorama you are looking at, not the one stored on the location
+- The marketplace installs the newest plugin build your app version can run
+- Filters: "is not" no longer matches locations that lack the field; use "does not have" for those
+- The version badge in settings only lights up when an update is waiting
+- Reset every app setting to its default, from Advanced in settings
+- High and Ultra borders follow the same country taxonomy as Standard, with padded coastlines, at about half the download size
+- Complex polygon selections resolve much faster
+- Opening a location makes it a complete draft: moving, choosing a date, pinning and what enrichment finds all wait for Save, and Close discards them
+- Unpinning a date stays where you are instead of jumping back to the stored panorama
+- A field a location already holds for its panorama is not fetched again when it opens; Enrich with Force re-derives it
+- The pano metadata readout shows the draft, what a Save would write
+- Informational locations are no longer supported
+- Fixed saved selections being lost when upgrading from 0.9.2
+- Fixed the vector basemap showing no tiles
+- Fixed a watermarked tile in the vector basemap preview
+- Fixed the selection menu eating the click that closes it
+- Fixed bulk operation progress misreporting its rate and totals
+- Fixed enrichment counting locations it could not process as successes
+- Fixed Pin to pano ID pinning a location to its stale panorama when re-resolving failed
+- Fixed a bulk run hanging when a provider could not start
+- Fixed the pano jump tooltip always saying metres
+- Fixed walking to a different panorama writing its metadata onto the location
+- Fixed the enrichment master switch greying out the per-field switches
+- Fixed zooming to a polygon selection framing only its first part
+- Fixed the generator showing flags for regions that are not countries
+- Fixed the generator listing each region's progress twice
+- Fixed dropdown options showing a focus outline instead of the hover tint, and dropdowns shifting on first open
+- Fixed Google's own focus frame showing on the map after a held-key click
+
+## v0.10.1 - 2026-08-28
+- Distance unit setting: metric, imperial, or automatic from your system locale. Applies everywhere a distance is shown or typed: the measure bar, map overview, score bounds, merge distance, generator spacing, LocalGuessr results
+- Scratch map: a throwaway map for the session, opened from the map list toolbar and wiped on the next launch
+- Duplicate preference: a per-map formula in map settings decides which location survives a merge, defaulting to the most tags
+- Map settings dialog now holds name, description, labels and duplicate preference in one place
+- Faster store operations: pivots and field lookups on a selection up to 300x faster, bulk adds and map open about 1.3x faster, and proximity checks and commits are 2-3x faster
+- Score bounds moved from the layers popup into map settings
+- Enrichment dialog splits into an Enrich tab and a Fields tab
+- Apply-as-tags names come from a template, so Camera/{value} files them in a folder
+- Hotkeys to open settings (Mod+,) and plugins (Mod+Shift+P)
+- Settings opens with search focused, and search also matches section paths and dropdown option values
+- Launching the app a second time focuses the running window instead of starting a second copy that could clobber its saves
+- Numeric pivots keep their empty bins, so gaps in the data stay visible
+- Fixed the map not zooming while a drawing tool was active
+- Fixed tags and folders not being draggable back to the top level
+- Fixed the LocalGuessr minimap and the fullscreen mini map opening while a mouse button was held
+- Fixed dialogs shifting and flashing as they open
+- Fixed a tooltip reopening on its button after closing a dialog
+- Fixed a failed plugin update leaving the plugin unloaded instead of running the old version
+- Fixed enum field values showing untranslated in the bulk operation dialog
+
+## v0.10.0 - 2026-08-26
+- **Enrichment can now reliably scale to millions of locations**
+- Enrichment now uses significantly less memory
+- Enrichment is somewhat faster in general, and much faster for larger scale
+- 100-300x faster undo/redo
+- Pano ID is available as a filter field
+- Setting to skip the commit message prompt
+- Fixed the window freezing periodically while Discord presence was on
+- Fixed a blank flash when a window opens
+- Fixed renaming a polygon using native prompt
+- Fixed sidebar segmented controls squashing their labels
+- Fixed the sync sidebar's inputs missing their styling
+
+## v0.9.2 - 2026-08-20
+- Copy-to-map hotkeys can be made global instead of per-map
+- Plugins installed from the marketplace update themselves at startup
+- Installed border data refreshes itself when the source data changes
+- Redesigned doclink assign dialog, with a tag pane that matches the sidebar tag tree
+- LocalGuessr: dashed result line and shadow halos on the guess map
+- LocalGuessr: pressing N a second time zooms all the way out
+- Report dialog remembers what you attach, per report type, and suggestions no longer attach diagnostics by default
+- "Pick evenly spaced locations from selection" is now "Thin selection by minimum distance"
+- Reorder tags from the keyboard with alt+arrow
+- Fixed unofficial panoramas failing to load
+- Fixed patches of the panorama drawing in the wrong colours when toggling hide car in LocalGuessr
+- Fixed GitHub sign-in not refreshing
+- Fixed hiding a map layer wiping the opacity you had set for it
+- Fixed Enter planting a location when it was meant to activate the focused control
+- Fixed focus not returning to where it was after closing a dialog
+- Fixed the hotkey field capturing keys as soon as it was focused
+- Fixed the tag sort buttons being untranslated
+- Fixed unparseable date text being discarded without saying so
+- Fixed LocalGuessr allowing point north in NMPZ
+- Fixed LocalGuessr discarding a resumable run when the sidebar opened
+- Redrawn app icon
+
+## v0.9.1 - 2026-08-19
+- Option to tag locations that have no value for the field when applying metadata as tags
+- Fixed map list search skipping maps inside collapsed folders
+- Fixed the map generator's search visualization not covering polygons added when a running job is resumed
+- Fixed a brief rendering glitch when toggling hide car in LocalGuessr
+- Fixed the LocalGuessr compass and compass tape ignoring the compass settings
+- Fixed a truncated map file opening as an empty map instead of reporting the problem
+- Fixed a corrupted map file crashing the app on open
+- Fixed unsaved changes being silently discarded when their file could not be read
+- Fixed unsaved edits being lost if the app or machine stopped mid-save
+- Fixed field type detection accepting impossible dates like "9999-99"
+
+## v0.9.0 - 2026-08-18
+- **LocalGuessr: play your maps in-app like GeoGuessr, with movement modes, timers, and cross-game streaks**
+- **Report bugs and suggest ideas from inside the app, under your GitHub account or anonymously**
+- Reports can carry screenshots and opt-in diagnostics, with a preview of what gets sent
+- Filed reports show their status and replies in Settings
+- Full translations in German, Spanish, French, Japanese, Polish, Russian, and Chinese (Simplified)
+- Download Vali coverage data per country from inside the app
+- Out-of-date Vali data is flagged, with a one-click update for stale countries
+- Vali engine updated to upstream 3.2.1
+- Write a commit message when committing, shown in version history
+- Edit an enum field's values from the enrichment dialog
+- Random and spaced pickers can cap picks per selection
+- Custom heatmap gradient editor
+- Street View screenshots copy to the clipboard
+- Cleaner state and province borders data source
+- The map layers panel opens on dropdown click instead of hover
+- Reorganized settings page
+- Generator searches in grow strategy keep exploring from found locations instead of stopping early
+- Settings and hotkey changes apply immediately in other open windows
+- Faster metadata enrichment on large batches
+- Fixed imported fields with accented names sometimes splitting into two fields
+- Fixed a failed autosave silently dropping pending tag changes
+- Fixed inconsistent undo behavior for bulk tag changes
+- Fixed duplicate detection missing matches near cell boundaries
+- Fixed selections missing locations near the poles and the antimeridian
+- Fixed dropdown menus rendering behind map controls
+- Fixed bound hotkeys also triggering browser shortcuts
+- Fixed unassigned hotkey slots not being clickable
+- Fixed Street View coverage opacity not applying in the minimap
+
 ## v0.8.3 - 2026-08-06
 - Location actions in the map right-click menu (copy link, copy pano ID, download, copy to map, duplicate, delete)
 - Select the country or subdivision under the cursor from the right-click menu

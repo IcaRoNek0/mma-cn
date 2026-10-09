@@ -2,6 +2,8 @@
 // are answered by a resident mma-vision (declared under `serve` in the manifest), so
 // repeat queries skip the ONNX/tokenizer/cache load. `embed` gets a one-shot run.
 
+const { sidecar } = MMA;
+
 export interface SearchResult {
 	panoId: string;
 	score: number;
@@ -12,40 +14,15 @@ interface SearchResponse {
 }
 
 interface EmbedStatus {
-	status?: string;
-	count?: number;
-}
-
-interface PanoEntry {
 	panoId: string;
-	worldWidth: number;
-	worldHeight: number;
-}
-
-async function resolveWorldSizes(
-	panoIds: string[],
-	onProgress?: (done: number, total: number) => void,
-): Promise<PanoEntry[]> {
-	const BATCH = 200;
-	const entries: PanoEntry[] = [];
-	for (let i = 0; i < panoIds.length; i += BATCH) {
-		const batch = panoIds.slice(i, i + BATCH);
-		const metas = await MMA.fetchSvMetadata(batch);
-		for (let j = 0; j < batch.length; j++) {
-			const ws = metas[j]?.tiles?.worldSize;
-			entries.push({
-				panoId: batch[j],
-				worldWidth: ws?.width ?? 6656,
-				worldHeight: ws?.height ?? 3328,
-			});
-		}
-		onProgress?.(Math.min(i + BATCH, panoIds.length), panoIds.length);
-	}
-	return entries;
+	status: string;
+	error?: string;
+	done?: number;
+	total?: number;
 }
 
 async function listCached(): Promise<Set<string>> {
-	const ids = await MMA.sidecar.request<string[]>("vision", "list-cached");
+	const ids = await sidecar.request<string[]>("vision", "list-cached");
 	return new Set(ids ?? []);
 }
 
@@ -54,6 +31,10 @@ export interface EmbedOptions {
 	onStatus?(message: string): void;
 	/** How many panos the last line accounted for. */
 	onUnit?(count: number): void;
+	/** A pano the sidecar could not embed. */
+	onFailed?(panoId: string, error: string | undefined): void;
+	/** Sidecar output that isn't progress -- inference and encoder faults carry no prefix. */
+	onDiagnostic?(line: string): void;
 	signal?: AbortSignal;
 }
 
@@ -67,18 +48,22 @@ export async function embed(panoIds: string[], opts: EmbedOptions = {}): Promise
 		return;
 	}
 
-	opts.onStatus?.(`Fetching metadata for ${uncached.length} uncached panos...`);
-	const panos = await resolveWorldSizes(uncached, (done, total) => {
-		opts.onStatus?.(`Metadata: ${done}/${total}`);
-	});
-
-	await MMA.sidecar.request<EmbedStatus>("vision", "embed", { panos }, {
-		signal: opts.signal,
-		onLog: (line) => {
-			if (line.startsWith("[vision]")) opts.onStatus?.(line);
+	await sidecar.request<EmbedStatus>(
+		"vision",
+		"embed",
+		{ panoIds: uncached },
+		{
+			signal: opts.signal,
+			onLog: (line) => {
+				if (line.startsWith("[vision]")) opts.onStatus?.(line);
+				else opts.onDiagnostic?.(line);
+			},
+			onLine: (s) => {
+				if (s.status === "error") opts.onFailed?.(s.panoId, s.error);
+				else opts.onUnit?.(s.status === "cache_hit" ? (s.done ?? 1) : 1);
+			},
 		},
-		onLine: (s) => opts.onUnit?.(s.status === "cache_hit" ? (s.count ?? 1) : 1),
-	});
+	);
 }
 
 export async function searchText(
@@ -86,12 +71,18 @@ export async function searchText(
 	k: number | null,
 	threshold: number | null,
 	signal?: AbortSignal,
+	onDiagnostic?: (line: string) => void,
 ): Promise<SearchResult[]> {
-	const res = await MMA.sidecar.request<SearchResponse>(
+	const res = await sidecar.request<SearchResponse>(
 		"vision",
 		"search-text",
 		{ query, k, threshold },
-		{ signal },
+		{
+			signal,
+			onLog: (line) => {
+				if (!line.startsWith("[vision]")) onDiagnostic?.(line);
+			},
+		},
 	);
 	return res?.results ?? [];
 }
@@ -102,7 +93,7 @@ export async function searchImage(
 	threshold: number | null,
 	signal?: AbortSignal,
 ): Promise<SearchResult[]> {
-	const res = await MMA.sidecar.request<SearchResponse>(
+	const res = await sidecar.request<SearchResponse>(
 		"vision",
 		"search-image",
 		{ panoId, k, threshold },

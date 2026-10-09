@@ -2,6 +2,11 @@ name: Feature request
 description: Suggest an improvement or new feature
 labels: [enhancement]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **You can send this from inside MMA too.** Open the map list and click "Report bugs
+        here", or go to Settings → Feedback, and pick "Suggestion". Replies come back to you in the app.
   - type: textarea
     id: description
     attributes:

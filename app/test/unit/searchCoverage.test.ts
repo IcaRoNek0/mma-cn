@@ -4,6 +4,7 @@ import {
 	lngLatToPixel,
 	bitmapBounds,
 	beginSession,
+	growSession,
 	addProbe,
 	endSession,
 	setEnabled,
@@ -147,5 +148,87 @@ describe("searchCoverage session lifecycle", () => {
 		unsub();
 		expect(getVersion()).toBeGreaterThan(before);
 		expect(hits).toBeGreaterThan(0);
+	});
+});
+
+// Regions can be added to a run in flight (#149). The texture is sized once at start, so
+// without a grow every probe outside the original union is clipped and silently lost.
+describe("searchCoverage growSession", () => {
+	// The module builds its output through ImageData, which neither node nor jsdom provides.
+	class StubImageData {
+		data: Uint8ClampedArray;
+		width: number;
+		height: number;
+		constructor(width: number, height: number) {
+			this.width = width;
+			this.height = height;
+			this.data = new Uint8ClampedArray(width * height * 4);
+		}
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		Object.assign(globalThis, { ImageData: StubImageData });
+		setEnabled(false);
+		endSession();
+		setEnabled(true);
+	});
+	afterEach(() => {
+		vi.runOnlyPendingTimers();
+		vi.useRealTimers();
+		setEnabled(false);
+		endSession();
+		Reflect.deleteProperty(globalThis, "ImageData");
+	});
+
+	const painted = () => {
+		const img = getCoverageImage();
+		if (!img) return 0;
+		let n = 0;
+		for (let i = 3; i < img.image.data.length; i += 4) if (img.image.data[i] > 0) n++;
+		return n;
+	};
+
+	const BOX = { west: 0, south: 0, east: 10, north: 10 };
+	const EAST_BOX = { west: 20, south: 0, east: 30, north: 10 };
+
+	it("records probes in ground added after the session began", () => {
+		beginSession(BOX, 500);
+		addProbe(5, 5);
+		const before = painted();
+		expect(before).toBeGreaterThan(0);
+
+		addProbe(25, 5); // outside the original box: clipped away
+		expect(painted()).toBe(before);
+
+		growSession(EAST_BOX, 500);
+		addProbe(25, 5);
+		expect(painted()).toBeGreaterThan(before);
+	});
+
+	it("keeps what was already drawn", () => {
+		beginSession(BOX, 500);
+		addProbe(5, 5);
+		expect(painted()).toBeGreaterThan(0);
+
+		growSession(EAST_BOX, 500);
+		expect(hasCoverage()).toBe(true);
+		expect(painted()).toBeGreaterThan(0);
+	});
+
+	it("is a no-op when the new bounds are already covered", () => {
+		beginSession(BOX, 500);
+		addProbe(5, 5);
+		const before = painted();
+
+		growSession({ west: 2, south: 2, east: 8, north: 8 }, 500);
+		expect(painted()).toBe(before);
+	});
+
+	it("starts a session when there is none", () => {
+		expect(hasCoverage()).toBe(false);
+		growSession(BOX, 500);
+		addProbe(5, 5);
+		expect(hasCoverage()).toBe(true);
 	});
 });

@@ -1,22 +1,19 @@
 import type { ReactNode } from "react";
 import { useAsync } from "@/lib/hooks/useAsync";
 import { useEvent, SELECTION_EVENTS } from "@/lib/events";
-import { Sidebar, EmptyState } from "@/components/primitives/Sidebar";
-import type { Selection, ExtraFieldDef, Location } from "@/bindings.gen";
-import { computeDivergence, soleGroup } from "./engine";
-import type {
-	DisambiguateResult,
-	FieldDivergence,
-	GroupSummary,
-	ValueFormat,
-	Labeled,
-} from "./engine";
+import { Sidebar } from "@/components/primitives/Sidebar";
+import { EmptyState } from "@/components/primitives/EmptyState";
+import { Bar } from "@/components/primitives/Bar";
+import { Notice } from "@/components/primitives/Hint";
+import { Pill } from "@/components/primitives/Pill";
+import { Spinner } from "@/components/primitives/Spinner";
+import type { Selection, FieldDef } from "@/bindings.gen";
+import type { RGB } from "@/lib/util/color";
+import { analysisColumns, computeDivergence, exclusiveGroups } from "./engine";
+import type { DisambiguateResult, FieldDivergence, GroupSummary, ValueFormat } from "./engine";
 import "./disambiguate.css";
 import { t } from "@/lib/i18n";
-
-function rgb(c: [number, number, number]) {
-	return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-}
+import { Swatch } from "@/components/primitives/Swatch";
 
 function badgeText(field: FieldDivergence): string {
 	if (field.format === "month") return t("Month");
@@ -27,13 +24,13 @@ function badgeText(field: FieldDivergence): string {
 	return t("Categorical");
 }
 
-function fmtNum(n: number | null | undefined): string {
+function fmtNum(n: number | null): string {
 	if (n === null || n === undefined || Number.isNaN(n)) return "-";
 	return Math.abs(n) >= 1000 || Number.isInteger(n) ? n.toFixed(0) : n.toFixed(2);
 }
 
 /** Format a numeric summary value back into a readable form for its field type. */
-function fmtVal(n: number | null | undefined, format: ValueFormat): string {
+function fmtVal(n: number | null, format: ValueFormat): string {
 	if (n === null || n === undefined || Number.isNaN(n)) return "-";
 	if (format === "month") {
 		const idx = Math.round(n);
@@ -47,15 +44,7 @@ function fmtVal(n: number | null | undefined, format: ValueFormat): string {
 	return fmtNum(n);
 }
 
-function GroupCell({
-	field,
-	g,
-	color,
-}: {
-	field: FieldDivergence;
-	g: GroupSummary;
-	color: [number, number, number];
-}) {
+function GroupCell({ field, g, color }: { field: FieldDivergence; g: GroupSummary; color: RGB }) {
 	const coverage = g.n > 0 ? Math.round((g.present / g.n) * 100) : 0;
 	let body: ReactNode;
 	if (field.comparison.type === "circular") {
@@ -90,7 +79,7 @@ function GroupCell({
 	}
 	return (
 		<div className="disambig__group">
-			<span className="disambig__swatch" style={{ background: rgb(color) }} />
+			<Swatch color={color} size="sm" />
 			<div className="disambig__group-body">
 				{body}
 				<div className="disambig__muted disambig__coverage">
@@ -101,27 +90,17 @@ function GroupCell({
 	);
 }
 
-function FieldRow({
-	field,
-	colors,
-}: {
-	field: FieldDivergence;
-	colors: [number, number, number][];
-}) {
+function FieldRow({ field, colors }: { field: FieldDivergence; colors: RGB[] }) {
 	const score = field.valueScore;
 	return (
 		<div className={`disambig__row${field.lowConfidence ? " disambig__row--weak" : ""}`}>
 			<div className="disambig__head">
-				<span className="disambig__label">{t(field.label)}</span>
-				<span className="disambig__badge">{badgeText(field)}</span>
-				{field.lowConfidence && (
-					<span className="disambig__badge disambig__badge--warn">{t("low data")}</span>
-				)}
-				<span className="disambig__score">{score !== null ? score.toFixed(2) : "-"}</span>
+				<span className="disambig__label">{field.label}</span>
+				<Pill>{badgeText(field)}</Pill>
+				{field.lowConfidence && <Pill tone="warning">{t("low data")}</Pill>}
+				<span className="disambig__score mono">{score !== null ? score.toFixed(2) : "-"}</span>
 			</div>
-			<div className="disambig__bar">
-				<div className="disambig__bar-fill" style={{ width: `${(score ?? 0) * 100}%` }} />
-			</div>
+			<Bar value={score ?? 0} size="md" className="disambig__bar" />
 			{field.coverageScore > 0.01 && (
 				<div className="disambig__muted">
 					{t("presence differs across groups (coverage {score})", {
@@ -140,7 +119,7 @@ function FieldRow({
 
 interface Analysis {
 	result: DisambiguateResult;
-	colors: [number, number, number][];
+	colors: RGB[];
 	excludedOverlap: number;
 }
 
@@ -153,30 +132,33 @@ async function analyze(): Promise<Analysis> {
 	if (sels.length < 2) throw new Error(t("Select at least 2 groups to disambiguate."));
 
 	const colors = sels.map((s) => s.color);
-	const idSets = await Promise.all(
-		sels.map((s) => MMA.cmd.storeResolveSelection(s.props).then((ids: number[]) => new Set(ids))),
+	const selectors = sels.map((s) => s.selector);
+	const union = MMA.query(MMA.any(...selectors));
+
+	const fieldDefs: Record<string, FieldDef> = MMA.getAllFieldDefs();
+	const tagNames: Record<number, string> = {};
+	for (const [id, t] of Object.entries(MMA.getTags()))
+		tagNames[Number(id)] = (t as { name: string }).name;
+
+	const [unionSize, present] = await Promise.all([union.count(), union.coverage()]);
+	const fields = analysisColumns(
+		fieldDefs,
+		present.map(([k]) => k),
+	);
+	const groups = await Promise.all(
+		exclusiveGroups(selectors).map(async (selector) => {
+			const group = MMA.query(selector);
+			const [size, counts] = await Promise.all([
+				group.count(),
+				group.countBy(fields, { kind: "value" }),
+			]);
+			return { size, counts: Object.fromEntries(fields.map((f, i) => [f, counts[i]])) };
+		}),
 	);
 
-	const locStore = await MMA.createLocationStore();
-	try {
-		const labeled: Labeled[] = [];
-		let excludedOverlap = 0;
-		for (const loc of locStore.locations.values()) {
-			const g = soleGroup(idSets, loc.id);
-			if (g === "overlap") excludedOverlap++;
-			else if (g !== null) labeled.push({ group: g, loc: loc as Location });
-		}
-
-		const fieldDefs: Record<string, ExtraFieldDef> = MMA.getAllFieldDefs();
-		const tagNames: Record<number, string> = {};
-		for (const [id, t] of Object.entries(MMA.getMapState().tags))
-			tagNames[Number(id)] = (t as { name: string }).name;
-
-		const result = computeDivergence(labeled, sels.length, fieldDefs, tagNames);
-		return { result, colors, excludedOverlap };
-	} finally {
-		locStore.destroy();
-	}
+	const result = computeDivergence(groups, fieldDefs, tagNames);
+	const excludedOverlap = unionSize - result.groupSizes.reduce((a, b) => a + b, 0);
+	return { result, colors, excludedOverlap };
 }
 
 export function DisambiguateSidebar({ onClose }: { onClose: () => void }) {
@@ -201,17 +183,19 @@ export function DisambiguateSidebar({ onClose }: { onClose: () => void }) {
 
 	return (
 		<Sidebar title={t("Disambiguate selections")} onBack={onClose} className="disambig">
-			{error && <div className="disambig__error">{error.message}</div>}
-			{!error && loading && <div className="disambig__muted">{t("Analyzing\u2026")}</div>}
+			{error && <Notice tone="error">{error.message}</Notice>}
+			{!error && loading && (
+				<div className="disambig__loading">
+					<Spinner />
+					<span className="disambig__muted">{t("Analyzing...")}</span>
+				</div>
+			)}
 			{!error && analysis && (
 				<>
 					<div className="disambig__summary disambig__muted">
 						{analysis.result.groupSizes.map((n, i) => (
 							<span key={i} className="disambig__group">
-								<span
-									className="disambig__swatch"
-									style={{ background: rgb(analysis.colors[i] ?? [128, 128, 128]) }}
-								/>
+								<Swatch color={analysis.colors[i] ?? [128, 128, 128]} size="sm" />
 								{n}
 							</span>
 						))}

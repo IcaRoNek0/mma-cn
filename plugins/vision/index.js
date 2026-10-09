@@ -42,26 +42,9 @@ var require_jsx_runtime = __commonJS({
 var import_react = __toESM(require_react());
 
 // vision/src/sidecar.ts
-async function resolveWorldSizes(panoIds, onProgress) {
-  const BATCH = 200;
-  const entries = [];
-  for (let i = 0; i < panoIds.length; i += BATCH) {
-    const batch = panoIds.slice(i, i + BATCH);
-    const metas = await MMA.fetchSvMetadata(batch);
-    for (let j = 0; j < batch.length; j++) {
-      const ws = metas[j]?.tiles?.worldSize;
-      entries.push({
-        panoId: batch[j],
-        worldWidth: ws?.width ?? 6656,
-        worldHeight: ws?.height ?? 3328
-      });
-    }
-    onProgress?.(Math.min(i + BATCH, panoIds.length), panoIds.length);
-  }
-  return entries;
-}
+var { sidecar } = MMA;
 async function listCached() {
-  const ids = await MMA.sidecar.request("vision", "list-cached");
+  const ids = await sidecar.request("vision", "list-cached");
   return new Set(ids ?? []);
 }
 async function embed(panoIds, opts = {}) {
@@ -72,29 +55,39 @@ async function embed(panoIds, opts = {}) {
     opts.onStatus?.(`All ${panoIds.length} panos cached`);
     return;
   }
-  opts.onStatus?.(`Fetching metadata for ${uncached.length} uncached panos...`);
-  const panos = await resolveWorldSizes(uncached, (done, total) => {
-    opts.onStatus?.(`Metadata: ${done}/${total}`);
-  });
-  await MMA.sidecar.request("vision", "embed", { panos }, {
-    signal: opts.signal,
-    onLog: (line) => {
-      if (line.startsWith("[vision]")) opts.onStatus?.(line);
-    },
-    onLine: (s) => opts.onUnit?.(s.status === "cache_hit" ? s.count ?? 1 : 1)
-  });
+  await sidecar.request(
+    "vision",
+    "embed",
+    { panoIds: uncached },
+    {
+      signal: opts.signal,
+      onLog: (line) => {
+        if (line.startsWith("[vision]")) opts.onStatus?.(line);
+        else opts.onDiagnostic?.(line);
+      },
+      onLine: (s) => {
+        if (s.status === "error") opts.onFailed?.(s.panoId, s.error);
+        else opts.onUnit?.(s.status === "cache_hit" ? s.done ?? 1 : 1);
+      }
+    }
+  );
 }
-async function searchText(query, k, threshold, signal) {
-  const res = await MMA.sidecar.request(
+async function searchText(query, k, threshold, signal, onDiagnostic) {
+  const res = await sidecar.request(
     "vision",
     "search-text",
     { query, k, threshold },
-    { signal }
+    {
+      signal,
+      onLog: (line) => {
+        if (!line.startsWith("[vision]")) onDiagnostic?.(line);
+      }
+    }
   );
   return res?.results ?? [];
 }
 async function searchImage(panoId, k, threshold, signal) {
-  const res = await MMA.sidecar.request(
+  const res = await sidecar.request(
     "vision",
     "search-image",
     { panoId, k, threshold },
@@ -103,167 +96,222 @@ async function searchImage(panoId, k, threshold, signal) {
   return res?.results ?? [];
 }
 
+// vision/src/VisionSidebar.css
+var style = [...document.head.querySelectorAll("style[data-mma-plugin-css]")].find((s) => s.dataset.mmaPluginCss === "vision/src/VisionSidebar.css");
+if (!style) {
+  style = document.createElement("style");
+  style.dataset.mmaPluginCss = "vision/src/VisionSidebar.css";
+  document.head.appendChild(style);
+}
+style.textContent = ".vision-sidebar__body { padding: 8px 12px; display: flex; flex-direction: column; gap: 10px; }\n.vision-status { font-size: 0.75rem; color: var(--text-2); padding: 4px 0; }\n.vision-status--error { color: var(--destructive-text); }\n.vision-sidebar__actions { display: flex; gap: 6px; margin-top: 4px; }\n\n.vision-find-similar { width: 100%; }\n.vision-result { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--radius-2); background: var(--surface-1); }\n.vision-result__headline { font-size: 0.8125rem; }\n.vision-result__count { font-size: 0.9375rem; font-weight: 600; }\n.vision-result__note { font-size: 0.6875rem; color: var(--text-2); }\n.vision-result__warn { font-size: 0.6875rem; color: var(--warning); }\n.vision-meter { position: relative; }\n.vision-meter__cut { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text-1); }\n.vision-scale { display: flex; justify-content: space-between; font-size: 0.6875rem; color: var(--text-2); }\n";
+
 // vision/src/VisionSidebar.tsx
 var import_jsx_runtime = __toESM(require_jsx_runtime());
-var { Sidebar, Field } = MMA.ui;
-var CSS = `
-.vision-sidebar__body { padding: 8px 12px; display: flex; flex-direction: column; gap: 10px; }
-.vision-sidebar__progress { font-size: 12px; color: var(--text-secondary, #999); padding: 4px 0; }
-.vision-sidebar__results { font-size: 12px; padding: 4px 0; }
-.vision-sidebar__error { font-size: 12px; color: #e55; padding: 4px 0; }
-.vision-sidebar__actions { display: flex; gap: 6px; margin-top: 4px; }
-`;
+var {
+  ui: { Sidebar, Field, TextInput, Button, Bar, Slider },
+  useJob,
+  fetchAllLocations,
+  applySelectionUpdate,
+  addSelection
+} = MMA;
+var MAX_SCORE = 0.3;
 function panoIdToLocId(locs, panoId) {
   const loc = locs.find((l) => l.panoId === panoId);
   return loc?.id ?? null;
 }
-function VisionSidebar({ onClose }) {
-  const [query, setQuery] = (0, import_react.useState)("");
-  const [threshold, setThreshold] = (0, import_react.useState)(0.01);
-  const [running, setRunning] = (0, import_react.useState)(false);
-  const [progress, setProgress] = (0, import_react.useState)("");
-  const [error, setError] = (0, import_react.useState)("");
-  const [resultCount, setResultCount] = (0, import_react.useState)(null);
-  const abortRef = (0, import_react.useRef)(null);
-  const run = (0, import_react.useCallback)(async () => {
-    const q = query.trim();
-    if (!q) return;
-    setRunning(true);
-    setError("");
-    setResultCount(null);
-    const abort = new AbortController();
-    abortRef.current = abort;
-    try {
-      const locs = await MMA.fetchAllLocations();
-      if (abort.signal.aborted) return;
-      const panoIds = locs.filter((l) => l.panoId).map((l) => l.panoId);
-      if (panoIds.length === 0) {
-        setError("No locations with pano IDs");
-        return;
-      }
-      setProgress(`Embedding ${panoIds.length} panos (cached skip)...`);
-      let embedDone = 0;
-      const embedStart = Date.now();
-      await embed(panoIds, {
-        signal: abort.signal,
-        onStatus: setProgress,
-        onUnit: (count) => {
-          embedDone += count;
-          const elapsed = (Date.now() - embedStart) / 1e3;
-          const rate = elapsed > 0.5 ? (embedDone / elapsed).toFixed(1) : "--";
-          setProgress(`Embedding: ${embedDone}/${panoIds.length} (${rate} panos/s)`);
-        }
-      });
-      if (abort.signal.aborted) return;
-      setProgress(`Searching for "${q}"...`);
-      const results = await searchText(q, null, threshold, abort.signal);
-      if (abort.signal.aborted) return;
-      const matchedIds = results.map((r) => panoIdToLocId(locs, r.panoId)).filter((id) => id != null);
-      if (matchedIds.length > 0) {
-        await MMA.addSelections([{ type: "Locations", locations: matchedIds, name: `Vision: "${q}"` }]);
-      }
-      setResultCount(matchedIds.length);
-      setProgress("");
-    } catch (e) {
-      if (!abort.signal.aborted) setError(String(e));
-    } finally {
-      abortRef.current = null;
-      setRunning(false);
-    }
-  }, [query, threshold]);
-  const cancel = (0, import_react.useCallback)(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setRunning(false);
-    setProgress("");
-  }, []);
-  (0, import_react.useEffect)(() => () => abortRef.current?.abort(), []);
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Sidebar, { title: "Vision", onBack: onClose, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("style", { children: CSS }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-sidebar__body", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: "Search for", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "input",
-        {
-          className: "input",
-          placeholder: "cars, snow, indoor...",
-          value: query,
-          onChange: (e) => setQuery(e.target.value),
-          onKeyDown: (e) => {
-            if (e.key === "Enter" && !running) run();
-          }
-        }
-      ) }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: `Min confidence: ${threshold.toFixed(3)}`, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "input",
-        {
-          type: "range",
-          min: 0,
-          max: 0.3,
-          step: 5e-3,
-          value: threshold,
-          onChange: (e) => setThreshold(Number(e.target.value)),
-          style: { width: "100%" }
-        }
-      ) }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-sidebar__actions", children: !running ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "button button--primary", disabled: !query.trim(), onClick: run, children: "Search" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "button", onClick: cancel, children: "Cancel" }) }),
-      progress && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-sidebar__progress", children: progress }),
-      error && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-sidebar__error", children: error }),
-      resultCount !== null && !running && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-sidebar__results", children: [
-        resultCount,
-        " locations selected"
+var pct = (v) => `${Math.min(100, v / MAX_SCORE * 100)}%`;
+function ScoreMeter({ top, cut }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-meter", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bar, { value: top / MAX_SCORE, size: "md" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-meter__cut", style: { left: pct(cut) } })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-scale", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+        "best ",
+        top.toFixed(3)
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+        "cut ",
+        cut.toFixed(3)
       ] })
     ] })
   ] });
 }
+function Result({ outcome }) {
+  const { selected, elsewhere, top, cut, failed, notes } = outcome;
+  const belowCut = top !== null && top < cut;
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-result", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-result__headline", children: selected > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "vision-result__count", children: selected }),
+      " location",
+      selected === 1 ? "" : "s",
+      " selected"
+    ] }) : top === null ? "Nothing in the corpus scored against that" : belowCut ? "No matches above the threshold" : "No matches in this map" }),
+    top !== null && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ScoreMeter, { top, cut }),
+    elsewhere > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-result__note", children: [
+      elsewhere,
+      " match",
+      elsewhere === 1 ? "" : "es",
+      " in other maps -- the embed cache spans every map"
+    ] }),
+    selected === 0 && belowCut && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-result__note", children: "Lower the threshold to reach it." }),
+    failed > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-result__warn", children: [
+      failed,
+      " pano",
+      failed === 1 ? "" : "s",
+      " failed to embed and are not in the search"
+    ] }),
+    notes.map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-result__warn", children: n }, n))
+  ] });
+}
+function VisionSidebar({ onClose }) {
+  const [query, setQuery] = (0, import_react.useState)("");
+  const [threshold, setThreshold] = (0, import_react.useState)(0.01);
+  const job = useJob(async ({ signal, report }) => {
+    const q = query.trim();
+    const cut = threshold;
+    const locs = await fetchAllLocations();
+    signal.throwIfAborted();
+    const panoIds = locs.filter((l) => l.panoId).map((l) => l.panoId);
+    if (panoIds.length === 0) throw new Error("No locations with pano IDs");
+    let embedded = 0;
+    let failed = 0;
+    const notes = [];
+    const note = (line) => {
+      if (!notes.includes(line)) notes.push(line);
+    };
+    const start = Date.now();
+    await embed(panoIds, {
+      signal,
+      onStatus: report,
+      onUnit: (count) => {
+        embedded += count;
+        const elapsed = (Date.now() - start) / 1e3;
+        const rate = elapsed > 0.5 ? (embedded / elapsed).toFixed(1) : "--";
+        report(`Embedding: ${embedded}/${panoIds.length} (${rate} panos/s)`);
+      },
+      onFailed: () => failed++,
+      onDiagnostic: note
+    });
+    signal.throwIfAborted();
+    report(`Searching for "${q}"...`);
+    const results = await searchText(q, null, cut, signal, note);
+    const matchedIds = results.map((r) => panoIdToLocId(locs, r.panoId)).filter((id) => id != null);
+    if (matchedIds.length > 0) {
+      await applySelectionUpdate(
+        addSelection({ type: "Locations", locations: matchedIds, name: `Vision: "${q}"` })
+      );
+    }
+    const top = results[0]?.score ?? (await searchText(q, 1, null, signal, note))[0]?.score ?? null;
+    return {
+      selected: matchedIds.length,
+      elsewhere: results.length - matchedIds.length,
+      top,
+      cut,
+      failed,
+      notes
+    };
+  });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sidebar, { title: "Vision", onBack: onClose, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "vision-sidebar__body", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: "Search for", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      TextInput,
+      {
+        placeholder: "cars, snow, indoor...",
+        value: query,
+        onChange: (e) => setQuery(e.target.value),
+        onKeyDown: (e) => {
+          if (e.key === "Enter" && !job.running && query.trim()) job.run();
+        }
+      }
+    ) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Field, { label: "Min confidence", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      Slider,
+      {
+        min: 0,
+        max: MAX_SCORE,
+        step: 5e-3,
+        value: threshold,
+        onChange: (e) => setThreshold(Number(e.target.value)),
+        format: (v) => v.toFixed(3)
+      }
+    ) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-sidebar__actions", children: !job.running ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { variant: "primary", disabled: !query.trim(), onClick: job.run, children: "Search" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Button, { onClick: job.cancel, children: "Cancel" }) }),
+    job.progress && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-status", children: job.progress }),
+    job.error && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "vision-status vision-status--error", children: job.error }),
+    job.result !== null && !job.running && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Result, { outcome: job.result })
+  ] }) });
+}
 
 // vision/src/FindSimilarButton.tsx
-var import_react2 = __toESM(require_react());
 var import_jsx_runtime2 = __toESM(require_jsx_runtime());
+var {
+  ui: { Button: Button2 },
+  getMapState,
+  useJob: useJob2,
+  fetchAllLocations: fetchAllLocations2,
+  applySelectionUpdate: applySelectionUpdate2,
+  addSelection: addSelection2
+} = MMA;
 var SIMILARITY_THRESHOLD = 0.85;
 function FindSimilarButton() {
-  const [running, setRunning] = (0, import_react2.useState)(false);
-  const [result, setResult] = (0, import_react2.useState)(null);
-  const active = MMA.getMapState().activeLocation;
-  if (!active?.panoId) return null;
-  const run = async () => {
-    setRunning(true);
-    setResult(null);
-    try {
-      const locs = await MMA.fetchAllLocations();
-      const panoIds = locs.filter((l) => l.panoId).map((l) => l.panoId);
-      await embed(panoIds);
-      const results = await searchImage(active.panoId, null, SIMILARITY_THRESHOLD);
-      const matchedIds = results.map((r) => locs.find((l) => l.panoId === r.panoId)?.id).filter((id) => id != null);
-      if (matchedIds.length > 0) {
-        await MMA.addSelections([{
+  const active = getMapState().activeLocation;
+  const panoId = active?.panoId;
+  const job = useJob2(async ({ signal, report }) => {
+    const locs = await fetchAllLocations2();
+    signal.throwIfAborted();
+    const panoIds = locs.filter((l) => l.panoId).map((l) => l.panoId);
+    let embedded = 0;
+    let failed = 0;
+    const start = Date.now();
+    await embed(panoIds, {
+      signal,
+      onStatus: report,
+      onUnit: (count) => {
+        embedded += count;
+        const elapsed = (Date.now() - start) / 1e3;
+        const rate = elapsed > 0.5 ? (embedded / elapsed).toFixed(1) : "--";
+        report(`Embedding: ${embedded}/${panoIds.length} (${rate} panos/s)`);
+      },
+      onFailed: () => failed++
+    });
+    signal.throwIfAborted();
+    report(
+      failed > 0 ? `Comparing... (${failed} pano${failed === 1 ? "" : "s"} failed to embed)` : "Comparing..."
+    );
+    const results = await searchImage(panoId, null, SIMILARITY_THRESHOLD);
+    const matchedIds = results.map((r) => locs.find((l) => l.panoId === r.panoId)?.id).filter((id) => id != null);
+    if (matchedIds.length > 0) {
+      await applySelectionUpdate2(
+        addSelection2({
           type: "Locations",
           locations: matchedIds,
-          name: `Similar to ${active.panoId.slice(0, 8)}...`
-        }]);
-        setResult(`${matchedIds.length} similar`);
-      } else {
-        setResult("No similar panos found");
+          name: `Similar to ${panoId.slice(0, 8)}...`
+        })
+      );
+    }
+    return matchedIds.length;
+  });
+  if (!panoId) return null;
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+      Button2,
+      {
+        small: true,
+        className: "vision-find-similar",
+        onClick: job.running ? job.cancel : job.run,
+        children: job.running ? "Cancel" : "Find similar panos"
       }
-    } catch (e) {
-      setResult(`Error: ${e}`);
-    } finally {
-      setRunning(false);
-    }
-  };
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
-    "button",
-    {
-      className: "button button--small",
-      style: { width: "100%" },
-      disabled: running,
-      onClick: run,
-      children: running ? "Searching..." : "Find similar panos"
-    }
-  );
+    ),
+    job.progress && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "vision-status", children: job.progress }),
+    job.error && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "vision-status vision-status--error", children: job.error }),
+    job.result !== null && !job.running && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "vision-status", children: job.result > 0 ? `${job.result} similar` : "No similar panos found" })
+  ] });
 }
 
 // vision/src/index.tsx
-MMA.registerPlugin({
+var { registerPlugin } = MMA;
+registerPlugin({
   activate() {
   },
   sidebar: VisionSidebar,

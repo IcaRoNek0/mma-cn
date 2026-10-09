@@ -1,24 +1,17 @@
-import { save } from "@tauri-apps/plugin-dialog";
-import type { Tag } from "@/bindings.gen";
 import type { TagSortMode } from "@/types";
-import { cmd } from "@/lib/commands";
+import type { Tag } from "@/types";
 import { colorForName } from "@/lib/util/color";
 
-/** Base URL for a Tauri custom URI scheme. Windows WebView2 uses http://<scheme>.localhost/. */
+/** Base URL for a custom URI scheme, platform-adjusted. */
 export function schemeBase(scheme: string): string {
 	return navigator.platform.startsWith("Win")
 		? `http://${scheme}.localhost/`
 		: `${scheme}://localhost/`;
 }
 
-/** URL that serves a local file over the `mma-buf://` protocol (binary Rust-to-JS transfers). */
+/** URL that serves a local file over the `mma-buf://` protocol. */
 export function mmaBufUrl(path: string): string {
 	return schemeBase("mma-buf") + path.replace(/\\/g, "/");
-}
-
-/** Message for an unknown thrown value. */
-export function errText(e: unknown): string {
-	return e instanceof Error ? e.message : String(e);
 }
 
 /** Copy of `set` with `value` toggled, or forced on/off by `on`. */
@@ -29,60 +22,91 @@ export function toggleInSet<T>(set: ReadonlySet<T>, value: T, on?: boolean): Set
 	return next;
 }
 
-/** Split into consecutive slices of at most `n` items. */
+/** The item `isBetter` prefers over every other, or null when there are none. */
+export function bestBy<T>(items: Iterable<T>, isBetter: (a: T, b: T) => boolean): T | null {
+	let best: T | null = null;
+	for (const item of items) {
+		if (best === null || isBetter(item, best)) best = item;
+	}
+	return best;
+}
+
+/** Shuffle `items` in place (Fisher-Yates) and return them. */
+export function shuffle<T>(items: T[]): T[] {
+	for (let i = items.length - 1; i > 0; i--) {
+		const j = (Math.random() * (i + 1)) | 0;
+		const tmp = items[i];
+		items[i] = items[j];
+		items[j] = tmp;
+	}
+	return items;
+}
+
+/** Split `arr` into sub-arrays of at most `n` elements. */
 export function chunk<T>(arr: readonly T[], n: number): T[][] {
 	const out: T[][] = [];
 	for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
 	return out;
 }
 
-/** Compare two dotted version strings (e.g. "0.6.1"). Returns >0 if a > b. */
+/** Compare two semver strings (e.g. "0.6.1", "0.7.0-rc.2"). Returns >0 if a > b.
+ *  Build metadata is ignored; a pre-release sorts below the release it precedes. */
 export function cmpVersion(a: string, b: string): number {
-	const pa = a.split(".").map(Number);
-	const pb = b.split(".").map(Number);
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+	const [coreA, preA] = splitVersion(a);
+	const [coreB, preB] = splitVersion(b);
+	const na = coreA.split(".").map(Number);
+	const nb = coreB.split(".").map(Number);
+	for (let i = 0; i < Math.max(na.length, nb.length); i++) {
+		const d = (na[i] ?? 0) - (nb[i] ?? 0);
 		if (d) return d;
+	}
+	if (preA === preB) return 0;
+	if (!preA || !preB) return preA ? -1 : 1;
+	const ia = preA.split(".");
+	const ib = preB.split(".");
+	for (let i = 0; i < Math.max(ia.length, ib.length); i++) {
+		const x = ia[i];
+		const y = ib[i];
+		if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+		const nx = /^\d+$/.test(x);
+		const ny = /^\d+$/.test(y);
+		if (nx && ny) {
+			if (Number(x) !== Number(y)) return Number(x) - Number(y);
+		} else if (nx !== ny) return nx ? -1 : 1;
+		else if (x !== y) return x < y ? -1 : 1;
 	}
 	return 0;
 }
 
-/** True when running under the web-serve bridge (a plain browser, no native shell). */
+/** `["0.7.0", "rc.2"]` for `"v0.7.0-rc.2+build"`; the pre-release part is `""` when absent. */
+export function splitVersion(v: string): [core: string, pre: string] {
+	const m = /^v?([^-+]*)(?:-([^+]*))?/.exec(v.trim());
+	return [m?.[1] ?? "", m?.[2] ?? ""];
+}
+
+/** True when `v` carries a semver pre-release tag, e.g. "1.0.0-beta.1". */
+export function isPrereleaseVersion(v: string): boolean {
+	return splitVersion(v)[1] !== "";
+}
+
+/** True when the app runs in a browser instead of the desktop app. */
 export function isWeb(): boolean {
 	return Boolean(
 		(window as { __TAURI_INTERNALS__?: { __webserve?: boolean } }).__TAURI_INTERNALS__?.__webserve,
 	);
 }
 
-// In a browser (web-serve) there's no native save dialog that returns a path for the
-// backend to write to. Use the File System Access API to let the user pick a destination
-// and stream the already-built temp export straight into it (no full read into memory).
-// Falls back to a plain download where that API is unavailable. Returns false if cancelled.
-async function downloadInBrowser(srcPath: string, fileName: string): Promise<boolean> {
-	const url = mmaBufUrl(srcPath);
-	const picker = (
-		window as unknown as {
-			showSaveFilePicker?: (o: { suggestedName?: string }) => Promise<FileSystemFileHandle>;
-		}
-	).showSaveFilePicker;
-	if (picker) {
-		let handle: FileSystemFileHandle;
-		try {
-			handle = await picker({ suggestedName: fileName });
-		} catch (e) {
-			if (e instanceof DOMException && e.name === "AbortError") return false;
-			throw e;
-		}
-		const res = await fetch(url);
-		if (!res.body) throw new Error("export stream unavailable");
-		// Reached only behind the showSaveFilePicker feature test above, which the lint rule
-		// can't see; without the picker we never get here and fall through to downloadBlob.
-		// eslint-disable-next-line local/no-unsupported-builtins
-		await res.body.pipeTo((await handle.createWritable()) as unknown as WritableStream<Uint8Array>);
-		return true;
-	}
-	downloadBlob(await (await fetch(url)).blob(), fileName);
-	return true;
+/** Prompt for files; resolves empty when the picker is dismissed. */
+export function pickFiles(accept: string, opts: { multiple?: boolean } = {}): Promise<File[]> {
+	return new Promise((resolve) => {
+		const input = document.createElement("input");
+		input.type = "file";
+		input.accept = accept;
+		input.multiple = opts.multiple ?? false;
+		input.onchange = () => resolve([...(input.files ?? [])]);
+		input.oncancel = () => resolve([]);
+		input.click();
+	});
 }
 
 /** Trigger a browser download from an in-memory Blob. */
@@ -106,106 +130,12 @@ export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
 	}
 }
 
-/** Prompt for a destination and move a temp export file there (native dialog in
- *  Tauri, File System Access / download in the browser). False = cancelled. */
-export async function saveExportTempFile(srcPath: string, fileName: string): Promise<boolean> {
-	if (isWeb()) return downloadInBrowser(srcPath, fileName);
-	const ext = fileName.split(".").pop() ?? "";
-	const dest = await save({
-		defaultPath: fileName,
-		filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
-	});
-	if (!dest) return false;
-	await cmd.storeSaveExportFile(srcPath, dest);
-	return true;
-}
-
-// Order strings with embedded numbers by numeric value, not lexically
+/** Compare strings with natural (numeric-aware) ordering. */
 export function compareNatural(a: string, b: string): number {
 	return a.localeCompare(b, undefined, { numeric: true });
 }
 
-export interface NumericBuckets {
-	count: number;
-	min: number;
-	max: number;
-	bounds: [number, number][];
-	labels: string[];
-	bucketIndex(value: number): number;
-}
-
-// How to size equal-width numeric bins: `count` derives the width from the data range
-// (adaptive, always ~N bins); `width` fixes the width with bins anchored at multiples of
-// it (stable, comparable labels across datasets). One algorithm, two parameterizations.
-export type NumericBinning = { by: "count"; n: number } | { by: "width"; w: number };
-
-const fmtBound = (n: number) =>
-	Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100);
-
-// Split numeric values into equal-width bins. Non-finite values are ignored. Returns null
-// when there's nothing to bin (no finite values, or — count mode — no spread).
-export function binNumeric(values: number[], binning: NumericBinning): NumericBuckets | null {
-	let min = Infinity;
-	let max = -Infinity;
-	let any = false;
-	for (const n of values) {
-		if (!Number.isFinite(n)) continue;
-		any = true;
-		if (n < min) min = n;
-		if (n > max) max = n;
-	}
-	if (!any) return null;
-
-	const bounds: [number, number][] = [];
-	const labels: string[] = [];
-
-	if (binning.by === "count") {
-		const count = binning.n;
-		if (count < 1 || min === max) return null;
-		const step = (max - min) / count;
-		for (let i = 0; i < count; i++) {
-			const lo = min + step * i;
-			const hi = i === count - 1 ? max : min + step * (i + 1);
-			bounds.push([lo, hi]);
-			labels.push(`${fmtBound(lo)}–${fmtBound(hi)}`);
-		}
-		return {
-			count,
-			min,
-			max,
-			bounds,
-			labels,
-			bucketIndex(value: number): number {
-				if (value <= min) return 0;
-				if (value >= max) return count - 1;
-				const idx = Math.floor((value - min) / step);
-				return idx < 0 ? 0 : idx >= count ? count - 1 : idx;
-			},
-		};
-	}
-
-	const w = binning.w;
-	if (!(w > 0)) return null;
-	const lo0 = Math.floor(min / w) * w;
-	const count = Math.max(1, Math.floor((max - lo0) / w) + 1);
-	for (let i = 0; i < count; i++) {
-		const lo = lo0 + w * i;
-		bounds.push([lo, lo + w]);
-		labels.push(`${fmtBound(lo)}–${fmtBound(lo + w)}`);
-	}
-	return {
-		count,
-		min,
-		max,
-		bounds,
-		labels,
-		bucketIndex(value: number): number {
-			const idx = Math.floor((value - lo0) / w);
-			return idx < 0 ? 0 : idx >= count ? count - 1 : idx;
-		},
-	};
-}
-
+/** Sort tags by the chosen mode: name, location count, or manual order. */
 export function sortTagsByMode(
 	tags: Tag[],
 	mode: TagSortMode,
@@ -234,7 +164,33 @@ export function appendTagName(pending: string[], name: string, tags: Tag[]): str
 	return [...pending, existing ? existing.name : name];
 }
 
-// FOV (degrees) → zoom level
-export function fovToZoom(fov: number): number {
-	return -Math.log2((4 / 3) * Math.tan((Math.PI * fov) / 360)) + 1;
+/** Current time as Unix seconds, the form Location timestamps use. */
+export function nowUnix(): number {
+	return Math.floor(Date.now() / 1000);
+}
+
+/** Rolling anchor for a phase-relative locations/second average. */
+export interface PhaseRate {
+	t0: number;
+	done0: number;
+	done: number;
+	total: number;
+}
+
+/** Compute a locations/second rate for the current progress phase. Re-anchors when a
+ *  new phase is detected (done went backward or total grew). Null until a quarter second
+ *  of work has elapsed. */
+export function phaseRate(
+	prev: PhaseRate | null,
+	done: number,
+	total: number,
+	now: number,
+): { state: PhaseRate; rate: number | null } {
+	const state =
+		!prev || done < prev.done || total > prev.total
+			? { t0: now, done0: done, done, total }
+			: { ...prev, done, total };
+	const dt = (now - state.t0) / 1000;
+	const dd = state.done - state.done0;
+	return { state, rate: dt >= 0.25 && dd > 0 ? dd / dt : null };
 }

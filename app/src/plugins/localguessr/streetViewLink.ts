@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-shell";
-import { mapsPanoUrl, fovForZoom } from "@/lib/sv/mapsLink";
+import { mapsPanoUrl } from "@/lib/sv/mapsLink";
 import type { RoundLocation } from "./GameState";
 
 /** Build a browser Street View URL for a round location. */
@@ -10,12 +10,12 @@ export function buildStreetViewUrl(loc: RoundLocation): string | null {
 		lng: loc.lng,
 		heading: loc.heading ?? 0,
 		pitch: loc.pitch ?? 0,
-		fov: fovForZoom(loc.zoom ?? 1),
+		zoom: loc.zoom ?? 1,
 		panoId: loc.panoId,
 	}).toString();
 }
 
-export async function openStreetViewInBrowser(loc: RoundLocation): Promise<void> {
-	const url = buildStreetViewUrl(loc);
+export async function openStreetViewInBrowser(_loc: RoundLocation): Promise<void> {
+	const url = buildStreetViewUrl(_loc);
 	if (url) await open(url);
 }

@@ -2,11 +2,10 @@
 	"compilerOptions": {
 		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
 		"target": "es2023",
-		/* Runtime support is enforced by the `local/no-unsupported-builtins` ESLint rule
-		   (MDN compat data vs the FLOOR in eslint-rules/no-unsupported-builtins.js), not
-		   by this list. ES2025 rather than ESNext only because ESNext adds Uint8Array's
-		   base64/hex codecs, which clear the browser floor but need node 25+ to test. */
-		"lib": ["ES2025", "DOM"],
+		/* Runtime support is enforced by the `check:browser-compat` gate
+		   (MDN compat data vs the FLOOR in scripts/browser-compat-data.mjs), not
+		   by this list. */
+		"lib": ["ESNext", "DOM"],
 		"module": "esnext",
 		"types": ["vite/client", "google.maps"],
 		"skipLibCheck": true,
@@ -28,7 +27,7 @@
 		"strict": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
-		"erasableSyntaxOnly": false,
+		"erasableSyntaxOnly": true,
 		"noFallthroughCasesInSwitch": true
 	},
 	"include": ["src"]

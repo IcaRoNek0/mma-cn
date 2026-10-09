@@ -26,17 +26,20 @@ export interface ImportStaging {
 const EMPTY_IMPORT = { staging: null, positions: new Float32Array(0) };
 let importState: { staging: ImportStaging | null; positions: Float32Array } = EMPTY_IMPORT;
 
+/** The preview marker positions for the staged import. */
 export function getImportPreviewPositions() {
 	return importState.positions;
 }
 
+/** The current staged import, or null if none. */
 export function getImportStaging() {
 	return importState.staging;
 }
 
-/** Reset import state (called when map edit state is cleared). */
+/** Discard the staged import, freeing its parse. */
 export function resetImportState() {
 	importState = EMPTY_IMPORT;
+	void cmd.storeImportCancel().catch((e: unknown) => log.error("[import] cancel failed:", e));
 }
 
 async function setImportStaging(preview: EditorImportPreview, source: "file" | "paste") {
@@ -55,7 +58,7 @@ async function setImportStaging(preview: EditorImportPreview, source: "file" | "
 		fitMapToBounds(bboxTupleToBounds(preview.bounds), 100, getSettings().pastePadding);
 }
 
-/** Import from a known file path. Used by file picker and drag-and-drop. */
+/** Import from a file path. */
 export async function beginImportFromPath(path: string) {
 	await setImportStaging(await cmd.storeImportPreview(path), "file");
 }
@@ -65,18 +68,18 @@ export async function beginImportPaste(text: string) {
 	await setImportStaging(await cmd.storeImportPastePreview(text), "paste");
 }
 
-/** Commit the staged import, optionally dropping fields and applying a bulk tag. */
-export async function confirmImport(droppedFields: string[], tagName?: string) {
+/** Commit the staged import, optionally dropping fields and applying bulk tags. */
+export async function confirmImport(droppedFields: string[], tagNames: string[] = []) {
 	if (!importState.staging) return null;
 	await waitForInflightPersist();
 
-	const r = await cmd.storeImportFile(droppedFields, tagName?.trim() || null);
+	const r = await cmd.storeImportFile(droppedFields, tagNames.map((n) => n.trim()).filter(Boolean));
 	cancelImport();
-	await mutate(() => Promise.resolve(r));
+	await mutate(() => Promise.resolve(r.mutation));
 
 	const map = getMapState().map;
 	if (map && r.settings && Object.keys(r.settings).length) {
-		await updateMapMeta({ settings: { ...map.meta.settings, ...r.settings } });
+		await updateMapMeta({ settings: { ...map.settings, ...r.settings } });
 	}
 
 	if (r.autoCommit) {
@@ -93,7 +96,7 @@ export async function confirmImport(droppedFields: string[], tagName?: string) {
 
 /** Discard the staged import without committing. */
 export function cancelImport() {
-	importState = EMPTY_IMPORT;
+	resetImportState();
 	emitEvent("import-markers:changed");
 	const active = getMapState().activeLocation;
 	if ((active && isVirtualLocation(active)) || getMapState().workArea === "import") {

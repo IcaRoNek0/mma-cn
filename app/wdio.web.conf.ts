@@ -2,9 +2,9 @@
 // driven in Chrome over the HTTP IPC bridge instead of in the native shell. Only the
 // driver and the app URL differ -- specs go through window.MMA either way.
 //
-// Expects `map-making-app --serve` already listening (see scripts/docker-web-e2e.sh).
+// Expects `map-making-app --serve` already listening (see scripts/internal/e2e-web.sh).
 
-import { config as base, SHARED_EXCLUDES } from "./wdio.conf";
+import { config as base, SHARED_EXCLUDES, TEST_TIMEOUT } from "./wdio.conf";
 
 // Drop the tauri-driver connection settings: wdio manages the chromedriver session.
 const { hostname: _h, port: _p, path: _path, capabilities: _caps, ...shared } = base;
@@ -18,6 +18,9 @@ export const config: WebdriverIO.Config = {
 		// showSaveFilePicker/download in a browser, and fullscreen leans on real windowing.
 		"./test/e2e/export-dialog.test.ts",
 		"./test/e2e/fullscreen-map.test.ts",
+		// The sign-in flow builds a native webview window, which the sidecar has no
+		// equivalent for.
+		"./test/e2e/geoguessr.test.ts",
 	],
 	capabilities: [
 		{
@@ -42,9 +45,9 @@ export const config: WebdriverIO.Config = {
 		},
 	],
 	before: async () => {
+		await browser.setTimeout({ script: TEST_TIMEOUT });
 		await browser.url("/");
-		await browser.waitUntil(async () => browser.execute(() => window.MMA?.ready === true), {
-			timeout: 30000,
+		await browser.waitUntil(async () => browser.execute(() => window.MMA?.isReady() === true), {
 			timeoutMsg: "web app did not boot in time",
 		});
 	},

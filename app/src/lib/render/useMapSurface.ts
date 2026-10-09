@@ -13,7 +13,7 @@ import { getReviewSession } from "@/lib/review/review";
 import { useHotkey } from "@/lib/hooks/useHotkey";
 import { useBinding } from "@/lib/util/hotkeys";
 import { useMapKeyboardNav } from "@/lib/hooks/useMapKeyboardNav";
-import type { MapEmbedPrefs } from "@/store/mapEmbedPrefs";
+import { layerOpacity, type MapEmbedPrefs } from "@/store/mapEmbedPrefs";
 
 export interface MapSurfaceOpts {
 	prefs: MapEmbedPrefs;
@@ -46,29 +46,38 @@ export function useMapSurface(
 	const polygonGeomCache = useRef(new Map<string, PolyGeom>());
 	const activeLocationColor = useSetting("activeLocationColor");
 	const importPreviewColor = useSetting("importPreviewColor");
+	const svTrail = useSetting("svTrail");
+	const svTrailColor = useSetting("svTrailColor");
+	const svTrailPosition = useSetting("svTrailPosition");
 	const panoDotColor = useSetting("panoDotColor");
 	const panoDotScaled = useSetting("panoDotScaled");
 	const scoreMaxError = useScoreMaxError();
 
+	const markerOpacity = layerOpacity(opts.prefs, "marker");
+	const selectedOpacity = layerOpacity(opts.prefs, "selected");
 	const rebuild = useCallback(() => {
 		const overlay = overlayRef.current;
 		if (!overlay) return;
 		const onClick = (info: PickingInfo, domEvent?: Event) =>
-			handleMapClick(info, domEvent, {
+			void handleMapClick(info, domEvent, {
 				cm: getScene(),
 				host,
-				selectOnly: opts.prefs.selectOnly,
+				clickMode: opts.prefs.clickMode,
 				findNearbyPanoOnClick: opts.prefs.findNearbyPanoOnClick,
 				measuring: opts.measuring,
 				onContextMenu: opts.onContextMenu,
 			});
 		const layers = buildSceneLayers(getScene(), {
 			markerStyle: opts.prefs.markerStyle,
-			markerOpacity: opts.prefs.markerOpacity,
+			markerOpacity,
+			selectedOpacity,
 			markerSize: opts.prefs.markerSize,
 			showPerfectScoreCircle: opts.prefs.showPerfectScoreCircle,
 			scoreMaxError,
 			svPanoramas: opts.prefs.svPanoramas,
+			svTrail,
+			svTrailColor,
+			svTrailPosition,
 			panoDotColor,
 			panoDotScaled,
 			activeLocationColor,
@@ -89,13 +98,17 @@ export function useMapSurface(
 		activeLocationColor,
 		importPreviewColor,
 		opts.prefs.markerStyle,
-		opts.prefs.markerOpacity,
+		markerOpacity,
+		selectedOpacity,
 		opts.prefs.markerSize,
 		opts.prefs.showPerfectScoreCircle,
 		opts.prefs.svPanoramas,
+		svTrail,
+		svTrailColor,
+		svTrailPosition,
 		panoDotColor,
 		panoDotScaled,
-		opts.prefs.selectOnly,
+		opts.prefs.clickMode,
 		opts.prefs.findNearbyPanoOnClick,
 		opts.measuring,
 		opts.onContextMenu,
@@ -110,12 +123,11 @@ export function useMapSurface(
 	// Repaint on every visual signal WITHOUT rendering the host component — these buses
 	// used to be render subscriptions serving purely as effect triggers. Same-tick bursts
 	// coalesce into one rebuild (React's batching did this implicitly before).
-	const rebuildQueued = useRef(false);
+	const rebuildQueued = useRef(0);
 	const scheduleRebuild = useEffectEvent(() => {
 		if (rebuildQueued.current) return;
-		rebuildQueued.current = true;
-		queueMicrotask(() => {
-			rebuildQueued.current = false;
+		rebuildQueued.current = requestAnimationFrame(() => {
+			rebuildQueued.current = 0;
 			rebuildLatest();
 		});
 	});

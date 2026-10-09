@@ -2,26 +2,35 @@
 //!
 //! Attaches to the LIVE app and serves it over HTTP. Browser requests are bridged
 //! into the app's own machinery, so there is no per-command or per-frontend code:
-//!   - `POST /__ipc/<cmd>`  -> the app's real invoke handler (`Webview::on_message`)
+//!   - `POST /__ipc/<cmd>`  -> the app's real invoke handler (`Webview::on_message`),
+//!                             through the calling tab's own hidden webview
 //!   - `GET  /<asset>`      -> the app's bundled frontend (`AssetResolver`), with a
 //!                             bootstrap `<script>` injected so the same desktop
 //!                             bundle boots in a browser (defines `__TAURI_INTERNALS__`)
 //!   - `GET/POST /__scheme/<name>/...` -> handlers the app registered via
 //!                             [`register_scheme`] (the only app-facing hook)
+//!   - `GET  /__channel/<id>` -> one channel message's bytes, announced over `/__events`
 //!
-//! The app only ever: enables this plugin, and registers its custom URI schemes
-//! through [`register_scheme`]. Everything else is generic.
+//! The app only ever: enables this plugin, registers its custom URI schemes through
+//! [`register_scheme`], and installs [`forward_channel`] as its channel interceptor.
+//! Everything else is generic.
+
+#![allow(
+    clippy::doc_overindented_list_items,
+    reason = "the -> column in the module doc is aligned by hand"
+)]
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
-use tauri::ipc::{CallbackFn, InvokeBody, InvokeError, InvokeResponse};
+use tauri::ipc::{CallbackFn, InvokeBody, InvokeError, InvokeResponse, InvokeResponseBody};
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::webview::InvokeRequest;
-use tauri::{AppHandle, Manager, Runtime, Webview};
+use tauri::{AppHandle, Manager, Runtime, Webview, WebviewUrl, WebviewWindowBuilder};
 use tiny_http::{Header, Method, Response, Server};
 
 const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
@@ -51,10 +60,18 @@ pub struct SchemeResponse {
 
 impl SchemeResponse {
     pub fn ok(content_type: impl Into<String>, body: Vec<u8>) -> Self {
-        Self { status: 200, content_type: content_type.into(), body }
+        Self {
+            status: 200,
+            content_type: content_type.into(),
+            body,
+        }
     }
     pub fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: 404, content_type: "text/plain".into(), body: msg.into().into_bytes() }
+        Self {
+            status: 404,
+            content_type: "text/plain".into(),
+            body: msg.into().into_bytes(),
+        }
     }
 }
 
@@ -71,7 +88,10 @@ pub fn register_scheme<F>(name: &str, handler: F)
 where
     F: Fn(SchemeRequest) -> SchemeResponse + Send + Sync + 'static,
 {
-    schemes().write().unwrap().insert(name.to_string(), Box::new(handler));
+    schemes()
+        .write()
+        .unwrap()
+        .insert(name.to_string(), Box::new(handler));
 }
 
 // ---------------------------------------------------------------------------
@@ -82,24 +102,177 @@ where
 // events: no event name is hardcoded — the app passes the serialized payload.
 // ---------------------------------------------------------------------------
 
-fn event_clients() -> &'static Mutex<Vec<Sender<Vec<u8>>>> {
-    static CLIENTS: OnceLock<Mutex<Vec<Sender<Vec<u8>>>>> = OnceLock::new();
+/// Every open event stream, with the client it belongs to.
+fn event_clients() -> &'static Mutex<Vec<(String, Sender<Vec<u8>>)>> {
+    static CLIENTS: OnceLock<Mutex<Vec<(String, Sender<Vec<u8>>)>>> = OnceLock::new();
     CLIENTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Channel message bytes waiting for their client to fetch them, by id.
+fn channel_payloads() -> &'static Mutex<HashMap<u64, (String, Vec<u8>)>> {
+    static PAYLOADS: OnceLock<Mutex<HashMap<u64, (String, Vec<u8>)>>> = OnceLock::new();
+    PAYLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Send one SSE frame to every stream whose client `to` accepts, pruning streams that are
+/// gone. Returns whether any stream took it.
+fn send_frame(frame: &[u8], to: impl Fn(&str) -> bool) -> bool {
+    let Ok(mut clients) = event_clients().lock() else {
+        return false;
+    };
+    let mut sent = false;
+    clients.retain(|(label, tx)| {
+        if !to(label) {
+            return true;
+        }
+        let alive = tx.send(frame.to_vec()).is_ok();
+        sent |= alive;
+        alive
+    });
+    sent
+}
+
+// Each page load is a client with its own hidden webview, so state the app keys by
+// window label is per tab, as it is per window on desktop.
+const CLIENT_HEADER: &str = "x-webserve-client";
+const DEFAULT_CLIENT: &str = "main";
+/// Outlasts EventSource's reconnects, so only a client that is really gone loses its webview.
+const CLIENT_GRACE: Duration = Duration::from_secs(15);
+
+/// The client's webview label, or `None` for an id that is not a valid label.
+/// Requests that name no client share the default one.
+fn client_label(id: Option<&str>) -> Option<String> {
+    let Some(id) = id else {
+        return Some(DEFAULT_CLIENT.to_string());
+    };
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    valid.then(|| id.to_string())
+}
+
+fn client_streams() -> &'static Mutex<HashMap<String, usize>> {
+    static STREAMS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+type ReleaseHandler = Box<dyn Fn(&str) + Send + Sync + 'static>;
+
+fn release_handlers() -> &'static RwLock<Vec<ReleaseHandler>> {
+    static HANDLERS: OnceLock<RwLock<Vec<ReleaseHandler>>> = OnceLock::new();
+    HANDLERS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a callback for a client that is gone for good: its last stream ended and
+/// the grace period passed. Runs with the client's label, before its webview is
+/// destroyed, so the app can release state it keys by that label.
+pub fn on_client_release<F>(handler: F)
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    release_handlers().write().unwrap().push(Box::new(handler));
+}
+
+fn client_webview<R: Runtime>(handle: &AppHandle<R>, label: &str) -> Result<Webview<R>, String> {
+    static CREATING: Mutex<()> = Mutex::new(());
+    let _creating = CREATING.lock().unwrap();
+    if let Some(w) = handle.get_webview_window(label) {
+        return Ok(w.as_ref().clone());
+    }
+    WebviewWindowBuilder::new(
+        handle,
+        label,
+        WebviewUrl::External("about:blank".parse().unwrap()),
+    )
+    .visible(false)
+    .build()
+    .map(|w| w.as_ref().clone())
+    .map_err(|e| format!("client webview {label}: {e}"))
+}
+
+fn release_client<R: Runtime>(handle: AppHandle<R>, label: String) {
+    let gone = {
+        let mut streams = client_streams().lock().unwrap();
+        let n = streams.entry(label.clone()).or_default();
+        *n = n.saturating_sub(1);
+        *n == 0
+    };
+    if !gone || label == DEFAULT_CLIENT {
+        return;
+    }
+    std::thread::sleep(CLIENT_GRACE);
+    {
+        let mut streams = client_streams().lock().unwrap();
+        if streams.get(&label).copied().unwrap_or(0) > 0 {
+            return;
+        }
+        streams.remove(&label);
+    }
+    channel_payloads()
+        .lock()
+        .unwrap()
+        .retain(|_, (client, _)| *client != label);
+    for handler in release_handlers().read().unwrap().iter() {
+        handler(&label);
+    }
+    if let Some(w) = handle.get_webview_window(&label) {
+        let _ = w.destroy();
+    }
 }
 
 /// Forward a backend event to every connected web client (SSE). No-op when no
 /// browser is connected — always the case on desktop, so the app can call this
 /// unconditionally from its emit chokepoint.
 pub fn forward_event(event: &str, payload: serde_json::Value) {
-    let Ok(mut clients) = event_clients().lock() else {
-        return;
+    let frame = format!(
+        "data: {}\n\n",
+        serde_json::json!({ "event": event, "payload": payload })
+    );
+    send_frame(frame.as_bytes(), |_| true);
+}
+
+/// The app's channel interceptor: a message for a client's webview goes to that client's
+/// browser tab instead. The tab learns of it over its event stream and runs the channel's
+/// callback with it, fetching raw bytes from `/__channel/<id>` first. The index the
+/// channel numbers its messages with keeps them in order however the fetches land.
+pub fn forward_channel<R: Runtime>(
+    webview: &Webview<R>,
+    callback: CallbackFn,
+    index: usize,
+    body: &InvokeResponseBody,
+) -> bool {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let client = webview.label().to_string();
+    let (announce, payload) = match body {
+        InvokeResponseBody::Json(json) => (
+            serde_json::json!({
+                "callback": callback.0,
+                "index": index,
+                "message": serde_json::from_str::<serde_json::Value>(json).unwrap_or_default(),
+            }),
+            None,
+        ),
+        InvokeResponseBody::Raw(bytes) => {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            channel_payloads()
+                .lock()
+                .unwrap()
+                .insert(id, (client.clone(), bytes.clone()));
+            (
+                serde_json::json!({ "callback": callback.0, "index": index, "data": id }),
+                Some(id),
+            )
+        }
     };
-    if clients.is_empty() {
-        return;
+    let frame = format!("data: {}\n\n", serde_json::json!({ "channel": announce }));
+    if !send_frame(frame.as_bytes(), |label| label == client) {
+        if let Some(id) = payload {
+            channel_payloads().lock().unwrap().remove(&id);
+        }
     }
-    let frame = format!("data: {}\n\n", serde_json::json!({ "event": event, "payload": payload }))
-        .into_bytes();
-    clients.retain(|tx| tx.send(frame.clone()).is_ok());
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -130,75 +303,116 @@ fn serve<R: Runtime>(handle: AppHandle<R>) {
     log::info!("[webserve] listening on http://{addr}");
     eprintln!("[webserve] http://{addr}");
 
-    for mut req in server.incoming_requests() {
-        let method = req.method().clone();
-        let url = req.url().to_string();
-        let path = url.split('?').next().unwrap_or("").to_string();
-        let query = url.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
-
-        if method == Method::Post && path == "/__ipc_upload" {
-            let raw = query.strip_prefix("name=").unwrap_or("upload");
-            let name = url_decode(raw);
-            let mut body = Vec::new();
-            let _ = req.as_reader().read_to_end(&mut body);
-            let dest = std::env::temp_dir().join(format!("mma_{name}"));
-            let resp = match std::fs::write(&dest, &body) {
-                Ok(()) => {
-                    let path_str = dest.to_string_lossy().to_string();
-                    (200, serde_json::json!(path_str).to_string())
-                }
-                Err(e) => (500, err_json(&format!("write failed: {e}"))),
-            };
-            let _ = req.respond(
-                Response::from_string(resp.1)
-                    .with_status_code(resp.0)
-                    .with_header(json_header()),
-            );
-            continue;
-        }
-
-        if method == Method::Post && path.starts_with("/__ipc/") {
-            let cmd = path.trim_start_matches("/__ipc/").to_string();
-            let mut body = String::new();
-            let _ = req.as_reader().read_to_string(&mut body);
-            let args: serde_json::Value =
-                serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({}));
-            let (status, out) = invoke(&handle, cmd, args);
-            let _ = req.respond(
-                Response::from_string(out)
-                    .with_status_code(status)
-                    .with_header(json_header()),
-            );
-            continue;
-        }
-
-        if method == Method::Get && path == "/__events" {
-            let (tx, rx) = channel::<Vec<u8>>();
-            event_clients().lock().unwrap().push(tx);
-            // Own thread: the accept loop is single-threaded, so holding an SSE
-            // connection open here would stall every other request.
-            std::thread::spawn(move || stream_events(req, rx));
-            continue;
-        }
-
-        if path == "/__webserve/sw.js" {
-            let resp = Response::from_string(SERVICE_WORKER_JS)
-                .with_header(ct_header("text/javascript; charset=utf-8"))
-                .with_header(
-                    Header::from_bytes(&b"Service-Worker-Allowed"[..], &b"/"[..]).unwrap(),
-                );
-            let _ = req.respond(resp);
-            continue;
-        }
-
-        if let Some(rest) = path.strip_prefix("/__scheme/") {
-            let resp = serve_scheme(&mut req, rest, &query, method);
-            let _ = req.respond(resp);
-            continue;
-        }
-
-        let _ = req.respond(serve_asset(&handle, &path));
+    for req in server.incoming_requests() {
+        let handle = handle.clone();
+        std::thread::spawn(move || handle_request(&handle, req));
     }
+}
+
+fn handle_request<R: Runtime>(handle: &AppHandle<R>, mut req: tiny_http::Request) {
+    let method = req.method().clone();
+    let url = req.url().to_string();
+    let path = url.split('?').next().unwrap_or("").to_string();
+    let query = url
+        .split_once('?')
+        .map(|(_, q)| q.to_string())
+        .unwrap_or_default();
+
+    if method == Method::Post && path == "/__ipc_upload" {
+        let raw = query.strip_prefix("name=").unwrap_or("upload");
+        let name = url_decode(raw);
+        let mut body = Vec::new();
+        let _ = req.as_reader().read_to_end(&mut body);
+        let dest = std::env::temp_dir().join(format!("mma_{name}"));
+        let resp = match std::fs::write(&dest, &body) {
+            Ok(()) => {
+                let path_str = dest.to_string_lossy().to_string();
+                (200, serde_json::json!(path_str).to_string())
+            }
+            Err(e) => (500, err_json(&format!("write failed: {e}"))),
+        };
+        let _ = req.respond(
+            Response::from_string(resp.1)
+                .with_status_code(resp.0)
+                .with_header(json_header()),
+        );
+        return;
+    }
+
+    if method == Method::Post && path.starts_with("/__ipc/") {
+        let cmd = path.trim_start_matches("/__ipc/").to_string();
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let args: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({}));
+        let client = header_value(&req, CLIENT_HEADER);
+        let (status, out) = match client_label(client.as_deref()) {
+            Some(label) => invoke(handle, &label, cmd, args),
+            None => (400, err_json("invalid client id")),
+        };
+        let _ = req.respond(
+            Response::from_string(out)
+                .with_status_code(status)
+                .with_header(json_header()),
+        );
+        return;
+    }
+
+    if method == Method::Get && path == "/__events" {
+        let client = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("client="))
+            .map(url_decode);
+        let Some(label) = client_label(client.as_deref()) else {
+            let _ = req.respond(Response::from_string("invalid client id").with_status_code(400));
+            return;
+        };
+        let (tx, rx) = channel::<Vec<u8>>();
+        event_clients().lock().unwrap().push((label.clone(), tx));
+        *client_streams()
+            .lock()
+            .unwrap()
+            .entry(label.clone())
+            .or_default() += 1;
+        stream_events(req, rx);
+        release_client(handle.clone(), label);
+        return;
+    }
+
+    if let Some(id) = path.strip_prefix("/__channel/") {
+        let client = client_label(header_value(&req, CLIENT_HEADER).as_deref());
+        let payload = id.parse::<u64>().ok().and_then(|id| {
+            let mut payloads = channel_payloads().lock().unwrap();
+            let owned = payloads
+                .get(&id)
+                .is_some_and(|(owner, _)| client.as_ref() == Some(owner));
+            owned.then(|| payloads.remove(&id)).flatten()
+        });
+        let resp = match payload {
+            Some((_, bytes)) => {
+                Response::from_data(bytes).with_header(ct_header("application/octet-stream"))
+            }
+            None => Response::from_string("no such message").with_status_code(404),
+        };
+        let _ = req.respond(resp);
+        return;
+    }
+
+    if path == "/__webserve/sw.js" {
+        let resp = Response::from_string(SERVICE_WORKER_JS)
+            .with_header(ct_header("text/javascript; charset=utf-8"))
+            .with_header(Header::from_bytes(&b"Service-Worker-Allowed"[..], &b"/"[..]).unwrap());
+        let _ = req.respond(resp);
+        return;
+    }
+
+    if let Some(rest) = path.strip_prefix("/__scheme/") {
+        let resp = serve_scheme(&mut req, rest, &query, method);
+        let _ = req.respond(resp);
+        return;
+    }
+
+    let _ = req.respond(serve_asset(handle, &path));
 }
 
 fn serve_scheme(
@@ -245,7 +459,10 @@ fn stream_events(req: tiny_http::Request, rx: Receiver<Vec<u8>>) {
                 Content-Type: text/event-stream\r\n\
                 Cache-Control: no-cache\r\n\
                 Connection: close\r\n\r\n";
-    if w.write_all(head.as_bytes()).and_then(|_| w.flush()).is_err() {
+    if w.write_all(head.as_bytes())
+        .and_then(|_| w.flush())
+        .is_err()
+    {
         return;
     }
     loop {
@@ -264,10 +481,15 @@ fn stream_events(req: tiny_http::Request, rx: Receiver<Vec<u8>>) {
 // IPC bridge: forward to the app's real invoke handler.
 // ---------------------------------------------------------------------------
 
-fn invoke<R: Runtime>(handle: &AppHandle<R>, cmd: String, args: serde_json::Value) -> (u16, String) {
-    let webview = match handle.get_webview_window("main") {
-        Some(w) => w.as_ref().clone(),
-        None => return (500, err_json("ipc webview not ready")),
+fn invoke<R: Runtime>(
+    handle: &AppHandle<R>,
+    client: &str,
+    cmd: String,
+    args: serde_json::Value,
+) -> (u16, String) {
+    let webview = match client_webview(handle, client) {
+        Ok(w) => w,
+        Err(e) => return (500, err_json(&e)),
     };
 
     // Must be the app's real local origin or Tauri's ACL treats it as remote and
@@ -357,8 +579,8 @@ fn serve_asset<R: Runtime>(
     let mut resp = Response::from_data(bytes).with_header(ct_header(&asset.mime_type));
     if is_html {
         // index.html must never be cached (points at content-hashed assets).
-        resp = resp
-            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap());
+        resp =
+            resp.with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap());
     }
     resp
 }

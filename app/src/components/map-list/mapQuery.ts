@@ -47,3 +47,24 @@ export function toggleLabelInQuery(query: string, label: string): string {
 	const next = without.length === parts.length ? [...parts, token] : without;
 	return next.join(" ");
 }
+
+/** Hides the list's map rows and folders that miss the query. */
+export function applyMapFilter(listEl: HTMLElement | null, query: string) {
+	if (!listEl) return;
+	const entries = listEl.querySelectorAll<HTMLElement>("[data-filter-name]");
+	const folders = listEl.querySelectorAll<HTMLElement>("[data-filter-folder]");
+	const q = parseMapQuery(query);
+	if (q.text.length === 0 && q.labels.length === 0) {
+		for (const el of entries) el.hidden = false;
+		for (const el of folders) el.hidden = false;
+	} else {
+		for (const el of entries) {
+			const labels = (el.dataset.filterLabels ?? "").split("\n").filter(Boolean);
+			el.hidden = !mapMatchesQuery(el.dataset.filterName!, labels, q);
+		}
+		for (const el of folders) {
+			const hasVisible = el.querySelector<HTMLElement>("[data-filter-name]:not([hidden])") !== null;
+			el.hidden = !hasVisible;
+		}
+	}
+}

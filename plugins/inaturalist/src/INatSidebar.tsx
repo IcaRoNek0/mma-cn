@@ -12,58 +12,9 @@ import {
 	type Taxon,
 } from "./inat";
 import { TaxonomySorter } from "./TaxonomySorter";
+import "./INatSidebar.css";
 
-const CSS = `
-.inat-sidebar__search { display: flex; gap: 6px; }
-.inat-sidebar__results {
-  max-height: 300px; overflow-y: auto;
-  border: 1px solid var(--color-divider, #333); border-radius: 4px;
-  margin-top: 8px;
-}
-.inat-sidebar__taxon {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
-  cursor: pointer; border-bottom: 1px solid var(--color-divider, #333);
-  font-size: 13px;
-}
-.inat-sidebar__taxon:last-child { border-bottom: none; }
-.inat-sidebar__taxon:hover { background: rgba(255,255,255,0.05); }
-.inat-sidebar__taxon-photo {
-  width: 32px; height: 32px; border-radius: 4px; object-fit: cover;
-  background: #333; flex-shrink: 0;
-}
-.inat-sidebar__taxon-info { flex: 1; min-width: 0; }
-.inat-sidebar__taxon-name {
-  font-weight: 600; font-style: italic; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.inat-sidebar__taxon-meta { font-size: 11px; color: var(--text-secondary, #999); }
-.inat-sidebar__active {
-  margin-top: 8px; padding: 8px; border-radius: 4px;
-  background: rgba(255, 120, 0, 0.1); border: 1px solid rgba(255, 120, 0, 0.3);
-}
-.inat-sidebar__active-name { font-weight: 600; font-size: 13px; color: #ff7800; }
-.inat-sidebar__active-count { font-size: 12px; color: var(--text-secondary, #999); margin-top: 2px; }
-.inat-sidebar__actions { display: flex; gap: 6px; margin-top: 8px; }
-.inat-sidebar__hint { font-size: 12px; color: var(--text-secondary, #999); margin-top: 4px; }
-`;
-
-let styleEl: HTMLStyleElement | null = null;
-
-function injectCSS() {
-	if (styleEl) return;
-	styleEl = document.createElement("style");
-	styleEl.textContent = CSS;
-	document.head.appendChild(styleEl);
-}
-
-function removeCSS() {
-	if (styleEl) {
-		styleEl.remove();
-		styleEl = null;
-	}
-}
-
-const { Sidebar, Section } = MMA.ui;
+const { ui: { Sidebar, Section, TextInput, Button }, toast } = MMA;
 
 export function INatSidebar({ onClose }: { onClose: () => void }) {
 	const [query, setQuery] = useState("");
@@ -74,11 +25,9 @@ export function INatSidebar({ onClose }: { onClose: () => void }) {
 	const refresh = useCallback(() => bump((n) => n + 1), []);
 
 	useEffect(() => {
-		injectCSS();
 		setOnUpdate(refresh);
 		return () => {
 			setOnUpdate(null);
-			removeCSS();
 		};
 	}, [refresh]);
 
@@ -89,7 +38,7 @@ export function INatSidebar({ onClose }: { onClose: () => void }) {
 		try {
 			setResults(await searchTaxa(q));
 		} catch {
-			MMA.toast("Failed to search iNaturalist");
+			toast("Failed to search iNaturalist");
 		}
 		setSearching(false);
 	};
@@ -102,8 +51,8 @@ export function INatSidebar({ onClose }: { onClose: () => void }) {
 
 	const handleImport = () => {
 		const n = importToMap();
-		if (n > 0) MMA.toast(`Imported ${n} observations as locations`);
-		else MMA.toast("No observations to import");
+		if (n > 0) toast(`Imported ${n} observations as locations`);
+		else toast("No observations to import");
 	};
 
 	const taxon = getCurrentTaxon();
@@ -114,8 +63,7 @@ export function INatSidebar({ onClose }: { onClose: () => void }) {
 		<Sidebar title="iNaturalist" onBack={onClose}>
 			<Section title="Observations">
 				<div className="inat-sidebar__search">
-					<input
-						className="input"
+					<TextInput
 						placeholder="Search species..."
 						value={query}
 						onChange={(e) => setQuery(e.target.value)}
@@ -125,9 +73,9 @@ export function INatSidebar({ onClose }: { onClose: () => void }) {
 						}}
 						style={{ flex: 1 }}
 					/>
-					<button className="button" onClick={doSearch} disabled={searching || !query.trim()}>
+					<Button onClick={doSearch} disabled={searching || !query.trim()}>
 						{searching ? "..." : "Search"}
-					</button>
+					</Button>
 				</div>
 
 				{results.length > 0 && (
@@ -155,15 +103,15 @@ export function INatSidebar({ onClose }: { onClose: () => void }) {
 				)}
 
 				<div className="inat-sidebar__actions">
-					<button className="button" onClick={toggleVisibility} disabled={!taxon}>
+					<Button onClick={toggleVisibility} disabled={!taxon}>
 						{vis ? "Hide" : "Show"}
-					</button>
-					<button className="button button--primary" onClick={handleImport} disabled={count === 0}>
+					</Button>
+					<Button variant="primary" onClick={handleImport} disabled={count === 0}>
 						Import{count > 0 ? ` (${count})` : ""}
-					</button>
-					<button className="button button--danger" onClick={clearData} disabled={!taxon}>
+					</Button>
+					<Button variant="destructive" onClick={clearData} disabled={!taxon}>
 						Clear
-					</button>
+					</Button>
 				</div>
 
 				{!taxon && <div className="inat-sidebar__hint">Search for a species to visualize observations on the map.</div>}

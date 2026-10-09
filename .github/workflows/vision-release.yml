@@ -10,15 +10,15 @@ jobs:
   export-models:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       # export_models.py is stdlib-only (pinned downloads + SHA256 verification)
       - name: Export ONNX models
         working-directory: plugins/vision/sidecar
         run: python export_models.py --output-dir models
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: vision-models
           path: plugins/vision/sidecar/models/
@@ -51,14 +51,14 @@ jobs:
             suffix: ''
             models: vision_model.onnx text_model.onnx
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: mma-vision-${{ matrix.label }}
           path: bundle/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: vision-models
           path: all-models/
@@ -77,7 +77,7 @@ jobs:
           zip -r ../mma-vision-${{ matrix.label }}.zip .
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mma-vision-bundle-${{ matrix.label }}
           path: mma-vision-${{ matrix.label }}.zip
@@ -91,34 +91,25 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: mma-vision-bundle-*
           merge-multiple: true
 
       - name: Compute SHA-256 digests
-        id: sha
         run: |
           for f in mma-vision-*.zip; do
             platform="${f#mma-vision-}"
             platform="${platform%.zip}"
             hash=$(sha256sum "$f" | cut -d' ' -f1)
-            echo "sha256-${platform}=${hash}" >> "$GITHUB_OUTPUT"
             echo "${hash}  ${f}" >> checksums.txt
           done
           cat checksums.txt
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           # never steal the Latest badge from app releases (updater reads releases/latest)
           make_latest: false
           files: |
             mma-vision-*.zip
             checksums.txt
-          body: |
-            **SHA-256 digests** (copy into manifest.json / registry.json):
-            ```
-            "sha256-windows-x64": "${{ steps.sha.outputs.sha256-windows-x64 }}",
-            "sha256-macos-arm64": "${{ steps.sha.outputs.sha256-macos-arm64 }}",
-            "sha256-linux-x64": "${{ steps.sha.outputs.sha256-linux-x64 }}"
-            ```

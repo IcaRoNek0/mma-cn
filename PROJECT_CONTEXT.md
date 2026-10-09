@@ -1,6 +1,8 @@
 # MMA-CN 项目上下文
 
-最后核对日期：2026-08-20
+最后核对日期：2026-10-09
+
+当前迁移分支 `migrate/upstream-0.11.6` 已合入上游 v0.11.6（`5433b539`），保留百度/腾讯独立 PSV、华为底图、覆盖层、透明度三档和原版 LocalGuessr。本文后续历史路径和版本记录需要结合新源码阅读；Rust 模块已迁到 `src/net` 和 `src/io`。
 
 本文档供新的 Codex/开发会话快速恢复上下文。代码、Git 历史和实际测试结果始终优先于本文；开始工作前应先重新检查工作区。
 
@@ -101,7 +103,7 @@ MMA-CN 是 MMA 的中国街景定制版本。目标是保留 MMA 原有界面和
 
 ## 5. 构建和启动
 
-推荐在 Ubuntu/Debian 或 Termux 的 Debian/Ubuntu proot 内使用 Node 24 和 Rust stable。不要复用 Android Termux 原生环境生成的 `node_modules`。
+推荐在 Ubuntu/Debian 或 Termux 的 Debian/Ubuntu proot 内使用 Node 26 和 Rust stable。不要复用 Android Termux 原生环境生成的 `node_modules`。
 
 ```bash
 cd /data/data/com.termux/files/home/tuxun/mma-cn/app
@@ -158,3 +160,12 @@ git diff --check
 5. 用户要求实现时，先做最小范围修改，再运行相关类型检查、测试和 `git diff --check`。
 6. 未经用户明确要求，不自行提交、推送、发布或更改远程状态。
 7. 不输出、提交或打包任何真实 key、Cookie、Token 或私人 API 凭据。
+
+## 9. v0.11.6 迁移补充
+
+- 构建需初始化子模块和下载 Git LFS 资源：`git submodule update --init --recursive`、`git lfs pull`。腾讯 PMTiles 不能用三行 LFS 指针代替。
+- 百度详细逆地理编码从服务进程环境变量 `MMA_BAIDU_REVERSE_AK` 读取用户自己的 AK；不再在源码内携带固定 AK 或 Cookie。未配置时使用离线城市表。
+- 自动安装更新保持关闭，避免中国定制版被上游安装包替换。发布列表读取本 fork。
+- 桌面及浏览器入口仍兼容 `map-making-app --serve`（构建需 `--features web-serve`）。
+- macOS Apple Silicon 可执行 `cd app && npm exec tauri build -- --bundles app --features web-serve`；产物在 `app/src-tauri/target/release/bundle/macos/MMA-CN.app`。
+- 上游已改变数据库与地图格式。第一次打开旧数据前请备份应用数据目录和导出的题库；用户数据不纳入迁移提交。

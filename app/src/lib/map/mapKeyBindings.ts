@@ -1,6 +1,16 @@
 import { useEffect } from "react";
 import type { MapKeyAction, MapKeyBinding } from "@/bindings.gen";
-import { parseHotkey, matchesKey, isEditableElement } from "@/lib/hooks/useHotkey";
+import {
+	parseHotkey,
+	matchesKey,
+	isEditableElement,
+	pluginOverlayOwnsInput,
+} from "@/lib/hooks/useHotkey";
+import { persisted } from "@/lib/hooks/useLocalStorage";
+
+/** Copy-to-map hotkeys that work in every map, assigned in the copy-to-map dialog;
+ *  a map's own binding on the same key shadows them. */
+export const GLOBAL_COPY_BINDINGS = persisted<MapKeyBinding[]>("globalCopyBindings", []);
 
 /**
  * Per-map key binding layer. Bindings live on `MapSettings.keyBindings`; each maps
@@ -83,6 +93,20 @@ export function withMapCopyBinding(
 	);
 }
 
+/** Per-map bindings plus the global copy bindings. Map bindings come first (the matcher
+ *  takes the first hit, so a map's own binding on the same key shadows a global one), and
+ *  a global copy targeting the open map itself is dropped. */
+export function mergedKeyBindings(
+	mapBindings: MapKeyBinding[],
+	globalBindings: MapKeyBinding[],
+	currentMapId: string | null,
+): MapKeyBinding[] {
+	const applicable = globalBindings.filter(
+		(b) => !(b.action.type === "copyToMap" && b.action.mapId === currentMapId),
+	);
+	return applicable.length === 0 ? mapBindings : [...mapBindings, ...applicable];
+}
+
 export function matchMapKeyBinding(
 	e: KeyboardEvent,
 	bindings: MapKeyBinding[],
@@ -106,6 +130,7 @@ export function executeMapKeyAction(action: MapKeyAction): boolean {
 /** Resolve a keydown against the current bindings; consume it if handled. */
 export function handleMapKeyEvent(e: KeyboardEvent, bindings: MapKeyBinding[]): boolean {
 	if (e.defaultPrevented || e.repeat) return false;
+	if (pluginOverlayOwnsInput()) return false;
 	if (isEditableElement(e.target)) return false;
 	if (bindings.length === 0) return false;
 	const binding = matchMapKeyBinding(e, bindings);

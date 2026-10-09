@@ -1,7 +1,6 @@
-/** Month names and hand-typed date parsing. Epoch encoding routes through the
- *  wall-clock codec in `fieldOps` (`dateParts`/`partsToEpoch`) — never encode here. */
-
-import { partsToEpoch } from "@/lib/data/fieldOps";
+import type { FilterOp } from "@/bindings.gen";
+/** Month names, hand-typed date parsing, and the one wall-clock codec
+ *  (`dateParts`/`partsToEpoch`); never encode an epoch elsewhere. */
 
 export const MONTHS = {
 	short: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
@@ -20,12 +19,6 @@ export const MONTHS = {
 		"December",
 	],
 } as const;
-
-// Calendar order for full month-name keys (e.g. month-of-year partition groups)
-export function compareMonthOrder(a: string, b: string): number {
-	const order: readonly string[] = MONTHS.full;
-	return order.indexOf(a) - order.indexOf(b);
-}
 
 /** 1-based month from a name ("Jun", "june") or number token ("6", "06"). */
 function monthToken(tok: string): number | null {
@@ -62,6 +55,12 @@ export function ymToDate(s: string): Date | null {
 	return p ? new Date(p.y, p.m - 1) : null;
 }
 
+/** A civil `YYYY-MM-DD` as the first of its month, local frame. Pano capture dates are
+ *  month-precision, and every reader of one displays or compares it by month. */
+export function civilToDate(s: string): Date | null {
+	return ymToDate(s.slice(0, 7));
+}
+
 /** Comparable month ordinal (`y*12 + m-1`). */
 export function ymOrdinal(s: string): number | null {
 	const p = ymParse(s);
@@ -86,7 +85,7 @@ export interface TypedDateOpts {
  *  or a Unix-seconds epoch string (date, encoded via `partsToEpoch`). Liberal input:
  *  ISO ("2019-06-03"), US ("6/3/2019"), month names ("Jun 3 2019", "3 Jun 2019").
  *  Ambiguous all-numeric dates read month-first, matching the en-US display.
- *  Returns null when the text doesn't parse — callers keep the previous value. */
+ *  Returns null when the text doesn't parse - callers keep the previous value. */
 export function parseTypedDate(text: string, opts: TypedDateOpts): string | null {
 	const t = text.trim().replace(/,/g, " ").replace(/\s+/g, " ");
 	if (!t) return null;
@@ -121,7 +120,7 @@ export function parseTypedDate(text: string, opts: TypedDateOpts): string | null
 	if (opts.anyYear) {
 		let mo: number | null = null;
 		let d = NaN;
-		let m = /^(\d{1,2})[-/. ](\d{1,2})$/.exec(t); // 06-03 — month first, matching display
+		let m = /^(\d{1,2})[-/. ](\d{1,2})$/.exec(t); // 06-03 - month first, matching display
 		if (m) {
 			mo = monthToken(m[1]);
 			d = Number(m[2]);
@@ -173,4 +172,139 @@ export function parseTypedDate(text: string, opts: TypedDateOpts): string | null
 	}
 	if (mo == null || !(d >= 1 && d <= 31) || isNaN(y) || y < 1900 || y > 2200) return null;
 	return String(partsToEpoch({ y, mo: mo - 1, d, h, mi }, opts.wallClock ?? false));
+}
+
+// --- Filter date windows: the wall-clock vs local frame codec and window stepping. ---
+
+/** Calendar digits of a timestamp in a clock frame. */
+interface DateParts {
+	y: number;
+	mo: number; // 0-based, as Date
+	d: number;
+	h: number;
+	mi: number;
+	s: number;
+}
+
+/** Read a Unix-seconds timestamp as calendar digits. `wallClock` = location-timezone
+ *  mode, where the digits are encoded in a UTC frame so they survive unshifted by the
+ *  viewer's timezone; otherwise the viewer's local frame. This pair is the ONLY place
+ *  the frame fork (UTC vs local getters) may exist - never branch on getters elsewhere:
+ *  one wrong getter shifts bounds silently and is invisible on UTC-running CI. */
+export function dateParts(v: number, wallClock: boolean): DateParts {
+	const dt = new Date(v * 1000);
+	return wallClock
+		? {
+				y: dt.getUTCFullYear(),
+				mo: dt.getUTCMonth(),
+				d: dt.getUTCDate(),
+				h: dt.getUTCHours(),
+				mi: dt.getUTCMinutes(),
+				s: dt.getUTCSeconds(),
+			}
+		: {
+				y: dt.getFullYear(),
+				mo: dt.getMonth(),
+				d: dt.getDate(),
+				h: dt.getHours(),
+				mi: dt.getMinutes(),
+				s: dt.getSeconds(),
+			};
+}
+
+/** Encode calendar digits back to Unix seconds in the given frame. Out-of-range fields
+ *  roll over calendar-aware (e.g. `d + 1` past month end), same as `Date`. */
+export function partsToEpoch(
+	p: { y: number; mo: number; d: number; h?: number; mi?: number; s?: number },
+	wallClock: boolean,
+): number {
+	const { y, mo, d, h = 0, mi = 0, s = 0 } = p;
+	const ms = wallClock ? Date.UTC(y, mo, d, h, mi, s) : new Date(y, mo, d, h, mi, s).getTime();
+	return Math.floor(ms / 1000);
+}
+
+/** A date pick denotes a period, not an instant: a day in date-only mode, a minute in
+ *  datetime mode (the picker can't express seconds). Used as an upper bound (or gt/lte
+ *  operand) the pick means the period's END, computed calendar-aware (next period start
+ *  - 1s) rather than by adding a constant: +86399 is wrong on DST-transition days, and
+ *  flooring first makes the expansion idempotent so re-submitting an edited filter
+ *  doesn't drift. */
+export function pickPeriodEnd(
+	v: number,
+	granularity: "day" | "minute",
+	wallClock: boolean,
+): number {
+	if (granularity === "minute") return v - (v % 60) + 59;
+	const p = dateParts(v, wallClock);
+	return partsToEpoch({ y: p.y, mo: p.mo, d: p.d + 1 }, wallClock) - 1;
+}
+
+/** True when the timestamp carries a time-of-day (is not exactly midnight). A midnight
+ *  bound is a day-grain pick - the UI has always displayed midnight as a bare date, and
+ *  the picker's cleared-time state encodes midnight - so period expansion treats
+ *  midnight as "the day" and anything else as "the minute". */
+export function hasTimeOfDay(v: number, wallClock: boolean): boolean {
+	const p = dateParts(v, wallClock);
+	return p.h !== 0 || p.mi !== 0 || p.s !== 0;
+}
+
+function addDays(v: number, days: number, wallClock: boolean): number {
+	const p = dateParts(v, wallClock);
+	return partsToEpoch({ y: p.y, mo: p.mo, d: p.d + days }, wallClock);
+}
+
+/** A between filter is a window; stepping translates the window by its own span
+ *  (tiling - the next window starts where this one ends, no overlap). Returns the
+ *  shifted bounds, or null when the filter isn't a bounded window (gt/has/enum eq,
+ *  anyYear/anyTime shapes). Day windows are calendar-aware (DST-safe); month windows
+ *  shift the "YYYY-MM" strings; numeric windows translate by span (shared edge). */
+export function stepFilterWindow(
+	fieldType: string | undefined,
+	test: FilterOp,
+	dir: 1 | -1,
+	wallClock = false,
+): FilterOp | null {
+	const MONTH = /^(\d{4})-(\d{2})$/;
+	if (fieldType === "month") {
+		const idx = (m: RegExpExecArray) => Number(m[1]) * 12 + (Number(m[2]) - 1);
+		const fmt = (i: number) => `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, "0")}`;
+		if (test.op === "eq" && typeof test.value === "string") {
+			const lo = MONTH.exec(test.value);
+			return lo ? { op: "eq", value: fmt(idx(lo) + dir) } : null;
+		}
+		if (test.op === "between" && typeof test.lo === "string" && typeof test.hi === "string") {
+			const lo = MONTH.exec(test.lo);
+			const hi = MONTH.exec(test.hi);
+			if (!lo || !hi) return null;
+			const span = idx(hi) - idx(lo) + 1;
+			if (span < 1) return null;
+			return { ...test, lo: fmt(idx(lo) + dir * span), hi: fmt(idx(hi) + dir * span) };
+		}
+		return null;
+	}
+	if (test.op !== "between") return null;
+	const lo = Number(test.lo);
+	const hi = Number(test.hi);
+	if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+	if (fieldType === "date") {
+		if (hi < lo) return null;
+		if (!hasTimeOfDay(lo, wallClock) && !hasTimeOfDay(hi + 1, wallClock)) {
+			// Day-grain window: [midnight, day-end]. Shift by its day count.
+			const days = Math.round((hi + 1 - lo) / 86400);
+			const newLo = addDays(lo, dir * days, wallClock);
+			return {
+				...test,
+				lo: newLo,
+				hi: pickPeriodEnd(addDays(newLo, days - 1, wallClock), "day", wallClock),
+			};
+		}
+		const span = hi - lo + 1;
+		return { ...test, lo: lo + dir * span, hi: hi + dir * span };
+	}
+	if (fieldType === "number") {
+		if (hi <= lo) return null;
+		const span = hi - lo;
+		return { ...test, lo: lo + dir * span, hi: hi + dir * span };
+	}
+	return null;
 }

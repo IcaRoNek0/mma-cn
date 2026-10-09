@@ -1,6 +1,8 @@
+import { panosAt, svMetadata } from "@/lib/sv/query";
 /* eslint-disable react-refresh/only-export-components */
 import {
 	createContext,
+	useCallback,
 	useContext,
 	useEffect,
 	useMemo,
@@ -8,95 +10,181 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
-import { useMapState, getMapState, updateLocations } from "@/store/useMapStore";
+import { useMapState } from "@/store/useMapStore";
 import { useSetting } from "@/store/settings";
-import { singletonPano } from "@/lib/sv/panoSingleton";
-import { emit as emitEvent } from "@/lib/events";
-import { hasLoadAsPanoId } from "@/types";
-import { isFieldEnabled } from "@/lib/data/fieldDefs";
-import { useTimezone } from "@/lib/util/timezone";
-import type { PanoReference } from "@/lib/sv/lookup";
-import { useExactDate } from "./useExactDate";
-import { derivePanoDateState, type PanoDateState } from "./panoDate";
+import { usePano } from "@/lib/hooks/usePano";
+import { sameRow, type LatLng } from "@/types";
+import type { Pano } from "@/bindings.gen";
+import type { Location } from "@/bindings.gen";
+import { withoutDerivedFrom } from "@/lib/data/fieldDefs";
+import { useAsync, useAsyncSticky } from "@/lib/hooks/useAsync";
+import { geocodeGoogle, reverseGeocode, type GeoDisplay } from "@/lib/geo/reverseGeocode";
+import { chinaPano, locationSource } from "@/lib/pano/bridge";
+import { getPanoramaProvider, isPanoSource } from "@/lib/pano";
+import { enrich } from "@/lib/sv/enrich";
+import { log } from "@/lib/util/log";
+import { panoDates, type PanoDateState } from "./panoDate";
 import { onFullscreenMapChanged, onLocationCleared } from "./fullscreenModeState";
 
-// Altitude lives outside React: its only reader is the imperative coordinate
-// readout, so routing it through context would re-render every consumer.
-let panoAltitude = 0;
-export function setPanoAltitude(v: number): void {
-	if (v === panoAltitude) return;
-	panoAltitude = v;
-	emitEvent("altitude:changed");
-}
-export function getPanoAltitude(): number {
-	return panoAltitude;
-}
-
 interface PanoViewerContextValue {
-	currentPano: Pick<google.maps.StreetViewPanoramaData, "location" | "imageDate"> | null;
-	setCurrentPano: React.Dispatch<React.SetStateAction<PanoViewerContextValue["currentPano"]>>;
-	panoDates: PanoReference[];
-	setPanoDates: React.Dispatch<React.SetStateAction<PanoReference[]>>;
-	panoReady: boolean;
-	setPanoReady: React.Dispatch<React.SetStateAction<boolean>>;
-	selectedPanoId: string | null;
-	/** Resolved live pano position (current pano if loaded, else the active location). */
-	lat: number;
-	lng: number;
-	/** Date-picker view state + resolution inputs, derived once for every picker. */
-	dateState: PanoDateState;
-	/** Exact capture timestamp, resolved once and shared (the lookup is expensive). */
-	exactDate: ReturnType<typeof useExactDate>;
-	resolvedTz: string | null;
+	/** The location as a save would write it: on the pano showing now, at its position,
+	 *  pinned or not, with what enrichment answered for it. Moves as the user walks;
+	 *  nothing here reaches the store until Save, and Close drops it. Null until open. */
+	draft: Location | null;
+	/** The location's pano is resolved and showing: `resolved` is the pano the open landed
+	 *  on, which an unpinned location does not store. */
+	open: (location: Location, resolved: string | null) => void;
+	/** The draft changed: the viewer moved, a date was chosen, a pin toggled. */
+	edit: (patch: Partial<Location> | ((draft: Location) => Partial<Location>)) => void;
+	/** What a save writes: the draft as it stands, never waiting on enrichment. A run
+	 *  still in flight is skipped and its answers discarded. */
+	settled: () => Promise<Location | null>;
+	/** The draft's pano as Google describes it, for what the UI shows off the pano itself
+	 *  rather than off the draft; null until it lands. */
+	currentPano: Pano | null;
+	/** The captures the date picker can offer at the draft's pano; null until it lands. */
+	timeline: Pano["time"] | null;
+	/** The pano Google resolves for the draft's position: what "Default" means there. */
+	defaultPano: Pano | null;
+	/** The geocoder's answer for the location's position (the google provider answers from
+	 *  the pano on screen); null until it lands. */
+	geo: GeoDisplay | null;
+	/** The draft's enrichment is still in flight. */
+	enriching: boolean;
 }
 
 const PanoViewerContext = createContext<PanoViewerContextValue | null>(null);
 
+/** Where the viewer is: the draft once the location is open, else the location. */
+export function viewerPosition(draft: Location | null, location: Location | null): LatLng {
+	return draft ?? location ?? { lat: 0, lng: 0 };
+}
+
+/** `to`, without the fields derived from any input it changed from `from`. */
+function moved(from: Location, to: Location): Location {
+	const changed = Object.keys(to).filter(
+		(k) => k !== "extra" && to[k as keyof Location] !== from[k as keyof Location],
+	);
+	return changed.length ? { ...to, extra: withoutDerivedFrom(to.extra, changed) } : to;
+}
+
 export function PanoViewerProvider({ children }: { children: ReactNode }) {
 	const location = useMapState((s) => s.activeLocation);
-	const currentMap = useMapState((s) => s.map);
-	const [currentPano, setCurrentPano] = useState<PanoViewerContextValue["currentPano"]>(null);
-	const [panoDates, setPanoDates] = useState<PanoReference[]>([]);
-	const [panoReady, setPanoReady] = useState(false);
+	const pano = usePano();
+	const [state, setState] = useState<Location | null>(null);
+	// Keyed by the location that opened it: another location's draft is simply not this one.
+	const draft = state && state.id === location?.id ? state : null;
 
-	const selectedPanoId =
-		location && hasLoadAsPanoId(location) && currentPano?.location?.pano
-			? currentPano.location.pano
-			: null;
+	const open = useCallback((loc: Location, resolved: string | null) => {
+		setState(moved(loc, { ...loc, panoId: resolved ?? loc.panoId }));
+	}, []);
 
-	const defaultPanoId = location?.panoId ?? null;
-	const lat = currentPano?.location?.latLng?.lat() ?? location?.lat ?? 0;
-	const lng = currentPano?.location?.latLng?.lng() ?? location?.lng ?? 0;
-	const datetimeEnabled = isFieldEnabled(
-		currentMap?.meta.settings.enrichFields ?? null,
-		"datetime",
+	const edit = useCallback(
+		(patch: Partial<Location> | ((draft: Location) => Partial<Location>)) => {
+			setState((prev) => {
+				if (!prev) return prev;
+				const next = moved(prev, {
+					...prev,
+					...(typeof patch === "function" ? patch(prev) : patch),
+				});
+				return Object.keys(next).some(
+					(k) => next[k as keyof Location] !== prev[k as keyof Location],
+				)
+					? next
+					: prev;
+			});
+		},
+		[],
 	);
-	const dateTimezone = useSetting("dateTimezone");
 
-	const dateState = useMemo(
-		() => derivePanoDateState(panoDates, selectedPanoId, currentPano, defaultPanoId),
-		[panoDates, selectedPanoId, currentPano, defaultPanoId],
+	// The pano on screen as Google describes it, and the captures the date picker can offer
+	// there. Held across a walk so the panel never blanks between panos; dropped with the location.
+	const onScreen = useAsyncSticky(
+		async (signal) => {
+			if (!draft?.panoId) return null;
+			if (!isPanoSource(draft.extra?.source)) {
+				const [shown] = await svMetadata([draft.panoId], signal);
+				if (!shown) return null;
+				const [atCoord] = await panosAt(
+					[{ lat: shown.lat, lng: shown.lng }],
+					undefined,
+					undefined,
+					signal,
+				);
+				return { currentPano: shown, timeline: shown.time, defaultPano: atCoord ?? shown };
+			}
+			const shown = await chinaPano(draft, signal);
+			if (!shown) return null;
+			const provider = getPanoramaProvider(locationSource(draft));
+			const nearest = await provider.findNearest({ lat: shown.lat, lng: shown.lng }, 18, signal);
+			const atCoord = nearest
+				? await chinaPano({ ...draft, panoId: nearest.panoId }, signal)
+				: shown;
+			return { currentPano: shown, timeline: shown.time, defaultPano: atCoord ?? shown };
+		},
+		[draft?.panoId],
+		draft?.id ?? null,
 	);
-	const exactDate = useExactDate(
-		dateState.triggerPanoId,
-		lat,
-		lng,
-		dateState.yearMonth,
-		datetimeEnabled,
-	);
-	const resolvedTz = useTimezone(lat, lng, datetimeEnabled && dateTimezone === "location");
+	const currentPano = onScreen?.currentPano ?? null;
+	const timeline = onScreen?.timeline ?? null;
+	const defaultPano = onScreen?.defaultPano ?? null;
 
-	// Single writer: persist the resolved exact date back to the active location's extra.
+	const geocodeProvider = useSetting("geocodeProvider");
+	const lookup = useAsync(
+		() =>
+			location && geocodeProvider !== "google"
+				? reverseGeocode(
+						location.lat,
+						location.lng,
+						isPanoSource(location.extra?.source) ? location.extra.source : null,
+					)
+				: null,
+		[location?.lat, location?.lng, geocodeProvider],
+	);
+	const geo = useMemo(
+		() => (geocodeProvider === "google" ? geocodeGoogle(currentPano) : lookup.data),
+		[geocodeProvider, currentPano, lookup.data],
+	);
+
+	const draftKey = draft && `${draft.id}:${draft.panoId}`;
+	const [enrichedKey, setEnrichedKey] = useState<string | null>(null);
+	const enriching = location != null && (draftKey == null || enrichedKey !== draftKey);
+	const inFlight = useRef<Promise<Location | null>>(Promise.resolve(null));
 	useEffect(() => {
-		if (exactDate.ts == null) return;
-		if (!getMapState().map?.meta.settings.enrichMetadata) return;
-		const loc = getMapState().activeLocation;
-		if (!loc || loc.extra?.datetime != null) return;
-		updateLocations(
-			[{ id: loc.id, patch: { extra: { datetime: exactDate.ts, timezone: resolvedTz } } }],
-			{ undoable: false },
-		);
-	}, [exactDate.ts, resolvedTz]);
+		if (!draft) return;
+		const ac = new AbortController();
+		const patch = (extra: Location["extra"]) =>
+			setState((prev) => (prev && sameRow(prev, draft) ? { ...prev, extra } : prev));
+		inFlight.current = enrich(draft, {
+			signal: ac.signal,
+			onPartial: ([row]) => {
+				if (row && !ac.signal.aborted && sameRow(row, draft)) patch(row.extra);
+			},
+		})
+			.then((row) => {
+				if (ac.signal.aborted) return null;
+				patch(row.extra);
+				return row;
+			})
+			.catch((e: unknown) => {
+				if (ac.signal.aborted) return null;
+				log.error("[viewer] enrichment failed:", e);
+				patch(draft.extra);
+				return null;
+			})
+			.finally(() => {
+				if (!ac.signal.aborted) setEnrichedKey(draftKey);
+			});
+		return () => ac.abort();
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- runs per pano, reading the draft as it is then
+	}, [draft?.id, draft?.panoId]);
+	const settled = useCallback(async () => {
+		if (!draft) return null;
+		if (enriching) return draft;
+		const row = await inFlight.current;
+		if (row && sameRow(row, draft)) return { ...draft, extra: row.extra };
+		return draft;
+	}, [draft, enriching]);
 
 	const fullscreenMap = useSetting("fullscreenMap");
 	const prevFullscreenMap = useRef(fullscreenMap);
@@ -106,31 +194,18 @@ export function PanoViewerProvider({ children }: { children: ReactNode }) {
 		onFullscreenMapChanged(fullscreenMap);
 	}, [fullscreenMap]);
 
-	// Location cleared (save/delete/close): reset fullscreen modes and pano state.
+	// Location cleared (save/delete/close): drop the draft, reset fullscreen modes, hide the viewer.
 	useEffect(() => {
 		if (location) return;
+		setState(null);
+		setEnrichedKey(null);
 		onLocationCleared();
-		setCurrentPano(null);
-		setPanoReady(false);
-		if (singletonPano) singletonPano.setVisible(false);
-	}, [location]);
+		pano.hide();
+	}, [pano, location]);
 
 	const value = useMemo(
-		() => ({
-			currentPano,
-			setCurrentPano,
-			panoDates,
-			setPanoDates,
-			panoReady,
-			setPanoReady,
-			selectedPanoId,
-			lat,
-			lng,
-			dateState,
-			exactDate,
-			resolvedTz,
-		}),
-		[currentPano, panoDates, panoReady, selectedPanoId, lat, lng, dateState, exactDate, resolvedTz],
+		() => ({ draft, open, edit, settled, currentPano, timeline, defaultPano, geo, enriching }),
+		[draft, open, edit, settled, currentPano, timeline, defaultPano, geo, enriching],
 	);
 
 	return <PanoViewerContext.Provider value={value}>{children}</PanoViewerContext.Provider>;
@@ -140,4 +215,12 @@ export function usePanoViewer(): PanoViewerContextValue {
 	const ctx = useContext(PanoViewerContext);
 	if (!ctx) throw new Error("usePanoViewer must be used within PanoViewerProvider");
 	return ctx;
+}
+
+export function usePanoDates(): PanoDateState {
+	const { currentPano, timeline, defaultPano, draft } = usePanoViewer();
+	return useMemo(
+		() => panoDates(currentPano, timeline, defaultPano, draft),
+		[currentPano, timeline, defaultPano, draft],
+	);
 }

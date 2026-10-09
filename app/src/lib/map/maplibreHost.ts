@@ -12,6 +12,7 @@
 import * as maplibregl from "maplibre-gl";
 import { type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
 import { baiduCoverageProtocol } from "@/lib/map/baiduCoverage";
@@ -47,12 +48,21 @@ const PREFETCH_MARGIN = 128;
 
 // Raster (SV) tiles queue behind MapLibre's global image-request cap (default 16);
 // vector tiles don't, so the basemap outruns SV coverage without this.
+maplibregl.setWorkerUrl(workerUrl);
 maplibregl.setMaxParallelImageRequests(64);
 
 maplibregl.addProtocol("mma-baidu", baiduCoverageProtocol);
 coverageDebug("map", "coverage protocol registered", { baidu: "mma-baidu://" });
 
-type MlEventName = "mousemove" | "mousedown" | "mouseup" | "mouseout" | "zoom" | "move" | "load";
+type MlEventName =
+	| "mousemove"
+	| "mousedown"
+	| "mouseup"
+	| "mouseout"
+	| "zoom"
+	| "move"
+	| "load"
+	| "idle";
 
 const EVENT_NAMES: Record<keyof MapHostEvents, MlEventName> = {
 	mousemove: "mousemove",
@@ -62,6 +72,7 @@ const EVENT_NAMES: Record<keyof MapHostEvents, MlEventName> = {
 	zoom: "zoom",
 	camera: "move",
 	tilesloaded: "load",
+	idle: "idle",
 };
 
 const LATLNG_EVENTS = new Set<keyof MapHostEvents>(["mousemove", "mousedown", "mouseup"]);
@@ -79,10 +90,11 @@ class MapLibreDeckOverlay implements DeckOverlayHandle {
 	props: Partial<DeckOverlayProps> = {};
 	private finalized = false;
 
-	constructor(
-		private map: maplibregl.Map,
-		private onFinalize: (self: MapLibreDeckOverlay) => void,
-	) {
+	private map: maplibregl.Map;
+	private onFinalize: (self: MapLibreDeckOverlay) => void;
+	constructor(map: maplibregl.Map, onFinalize: (self: MapLibreDeckOverlay) => void) {
+		this.map = map;
+		this.onFinalize = onFinalize;
 		this.overlay = new MapboxOverlay({ interleaved: false, layers: [], pickingRadius: 2 });
 		map.addControl(this.overlay);
 	}
@@ -235,7 +247,7 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 		const tencent = this.tencentCoverage.getDebugState();
 		coverageDebug("map", `state (${reason})`, {
 			provider: activeChinaPanoProvider(this.prefs.panoProvider),
-			opacity: activeCoverageOpacity(this.prefs.svOpacity),
+			opacity: activeCoverageOpacity(this.prefs.svVisible ? this.prefs.svOpacity : 0),
 			panoramas: this.prefs.svPanoramas,
 			zoom: this.getZoom(),
 			styleLoaded: this.map.isStyleLoaded(),
@@ -252,8 +264,11 @@ class MapLibreHost implements MapHostContract<"maplibre"> {
 
 	private syncCoverageLayers() {
 		const provider = activeChinaPanoProvider(this.prefs.panoProvider);
-		const opacity = activeCoverageOpacity(this.prefs.svOpacity);
-		const active = activeCoverageProviders(this.prefs.panoProvider, this.prefs.svOpacity);
+		const opacity = activeCoverageOpacity(this.prefs.svVisible ? this.prefs.svOpacity : 0);
+		const active = activeCoverageProviders(
+			this.prefs.panoProvider,
+			this.prefs.svVisible ? this.prefs.svOpacity : 0,
+		);
 		const baiduId = `${COVERAGE_LAYER_PREFIX}-baidu`;
 		if (this.map.getLayer(baiduId)) {
 			this.map.setLayoutProperty(baiduId, "visibility", active.baidu ? "visible" : "none");

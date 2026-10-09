@@ -1,17 +1,19 @@
 import {
-	waitForReady,
-	createAndOpenMap,
-	closeMap,
-	deleteMap,
 	addLocs,
-	getLocCount,
-	withApi,
-	createLocation,
-	openLocation,
 	closeLocation,
+	closeMap,
+	createAndOpenMap,
+	createLocation,
+	deleteMap,
+	getLocCount,
+	openLocation,
+	waitForDates,
+	waitForPreview,
+	waitForReady,
 	waitForWorkArea,
+	withApi,
 } from "./helpers";
-import { LocationFlag } from "../../src/types";
+import { LocationFlag } from "../../src/bindings.consts";
 import type { SeenEntry } from "../../src/bindings.gen";
 
 const OFFICIAL_PANO = "-zrYsLR4Fh-cfJG_EMZ1-A";
@@ -19,24 +21,6 @@ const OFFICIAL_COORDS = { lat: 52.10947502806108, lng: 34.90131410856584 };
 
 const TREKKER_PANO = "5upMz1_zTGPdkIXG6_QM3g";
 const TREKKER_COORDS = { lat: 55.510656, lng: 157.636627 };
-
-const PANO_TIMEOUT = 30_000;
-
-async function waitForPreview() {
-	const el = await browser.$(".location-preview");
-	await el.waitForExist({ timeout: 5000 });
-}
-
-async function waitForPanoReady() {
-	await browser.waitUntil(
-		async () => {
-			const badge = await browser.$(".location-preview__date .badge--number");
-			if (!(await badge.isExisting())) return false;
-			return parseInt(await badge.getText()) > 0;
-		},
-		{ timeout: PANO_TIMEOUT, timeoutMsg: "Pano never became ready (dates never populated)" },
-	);
-}
 
 async function getSeenEntries(limit = 100) {
 	return withApi(async (api, lim) => {
@@ -47,7 +31,6 @@ async function getSeenEntries(limit = 100) {
 /** Wait until a seen entry for `panoId` is flushed to the store. */
 async function waitForSeenPano(panoId: string) {
 	await browser.waitUntil(async () => (await getSeenEntries(50)).some((e) => e.panoId === panoId), {
-		timeout: 5000,
 		timeoutMsg: `seen entry for ${panoId} never recorded`,
 	});
 }
@@ -109,7 +92,7 @@ describe("Seen -- recording consistency", () => {
 	it("opening a location records a seen entry with correct pano_id", async () => {
 		await openLocation(seenOffId);
 		await waitForPreview();
-		await waitForPanoReady();
+		await waitForDates();
 		// Close to flush the staged entry
 		await closeLocation();
 		await waitForSeenPano(OFFICIAL_PANO);
@@ -122,7 +105,7 @@ describe("Seen -- recording consistency", () => {
 	it("recorded lat/lng matches the pano's actual position (not stale)", async () => {
 		await openLocation(seenOffId);
 		await waitForPreview();
-		await waitForPanoReady();
+		await waitForDates();
 		await closeLocation();
 		await waitForSeenPano(OFFICIAL_PANO);
 
@@ -135,26 +118,20 @@ describe("Seen -- recording consistency", () => {
 	});
 
 	it("switching locations records distinct entries with correct pano_ids", async () => {
-		// Open trek first to ensure the singleton pano changes when we open off next
+		// Open trek first to ensure the pano changes when we open off next
 		await openLocation(seenTrekId);
 		await waitForPreview();
-		await waitForPanoReady();
-		// eslint-disable-next-line no-restricted-syntax -- seen entry is staged until close; no store-observable signal while the location is open
-		await browser.pause(400);
+		await waitForDates();
 
 		await clearSeen();
 
 		await openLocation(seenOffId);
 		await waitForPreview();
-		await waitForPanoReady();
-		// eslint-disable-next-line no-restricted-syntax -- seen entry is staged until close; no store-observable signal while the location is open
-		await browser.pause(400);
+		await waitForDates();
 
 		await openLocation(seenTrekId);
 		await waitForPreview();
-		await waitForPanoReady();
-		// eslint-disable-next-line no-restricted-syntax -- seen entry is staged until close; no store-observable signal while the location is open
-		await browser.pause(400);
+		await waitForDates();
 
 		await closeLocation();
 		await browser.waitUntil(
@@ -165,7 +142,7 @@ describe("Seen -- recording consistency", () => {
 					entries.some((e) => e.panoId === TREKKER_PANO)
 				);
 			},
-			{ timeout: 10000, timeoutMsg: "Expected seen entries for both panos" },
+			{ timeoutMsg: "Expected seen entries for both panos" },
 		);
 
 		const count = await getSeenCount();
@@ -242,22 +219,20 @@ describe("Seen -- loadSeenPano opens location viewer", () => {
 
 		// Create a seen entry and load it
 		await withApi(
-			(api, pano, lat, lng, locId) => {
-				api.loadSeenPano({
-					id: 999,
-					panoId: pano,
-					lat,
-					lng,
-					heading: 90,
-					pitch: 0,
-					zoom: 0,
-					enteredAt: Date.now(),
-					mapId: null,
-					locationId: locId,
-					countryCode: null,
-					address: null,
-					thumbnail: null,
-				});
+			async (api, pano, lat, lng, locId) => {
+				await api.loadSeenPano(
+					{
+						panoId: pano,
+						lat,
+						lng,
+						heading: 90,
+						pitch: 0,
+						zoom: 0,
+						locationId: locId,
+						countryCode: null,
+					},
+					api.pano,
+				);
 			},
 			OFFICIAL_PANO,
 			OFFICIAL_COORDS.lat,
@@ -279,31 +254,26 @@ describe("Seen -- loadSeenPano opens location viewer", () => {
 		// Use a numeric ID that doesn't exist (seen table location_id for a nonexistent location)
 		await withApi(
 			async (api, pano, lat, lng) => {
-				return api.loadSeenPano({
-					id: 998,
-					panoId: pano,
-					lat,
-					lng,
-					heading: 45,
-					pitch: 5,
-					zoom: 1,
-					enteredAt: Date.now(),
-					mapId: null,
-					locationId: 999999,
-					countryCode: "RU",
-					address: null,
-					thumbnail: null,
-				});
+				return api.loadSeenPano(
+					{
+						panoId: pano,
+						lat,
+						lng,
+						heading: 45,
+						pitch: 5,
+						zoom: 1,
+						locationId: 999999,
+						countryCode: "RU",
+					},
+					api.pano,
+				);
 			},
 			OFFICIAL_PANO,
 			OFFICIAL_COORDS.lat,
 			OFFICIAL_COORDS.lng,
 		);
 
-		await browser.waitUntil(
-			async () => (await withApi((api) => api.getMapState().workArea)) === "location",
-			{ timeout: 3000, timeoutMsg: "Work area did not switch to location" },
-		);
+		await waitForWorkArea("location");
 
 		const countAfter = await getLocCount();
 		expect(countAfter).toBe(countBefore + 1);
@@ -315,6 +285,7 @@ describe("Seen -- loadSeenPano opens location viewer", () => {
 describe("Seen -- enableSeen setting", () => {
 	let mapId: string;
 	let seenSetting1Id: number;
+	let seenSettingAnchorId: number;
 
 	before(async () => {
 		await waitForReady();
@@ -326,8 +297,14 @@ describe("Seen -- enableSeen setting", () => {
 				panoId: OFFICIAL_PANO,
 				flags: LocationFlag.LoadAsPanoId,
 			}),
+			createLocation({
+				lat: TREKKER_COORDS.lat,
+				lng: TREKKER_COORDS.lng,
+				panoId: TREKKER_PANO,
+				flags: LocationFlag.LoadAsPanoId,
+			}),
 		]);
-		seenSetting1Id = ids[0];
+		[seenSetting1Id, seenSettingAnchorId] = ids;
 	});
 
 	after(async () => {
@@ -351,18 +328,21 @@ describe("Seen -- enableSeen setting", () => {
 
 		await openLocation(seenSetting1Id);
 		await waitForPreview();
-		await waitForPanoReady();
+		await waitForDates();
 		await closeLocation();
-		// eslint-disable-next-line no-restricted-syntax -- negative assertion: confirm nothing is recorded with seen disabled
-		await browser.pause(500);
 
-		const count = await getSeenCount();
-		expect(count).toBe(0);
-
-		// Re-enable for other tests
+		// Any write from the disabled visit was sent before this visit's.
 		await withApi((api) => {
 			api.setSetting("enableSeen", true);
 		});
+		await openLocation(seenSettingAnchorId);
+		await waitForPreview();
+		await waitForDates();
+		await closeLocation();
+		await waitForSeenPano(TREKKER_PANO);
+
+		const entries = await getSeenEntries(10);
+		expect(entries.map((e) => e.panoId)).toEqual([TREKKER_PANO]);
 	});
 });
 
@@ -416,19 +396,14 @@ describe("Seen -- clear", () => {
 		// Open a different pano first so seen-clear-1 triggers a fresh status_changed
 		await openLocation(seenClearWarmId);
 		await waitForPreview();
-		await waitForPanoReady();
-		// eslint-disable-next-line no-restricted-syntax -- seen entry is staged until close; no store-observable signal while the location is open
-		await browser.pause(400);
+		await waitForDates();
 
 		await openLocation(seenClear1Id);
 		await waitForPreview();
-		await waitForPanoReady();
-		// eslint-disable-next-line no-restricted-syntax -- seen entry is staged until close; no store-observable signal while the location is open
-		await browser.pause(400);
+		await waitForDates();
 		await closeLocation();
 
 		await browser.waitUntil(async () => (await getSeenCount()) > 0, {
-			timeout: 10000,
 			timeoutMsg: "Expected at least 1 seen entry after opening location",
 		});
 

@@ -32,33 +32,14 @@ jobs:
             label: windows
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri -> target
-
-      - name: Install npm dependencies
-        working-directory: app
-        run: npm ci
+          rust: true
+          rust-targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -71,7 +52,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.label }}
           path: |
@@ -92,11 +73,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
           merge-multiple: true
@@ -151,10 +132,14 @@ jobs:
           MAC_INTEL_FILE=$(basename "$(find artifacts -path '*x86_64*' -name '*.app.tar.gz' ! -name '*.sig' | head -1)")
           LINUX_FILE=$(basename "$(find artifacts -name '*.AppImage' ! -name '*.sig' | head -1)")
 
+          # The app reads notes from the Releases API; latest.json's copy is the fallback for
+          # when that is unreachable, so it carries the real thing rather than a placeholder.
+          NOTES=$(jq -Rs . < notes.md)
+
           cat > latest.json <<EOF
           {
             "version": "${VERSION}",
-            "notes": "See release notes on GitHub",
+            "notes": ${NOTES},
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
               "windows-x86_64": { "url": "${REPO}/${WIN_FILE}", "signature": "${WIN_SIG}" },

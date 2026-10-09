@@ -1,11 +1,19 @@
-import { LOCATION_DATA_EVENTS, TAG_DATA_EVENTS } from "@/lib/events";
-import { errText } from "@/lib/util/util";
+import { bridgeAcrossWindows, emit, LOCATION_DATA_EVENTS, TAG_DATA_EVENTS } from "@/lib/events";
+import { reloadStorage } from "@/plugins/pluginStorage";
+import { isPluginEnabled } from "@/plugins/pluginHost";
+import { registerMapBadges } from "@/store/mapList";
+import { msg, t } from "@/lib/i18n";
+import { errText } from "@/lib/util/format";
+import { log } from "@/lib/util/log";
+import type { SyncLogEntry, SyncLogResult } from "@/bindings.gen";
+import { SYNC_PROVIDERS, type SyncDirection, type SyncTrigger } from "@/bindings.consts";
 import { reconcile, type FirstSyncMode, type ReconcileOptions, type SyncOutcome } from "./engine";
 import { createMappingBackend } from "./mappingBackend";
 import { createScheduler, type Scheduler, type SyncStatus } from "./scheduler";
 import type { RemoteMapSummary, SyncProvider } from "./provider";
 import {
 	createSyncStore,
+	listLinks,
 	type IdentityKey,
 	type KeyValueStore,
 	type SyncLink,
@@ -13,9 +21,13 @@ import {
 } from "./syncStore";
 
 export interface SyncController {
-	readonly provider: { id: string; label: string };
+	readonly provider: Pick<SyncProvider, "id" | "label" | "icon">;
+	readonly direction: SyncDirection;
+	readonly pluginId: string;
 	currentMapId(): string | null;
 	getLink(): SyncLink | null;
+	/** Links for every map, not just the open one. */
+	allLinks(): SyncLink[];
 	/** Web URL of the linked remote map, or null when unlinked. */
 	remoteMapUrl(): string | null;
 	link(map: RemoteMapSummary, remoteUserId: string | null): Promise<void>;
@@ -40,7 +52,42 @@ export interface SyncController {
 	pauseLive(): void;
 	/** Explicit user "off": clear the pref, then stop. */
 	stopLive(): void;
+
+	/** The open map's recorded sync passes with this provider, newest first. */
+	history(): Promise<SyncLogEntry[]>;
+	/** Called after each pass is recorded. */
+	onHistory(fn: () => void): () => void;
 }
+
+const controllers = new Map<string, SyncController>();
+
+bridgeAcrossWindows("sync-links:changed", () => {
+	for (const c of controllers.values()) reloadStorage(c.pluginId);
+});
+
+registerMapBadges({
+	id: "sync",
+	label: msg("Sync status"),
+	events: ["sync-links:changed", "plugins:changed"],
+	*collect() {
+		for (const c of controllers.values()) {
+			if (!isPluginEnabled(c.pluginId)) continue;
+			for (const link of c.allLinks()) {
+				yield [
+					link.localMapId,
+					{
+						key: `sync:${c.provider.id}`,
+						icon: c.provider.icon,
+						title: t('Linked to "{name}" on {provider}', {
+							name: link.remoteMapName || t("(unnamed)"),
+							provider: t(c.provider.label),
+						}),
+					},
+				];
+			}
+		}
+	},
+});
 
 /** Plugin `activate()` for a sync plugin: resume the live loop when a linked map is
  *  (re)opened and live was left on, and pause it on close. */
@@ -84,7 +131,31 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 	 * one does not have (a mirror mode, conflict resolutions) must NOT coalesce -- it would report
 	 * someone else's result and silently drop the instruction.
 	 */
+	const historyListeners = new Set<() => void>();
+
+	async function record(
+		mapId: string,
+		trigger: SyncTrigger,
+		startedAt: number,
+		result: SyncLogResult,
+	) {
+		const entry: SyncLogEntry = {
+			trigger,
+			startedAt,
+			durationMs: Date.now() - startedAt,
+			result,
+		};
+		try {
+			await window.MMA.cmd.syncLogAppend(provider.id, mapId, entry);
+		} catch (e) {
+			log.warn("[sync] could not record the pass:", e);
+			return;
+		}
+		historyListeners.forEach((l) => l());
+	}
+
 	function runReconcile(
+		trigger: SyncTrigger,
 		opts?: Omit<ReconcileOptions, "signal">,
 		coalesce = true,
 	): Promise<SyncOutcome> {
@@ -98,17 +169,36 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 				.catch(() => undefined)
 				.then(() => {
 					if (currentMapId() !== id) throw new Error("map changed before sync could run");
-					return runReconcile(opts, false);
+					return runReconcile(trigger, opts, false);
 				});
 		}
 		if (inFlight) inFlight.abort.abort(); // a different map: the old run is moot
 		const abort = new AbortController();
+		const startedAt = Date.now();
 		const run = reconcile(provider, storeFor(id), {
 			...opts,
 			signal: abort.signal,
 		}).finally(() => {
 			if (inFlight?.run === run) inFlight = null;
 		});
+		run.then(
+			(o) =>
+				record(id, trigger, startedAt, {
+					kind: "ok",
+					pushed: o.pushed,
+					pulled: o.pulled,
+					adopted: o.adopted,
+					conflicts: o.conflicts.length,
+				}),
+			(e: unknown) => {
+				// A run cut short by a map switch, an unlink or a paused loop did not fail.
+				if (abort.signal.aborted) return;
+				return record(id, trigger, startedAt, {
+					kind: "error",
+					message: e instanceof Error ? e.message : String(e),
+				});
+			},
+		);
 		inFlight = { mapId: id, run, abort };
 		return run;
 	}
@@ -127,10 +217,13 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 		statusListeners.forEach((l) => l("idle"));
 	};
 
-	return {
-		provider: { id: provider.id, label: provider.label },
+	const controller: SyncController = {
+		provider: { id: provider.id, label: provider.label, icon: provider.icon },
+		direction: SYNC_PROVIDERS[provider.id].direction,
+		pluginId,
 		currentMapId,
 		getLink,
+		allLinks: () => listLinks(kv(), provider.id),
 		remoteMapUrl() {
 			const link = getLink();
 			return link ? provider.remoteMapUrl(link.remoteMapId) : null;
@@ -150,6 +243,7 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 				linkedAt: new Date().toISOString(),
 				lastSyncedAt: null,
 			});
+			emit("sync-links:changed");
 		},
 
 		async unlink() {
@@ -161,12 +255,17 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 			this.stopLive();
 			await pending?.catch(() => undefined);
 			await storeFor(id).clear();
+			emit("sync-links:changed");
 		},
 
-		syncNow: () => runReconcile(),
-		firstSync: (mode) => runReconcile({ firstSync: mode }, false),
+		syncNow: () => runReconcile("manual"),
+		firstSync: (mode) => runReconcile("link", { firstSync: mode }, false),
 		resolveConflicts: (resolutions) =>
-			runReconcile({ resolutions: new Map(resolutions.map((r) => [r.key, r.side])) }, false),
+			runReconcile(
+				"resolve",
+				{ resolutions: new Map(resolutions.map((r) => [r.key, r.side])) },
+				false,
+			),
 
 		isLive: () => scheduler !== null,
 		livePref: () => {
@@ -188,11 +287,10 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 			scheduler = createScheduler(
 				async () => {
 					try {
-						await runReconcile();
+						await runReconcile("live");
 						liveError = null;
 					} catch (e) {
-						// Rust marks auth failures with an "auth: " prefix; show it clean.
-						liveError = errText(e).replace(/^auth: /, "");
+						liveError = errText(e);
 						// A dead credential never heals by retrying; stop the loop, keep the pref.
 						if (provider.isAuthError?.(e)) pauseLive();
 						throw e;
@@ -218,5 +316,17 @@ export function createSyncController(provider: SyncProvider, pluginId: string): 
 			if (id) kv().set(`live:${id}`, false);
 			pauseLive();
 		},
+
+		async history() {
+			const id = currentMapId();
+			return id ? window.MMA.cmd.syncLogList(provider.id, id) : [];
+		},
+		onHistory(fn) {
+			historyListeners.add(fn);
+			return () => historyListeners.delete(fn);
+		},
 	};
+
+	controllers.set(provider.id, controller);
+	return controller;
 }

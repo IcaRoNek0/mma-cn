@@ -1,4 +1,4 @@
-import { createPluginStorage } from "@/plugins/registry";
+import { storage as createPluginStorage } from "@/plugins/pluginStorage";
 import type { StreakMode } from "./GameState";
 
 const PLUGIN_ID = "localguessr";

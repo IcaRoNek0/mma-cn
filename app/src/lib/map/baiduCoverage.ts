@@ -190,7 +190,13 @@ export const baiduCoverageProtocol: AddProtocolAction = async (params, abortCont
 	coverageDebug("baidu", "protocol request", { z, x, y, url: params.url });
 	try {
 		const data = await renderBaiduCoverageTile(x, y, z, abortController.signal);
-		coverageDebug("baidu", "protocol response", { z, x, y, width: data.width, height: data.height });
+		coverageDebug("baidu", "protocol response", {
+			z,
+			x,
+			y,
+			width: data.width,
+			height: data.height,
+		});
 		return { data };
 	} catch (error) {
 		coverageError("baidu", `protocol failed z=${z} x=${x} y=${y}`, error);

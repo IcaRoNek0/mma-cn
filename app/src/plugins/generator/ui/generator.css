@@ -11,30 +11,42 @@
 	flex-shrink: 0;
 }
 
-/* Actions + live progress pinned to the bottom of the sidebar, full-bleed over
-   the body padding, so the region list scrolls above without squishing them. */
-.generator-sidebar__footer {
-	position: sticky;
-	bottom: -0.5rem;
-	margin: auto -0.5rem -0.5rem;
-	padding: 0.5rem;
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	background: var(--surface-0);
-	border-top: 1px solid var(--pu-divider);
-}
-
 .generator-sidebar__summary {
 	margin: 0;
 	font-size: 0.8rem;
-	opacity: 0.6;
+	color: var(--text-2);
 	line-height: 1.4;
 }
 
-.generator-sidebar__footer .generator-progress {
-	max-height: 30vh;
-	overflow-y: auto;
+.generator-sidebar__stats {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+	font-size: 0.75rem;
+	color: var(--text-2);
+}
+
+.generator-sidebar__stat-group {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+}
+
+.generator-sidebar__stat {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.generator-sidebar__stat-icon {
+	display: inline-flex;
+	cursor: help;
+	color: var(--text-2);
 }
 
 .generator-settings {
@@ -58,33 +70,7 @@
 	-moz-appearance: textfield;
 }
 
-.generator-cap-dialog {
-	display: flex;
-	flex-direction: column;
-	gap: 0.75rem;
-}
-.generator-cap-dialog__actions {
-	display: flex;
-	gap: 0.5rem;
-	justify-content: flex-end;
-}
-
 /* Region selector */
-.generator-regions__hint {
-	padding: 6px 0;
-	opacity: 0.7;
-	font-style: italic;
-}
-
-.generator-regions__hint kbd {
-	padding: 1px 4px;
-	border-radius: 3px;
-	border: 1px solid var(--border-strong);
-	font-family: inherit;
-	font-style: normal;
-	font-size: 0.9em;
-}
-
 .generator-regions__controls {
 	display: flex;
 	align-items: center;
@@ -99,7 +85,7 @@
 }
 
 .generator-regions__list {
-	max-height: 200px;
+	max-height: 50vh;
 	overflow: auto;
 	padding-right: 6px;
 }
@@ -121,10 +107,8 @@
 	min-width: 0;
 }
 
-.generator-regions__item-name > span {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+.generator-regions__flag {
+	flex-shrink: 0;
 }
 
 .generator-regions__item-count {
@@ -135,66 +119,18 @@
 	white-space: nowrap;
 }
 
-/* Progress display */
-.generator-progress__total {
-	margin-bottom: 6px;
+.generator-regions__rate {
+	color: var(--text-2);
+	font-size: 0.75rem;
+	margin: 0 0.4em;
+}
+
+.generator-regions__total {
+	margin-top: 6px;
 	font-weight: 600;
 }
 
-.generator-progress__item {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	padding: 2px 0;
-}
-
-.generator-progress__item-name {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	flex: 1;
-	min-width: 0;
-}
-
-.generator-progress__item-name > span:first-of-type {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.generator-progress__count {
-	flex-shrink: 0;
-	opacity: 0.7;
-}
-
-.generator-progress__spinner {
-	width: 10px;
-	height: 10px;
-	border: 2px solid var(--border-strong);
-	border-top-color: var(--text-2);
-	border-radius: 50%;
-	animation: generator-spin 0.6s linear infinite;
-}
-
-@keyframes generator-spin {
-	to {
-		transform: rotate(360deg);
-	}
-}
-
 /* Settings panel */
-.generator-settings__check {
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	padding: 2px 0;
-	cursor: pointer;
-}
-
-.generator-settings__check input[type="checkbox"] {
-	margin: 0;
-}
-
 .generator-settings__number {
 	display: flex;
 	align-items: center;
@@ -215,13 +151,6 @@
 	flex-wrap: wrap;
 	gap: 2px 10px;
 	padding: 2px 0;
-}
-
-.generator-settings__radio {
-	display: flex;
-	align-items: center;
-	gap: 3px;
-	cursor: pointer;
 }
 
 .generator-settings__date-range {

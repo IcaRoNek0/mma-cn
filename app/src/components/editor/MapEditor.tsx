@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { events } from "@/bindings.gen";
 import {
 	useMapState,
@@ -6,15 +6,18 @@ import {
 	mutate,
 	removeLocations,
 	discardOpenMap,
+	getTags,
 } from "@/store/useMapStore";
 import { beginImportPaste, beginImportFromPath } from "@/store/importStaging";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
-import { goToList } from "@/store/router";
-import { activatePlugins, deactivatePlugins } from "@/plugins/registry";
+import { goTo, leaveToList } from "@/store/router";
+import { activatePlugins, deactivatePlugins } from "@/plugins/pluginHost";
 import { getMapHost, waitForMapHost } from "@/lib/map/mapState";
 import { addParsedLocations } from "@/lib/map/mapClick";
+import { cmd } from "@/lib/commands";
 import { pluginsReady } from "@/plugins";
+import "@/lib/render/renderStats"; // installs the window.__mmaPerf harness bridge
 import { MapEmbed } from "@/components/editor/map/MapEmbed";
 import { MapMetaBar } from "@/components/editor/map/MapMetaBar";
 import { MapOverview } from "@/components/editor/map/MapOverview";
@@ -28,15 +31,22 @@ import {
 } from "@/components/editor/location/fullscreenModeState";
 import { ChipHostContext } from "@/components/editor/location/FullscreenMiniLocationPreview";
 import { CommandPalette } from "@/components/editor/CommandPalette";
-import { MapRenameForm } from "@/components/editor/MapRenameForm";
+import { MapSettingsForm } from "@/components/dialogs/MapSettingsForm";
+import { isReservedMap } from "@/store/mapList";
 import { EnrichmentButton } from "@/components/editor/map/EnrichmentDialog";
 import { Dialog, DialogTrigger, DialogContent } from "@/components/primitives/Dialog";
-import { useHotkey, useCommandHotkeys, isEditableElement } from "@/lib/hooks/useHotkey";
-import { useBinding } from "@/lib/util/hotkeys";
-import { useLocalStorage } from "@/lib/hooks/useLocalStorage";
-import { useSettings } from "@/store/settings";
 import {
-	parseMapsUrl,
+	useHotkey,
+	useCommandHotkeys,
+	isActivationElement,
+	isEditableElement,
+	pluginOverlayOwnsInput,
+} from "@/lib/hooks/useHotkey";
+import { useBinding } from "@/lib/util/hotkeys";
+import { useLocalStorage, getLocal } from "@/lib/hooks/useLocalStorage";
+import { usePointerDrag } from "@/lib/hooks/usePointerDrag";
+import { useSettings, getSettings } from "@/store/settings";
+import {
 	parseCoordinates,
 	parseUrlList,
 	parsedLocationsToImportJson,
@@ -53,9 +63,14 @@ import SameLocation from "@/components/editor/SameLocation";
 import { log } from "@/lib/util/log";
 import { useCountrySelect } from "@/lib/map/useCountrySelect";
 import { useDeletePolygon } from "@/lib/map/useDeletePolygon";
-import { useMapKeyBindings } from "@/lib/map/mapKeyBindings";
+import {
+	useMapKeyBindings,
+	mergedKeyBindings,
+	GLOBAL_COPY_BINDINGS,
+} from "@/lib/map/mapKeyBindings";
 import { range, clamp } from "@/types/util";
 import { t } from "@/lib/i18n";
+import { IconButton } from "@/components/primitives/IconButton";
 
 function usePasteHandler() {
 	useEffect(() => {
@@ -67,7 +82,7 @@ function usePasteHandler() {
 			// Single line -> direct add + open; anything multi-line (JSON, CSV,
 			// URL lists) -> staged import flow
 			if (!text.trim().includes("\n")) {
-				const parsed = (await parseMapsUrl(text)) ?? parseCoordinates(text);
+				const parsed = (await cmd.parseMapsUrl(text)) ?? parseCoordinates(text);
 				if (parsed) {
 					await addParsedLocations([parsed]);
 					return;
@@ -85,8 +100,9 @@ function usePasteHandler() {
 				log.warn("Couldn't import locations via paste.");
 			}
 		}
-		document.body.addEventListener("paste", onPaste);
-		return () => document.body.removeEventListener("paste", onPaste);
+		const handlePaste = (e: ClipboardEvent) => void onPaste(e);
+		document.body.addEventListener("paste", handlePaste);
+		return () => document.body.removeEventListener("paste", handlePaste);
 	}, []);
 }
 
@@ -120,7 +136,7 @@ function useFileDrop() {
 		});
 		return () => {
 			cancelled = true;
-			unlistenPromise.then((unlisten) => unlisten());
+			void unlistenPromise.then((unlisten) => unlisten());
 		};
 	}, []);
 
@@ -130,52 +146,42 @@ function useFileDrop() {
 const SPLITHANDLE_RANGE = range([15, 85]);
 
 function SplitHandle({ onSplitChange }: { onSplitChange: (v: number) => void }) {
-	const onPointerDown = useCallback(
-		(e: React.PointerEvent) => {
-			e.preventDefault();
-			const el = e.currentTarget as HTMLElement;
-			el.setPointerCapture(e.pointerId);
-			const grid = el.parentElement;
-			if (!grid) return;
+	const onPointerDown = usePointerDrag((e) => {
+		const grid = (e.currentTarget as HTMLElement).parentElement;
+		if (!grid) return null;
 
-			const panoEl = grid.querySelector<HTMLElement>(".location-preview__panorama");
-			const embedEl = panoEl?.querySelector<HTMLElement>(".location-preview__embed");
-			if (panoEl && embedEl) {
-				embedEl.style.position = "absolute";
-				embedEl.style.width = `${panoEl.offsetWidth}px`;
-				embedEl.style.height = `${panoEl.offsetHeight}px`;
-			}
+		const panoEl = grid.querySelector<HTMLElement>(".location-preview__panorama");
+		const embedEl = panoEl?.querySelector<HTMLElement>(".location-preview__embed");
+		if (panoEl && embedEl) {
+			embedEl.style.position = "absolute";
+			embedEl.style.width = `${panoEl.offsetWidth}px`;
+			embedEl.style.height = `${panoEl.offsetHeight}px`;
+		}
 
-			const onMove = (ev: PointerEvent) => {
-				const rect = grid.getBoundingClientRect();
-				const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
-				const available = rect.width - gap;
-				const pct = ((ev.clientX - rect.left - gap / 2) / available) * 100;
-				const clamped = clamp(pct, SPLITHANDLE_RANGE);
+		const pctAt = (ev: PointerEvent) => {
+			const rect = grid.getBoundingClientRect();
+			const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
+			const pct = ((ev.clientX - rect.left - gap / 2) / (rect.width - gap)) * 100;
+			return clamp(pct, SPLITHANDLE_RANGE);
+		};
+		return {
+			onMove: (ev) => {
+				const clamped = pctAt(ev);
 				grid.style.gridTemplateColumns = `minmax(0, ${clamped}fr) minmax(0, ${100 - clamped}fr)`;
 				if (embedEl && panoEl) {
 					embedEl.style.width = `${panoEl.offsetWidth}px`;
 					embedEl.style.height = `${panoEl.offsetHeight}px`;
 				}
-			};
-			const ac = new AbortController();
-			const onUp = (ev: PointerEvent) => {
-				ac.abort();
+			},
+			onEnd: (ev) => {
 				if (embedEl) {
 					embedEl.style.width = "";
 					embedEl.style.height = "";
 				}
-				const rect = grid.getBoundingClientRect();
-				const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
-				const available = rect.width - gap;
-				const pct = ((ev.clientX - rect.left - gap / 2) / available) * 100;
-				onSplitChange(clamp(pct, SPLITHANDLE_RANGE));
-			};
-			el.addEventListener("pointermove", onMove, { signal: ac.signal });
-			el.addEventListener("pointerup", onUp, { signal: ac.signal });
-		},
-		[onSplitChange],
-	);
+				onSplitChange(pctAt(ev));
+			},
+		};
+	});
 
 	return (
 		<div
@@ -188,12 +194,12 @@ function SplitHandle({ onSplitChange }: { onSplitChange: (v: number) => void }) 
 
 export function MapEditor() {
 	const map = useMapState((s) => s.map);
-	const hasDoclinks = useMapState((s) => doclinkedTags(s.tags).length > 0);
+	const hasDoclinks = useMapState(() => doclinkedTags(getTags()).length > 0);
 	// Warm the doclink HTML cache once per map open, so the panel is instant.
 	const prefetchDocs = useEffectEvent(() => {
-		if (map) prefetchDoclinks(getMapState().tags);
+		if (map) prefetchDoclinks(getTags());
 	});
-	useEffect(() => prefetchDocs(), [map?.meta.id]);
+	useEffect(() => prefetchDocs(), [map?.id]);
 	const workArea = useMapState((s) => s.workArea);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [split, setSplit] = useLocalStorage("editorSplit", 50);
@@ -203,7 +209,7 @@ export function MapEditor() {
 
 	useEffect(() => {
 		let cancelled = false;
-		Promise.all([pluginsReady, waitForMapHost()]).then(() => {
+		void Promise.all([pluginsReady, waitForMapHost()]).then(() => {
 			if (cancelled) return;
 			activatePlugins();
 		});
@@ -211,7 +217,7 @@ export function MapEditor() {
 			cancelled = true;
 			deactivatePlugins();
 		};
-	}, [map?.meta.id]);
+	}, [map?.id]);
 
 	// Another window mutated this map
 	useEffect(() => {
@@ -219,7 +225,7 @@ export function MapEditor() {
 			if (e.payload.mapId === getMapState().mapId) void mutate(() => Promise.resolve(e.payload));
 		});
 		return () => {
-			unlisten.then((f) => f());
+			void unlisten.then((f) => f());
 		};
 	}, []);
 
@@ -229,11 +235,11 @@ export function MapEditor() {
 		const unlisten = listen<string>("map-deleted", (e) => {
 			if (e.payload === getMapState().mapId) {
 				discardOpenMap();
-				goToList();
+				goTo({ type: "list" });
 			}
 		});
 		return () => {
-			unlisten.then((f) => f());
+			void unlisten.then((f) => f());
 		};
 	}, []);
 
@@ -241,7 +247,13 @@ export function MapEditor() {
 	usePasteHandler();
 	const fileDragging = useFileDrop();
 	useCommandHotkeys();
-	useMapKeyBindings(() => getMapState().map?.meta.settings.keyBindings ?? []);
+	useMapKeyBindings(() =>
+		mergedKeyBindings(
+			getMapState().map?.settings.keyBindings ?? [],
+			getLocal(GLOBAL_COPY_BINDINGS),
+			getMapState().mapId,
+		),
+	);
 	useCountrySelect();
 	useDeletePolygon();
 	useHotkey(
@@ -256,7 +268,7 @@ export function MapEditor() {
 		useBinding("locationDelete"),
 		() => {
 			const ids = getMapState().selectedLocationIds;
-			if (ids.size > 0) removeLocations(ids);
+			if (ids.size > 0) void removeLocations(ids);
 		},
 		{ bubble: true },
 	);
@@ -267,7 +279,10 @@ export function MapEditor() {
 	useEffect(() => {
 		function onKeyDown(e: KeyboardEvent) {
 			if (e.key !== "Enter" || e.repeat) return;
+			if (pluginOverlayOwnsInput()) return;
 			if (isEditableElement(e.target)) return;
+			if (isActivationElement(document.activeElement)) return;
+			if (!getSettings().enterOpensCenter) return;
 			if (getMapState().activeLocation) return;
 			showMapCursorRef.current = true;
 			setShowMapCursor(true);
@@ -320,39 +335,36 @@ export function MapEditor() {
 									aria-label={t("Back to map list")}
 									onClick={(e) => {
 										e.preventDefault();
-										goToList();
+										void leaveToList();
 									}}
 								>
 									<Icon path={mdiBackburger} />
 								</a>
 							</Tooltip>
-							<h1>{map.meta.name}</h1>
-							<Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-								<Tooltip content={t("Edit map")} side="bottom">
-									<DialogTrigger asChild>
-										<button className="icon-button" type="button" aria-label={t("Edit map")}>
-											<Icon path={mdiPencil} />
-										</button>
-									</DialogTrigger>
-								</Tooltip>
-								<DialogContent title={t("Map settings")} className="edit-map-modal">
-									<MapRenameForm mapId={map.meta.id} currentName={map.meta.name} />
-								</DialogContent>
-							</Dialog>
+							{map.name && <h1>{map.name}</h1>}
+							{!isReservedMap(map.id) && (
+								<Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+									<DialogTrigger
+										render={
+											<IconButton icon={mdiPencil} label={t("Edit map")} tooltipSide="bottom" />
+										}
+									/>
+									<DialogContent title={t("Edit map")} className="edit-map-modal">
+										<MapSettingsForm map={map} context="editor" />
+									</DialogContent>
+								</Dialog>
+							)}
 							<EnrichmentButton />
 						</header>
 						<div className="side-header">
 							{hasDoclinks && (
-								<Tooltip content={t("Doclinks")} side="bottom">
-									<button
-										className="icon-button"
-										type="button"
-										aria-label={t("Toggle doclink panel")}
-										onClick={() => setDocPanelOpen(!docPanelOpen)}
-									>
-										<Icon path={mdiFileDocumentOutline} />
-									</button>
-								</Tooltip>
+								<IconButton
+									icon={mdiFileDocumentOutline}
+									label={t("Toggle doclink panel")}
+									tooltip={t("Doclinks")}
+									tooltipSide="bottom"
+									onClick={() => setDocPanelOpen(!docPanelOpen)}
+								/>
 							)}
 						</div>
 						<section

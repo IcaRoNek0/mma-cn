@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createFieldDef } from "@/types";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Plugin } from "@/plugins/registry";
 import {
@@ -6,6 +7,10 @@ import {
 	getPlugin,
 	getPlugins,
 	unregisterPlugin,
+	setPendingManifest,
+	isBackgroundPlugin,
+} from "@/plugins/registry";
+import {
 	isPluginEnabled,
 	setPluginEnabled,
 	getEnabledPlugins,
@@ -13,21 +18,15 @@ import {
 	activatePlugins,
 	deactivatePlugin,
 	deactivatePlugins,
-	setPendingManifest,
-	isPluginCompatible,
-	isBackgroundPlugin,
-} from "@/plugins/registry";
-import { subscribe } from "@/lib/events";
-import {
-	registerEnrichmentProvider,
-	getEnrichmentProviders,
-	registerEnrichFields,
-	getEnrichFieldOptions,
-} from "@/lib/data/fieldDefs";
+} from "@/plugins/pluginHost";
+import { isPluginCompatible } from "@/plugins/marketplace";
+import { emit, subscribe } from "@/lib/events";
+import { on } from "@/plugins/pluginEvents";
+import { registerProvider, getProviders, getEnrichFieldOptions } from "@/lib/data/fieldDefs";
 import { getFieldDef } from "@/lib/data/fieldDefRegistry";
 
-function makePlugin(id: string, name: string, activate = vi.fn()): Plugin {
-	return { id, name, icon: "test", activate };
+function makePlugin(id: string, name: string, activate: Plugin["activate"] = vi.fn()): Plugin {
+	return { id, name, description: "test", icon: "test", activate };
 }
 
 beforeEach(() => {
@@ -54,6 +53,7 @@ describe("registerPlugin", () => {
 			description: "From manifest",
 			icon: "manifest-icon",
 			main: "index.js",
+			version: "1.0.0",
 		});
 		const activate = vi.fn();
 		registerPlugin({ activate });
@@ -73,6 +73,7 @@ describe("registerPlugin", () => {
 			description: "",
 			icon: "x",
 			main: "index.js",
+			version: "1.0.0",
 		});
 		registerPlugin({ activate: vi.fn() });
 
@@ -220,6 +221,35 @@ describe("deactivatePlugins", () => {
 		deactivatePlugin("a");
 		expect(cleanupA).toHaveBeenCalledOnce();
 	});
+
+	it("a cleanup that throws does not stop the plugins after it", () => {
+		const cleanupB = vi.fn();
+		registerPlugin(
+			makePlugin("a", "A", () => () => {
+				throw new Error("boom");
+			}),
+		);
+		registerPlugin(makePlugin("b", "B", () => cleanupB));
+		activatePlugin("a");
+		activatePlugin("b");
+		expect(() => deactivatePlugins()).not.toThrow();
+		expect(cleanupB).toHaveBeenCalledOnce();
+	});
+
+	it("reverses the registrations a plugin made during activate, cleanup or not", () => {
+		const handler = vi.fn();
+		registerPlugin(
+			makePlugin("listener", "L", () => {
+				on("map:close", handler);
+			}),
+		);
+		activatePlugin("listener");
+		deactivatePlugins();
+		activatePlugin("listener");
+		deactivatePlugins();
+		emit("map:close");
+		expect(handler).not.toHaveBeenCalled();
+	});
 });
 
 describe("plugins:changed event", () => {
@@ -278,26 +308,60 @@ describe("plugin deactivation tears down enrichment registrations", () => {
 		// activate() returns nothing — teardown must still happen via the registry.
 		registerPlugin(
 			makePlugin(pid, "Enrich " + sfx, () => {
-				registerEnrichFields([{ key: fieldKey, label: "WX", defaultOff: true }]);
-				registerEnrichmentProvider({
+				registerProvider({
 					id: provId,
-					enrich: async () => new Map(),
-					fieldDefs: { [fieldKey]: { type: "number" as const, label: "WX" } },
+					label: "WX",
+					procedure: { entry: "res://procedures/test.js", batch: { mode: "perRow" } },
+					fieldDefs: { [fieldKey]: createFieldDef("number", { label: "WX" }) },
 				});
 			}),
 		);
 		setPluginEnabled(pid, true);
 		activatePlugin(pid);
 
-		expect(getEnrichmentProviders().some((p) => p.id === provId)).toBe(true);
+		expect(getProviders().some((p) => p.id === provId)).toBe(true);
 		expect(getEnrichFieldOptions().some((o) => o.key === fieldKey)).toBe(true);
 		expect(getFieldDef(fieldKey)).toBeDefined();
 
 		deactivatePlugin(pid);
 
-		expect(getEnrichmentProviders().some((p) => p.id === provId)).toBe(false);
+		expect(getProviders().some((p) => p.id === provId)).toBe(false);
 		expect(getEnrichFieldOptions().some((o) => o.key === fieldKey)).toBe(false);
 		expect(getFieldDef(fieldKey)).toBeUndefined();
+	});
+});
+
+describe("a plugin that throws while activating", () => {
+	it("stays inactive without stopping the plugins after it", () => {
+		const after = vi.fn();
+		registerPlugin(
+			makePlugin("a-throws", "A throws", () => {
+				throw new Error("no map");
+			}),
+		);
+		registerPlugin(makePlugin("b-after", "B after", after));
+		setPluginEnabled("a-throws", true);
+		setPluginEnabled("b-after", true);
+		activatePlugins();
+		expect(after).toHaveBeenCalledOnce();
+	});
+
+	it("has what it registered before throwing torn down", () => {
+		const fieldKey = "partial_" + Math.random().toString(36).slice(2);
+		registerPlugin(
+			makePlugin("partial", "Partial", () => {
+				registerProvider({
+					id: "partial-provider",
+					label: "Partial",
+					procedure: { entry: "res://procedures/test.js", batch: { mode: "perRow" } },
+					fieldDefs: { [fieldKey]: createFieldDef("number", { label: "Partial" }) },
+				});
+				throw new Error("no map");
+			}),
+		);
+		setPluginEnabled("partial", true);
+		activatePlugin("partial");
+		expect(getEnrichFieldOptions().some((o) => o.key === fieldKey)).toBe(false);
 	});
 });
 

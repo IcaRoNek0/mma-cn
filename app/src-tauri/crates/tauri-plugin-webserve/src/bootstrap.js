@@ -5,6 +5,13 @@
 (function () {
 	if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.__webserve) return;
 
+	// Per page load rather than sessionStorage, which a duplicated tab would copy.
+	const clientId =
+		"web-" +
+		Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) =>
+			b.toString(16).padStart(2, "0"),
+		).join("");
+
 	// --- callback registry (transformCallback) ---
 	let cbId = 0;
 	const callbacks = new Map();
@@ -32,6 +39,11 @@
 		}
 	}
 
+	function removeListener(id) {
+		const i = listeners.findIndex((l) => l.id === id);
+		if (i >= 0) listeners.splice(i, 1);
+	}
+
 	function eventInvoke(name, args) {
 		if (name === "listen") {
 			const id = ++eventId;
@@ -39,8 +51,7 @@
 			return id;
 		}
 		if (name === "unlisten") {
-			const i = listeners.findIndex((l) => l.id === args.eventId);
-			if (i >= 0) listeners.splice(i, 1);
+			removeListener(args.eventId);
 			return null;
 		}
 		if (name === "emit" || name === "emit_to") {
@@ -140,7 +151,7 @@
 	function realInvoke(cmd, args) {
 		return fetch("/__ipc/" + cmd, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: { "Content-Type": "application/json", "X-Webserve-Client": clientId },
 			body: JSON.stringify(args ?? {}),
 		}).then(async (r) => {
 			const body = await r.json();
@@ -165,10 +176,8 @@
 	// render buffer) work IMMEDIATELY — no service-worker activation race; (2) a
 	// service worker for subresources that bypass fetch (e.g. <img> map tiles;
 	// http-form only — custom-scheme requests never reach a service worker).
-	// TODO: raw-scheme <img>/XHR subresources (Linux/macOS browsers) are caught by
-	// neither layer; if one surfaces (candidate: unofficial-pano svtile tiles, if
-	// opensv loads them via <img>), patch XMLHttpRequest.open + the
-	// HTMLImageElement.src setter through this same rewrite.
+	// Raw-scheme <img>/XHR subresources (Linux/macOS browsers) are caught by neither
+	// layer, so patch those entry points through this same rewrite too.
 	function rewriteSchemeUrl(url) {
 		try {
 			const u = new URL(url, location.href);
@@ -191,18 +200,47 @@
 		const rewritten = url && rewriteSchemeUrl(url);
 		return rewritten ? _fetch(rewritten, init) : _fetch(input, init);
 	};
+	const _xhrOpen = XMLHttpRequest.prototype.open;
+	XMLHttpRequest.prototype.open = function (method, url, ...args) {
+		const rewritten = rewriteSchemeUrl(url);
+		return _xhrOpen.call(this, method, rewritten || url, ...args);
+	};
+	const imageSrc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+	if (imageSrc && imageSrc.set) {
+		Object.defineProperty(HTMLImageElement.prototype, "src", {
+			...imageSrc,
+			set(value) {
+				const rewritten = rewriteSchemeUrl(value);
+				imageSrc.set.call(this, rewritten || value);
+			},
+		});
+	}
 	if ("serviceWorker" in navigator) {
 		navigator.serviceWorker.register("/__webserve/sw.js").catch(() => {});
 	}
 
-	// Backend events (Rust app.emit) arrive over SSE and feed the same listener
-	// bus as in-tab emit. EventSource auto-reconnects, so transient drops self-heal.
+	// A channel message for this tab: run the channel's callback with it, fetching raw
+	// bytes first. The channel puts messages back in order by index.
+	function deliverChannel(c) {
+		const run = (message) => {
+			const cb = callbacks.get(c.callback);
+			if (cb) cb({ message, index: c.index });
+		};
+		if ("message" in c) return run(c.message);
+		_fetch("/__channel/" + c.data, { headers: { "X-Webserve-Client": clientId } })
+			.then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+			.then(run, () => {});
+	}
+
+	// Backend events (Rust app.emit) and channel messages arrive over SSE; events feed the
+	// same listener bus as in-tab emit. EventSource auto-reconnects, so transient drops self-heal.
 	if (typeof EventSource !== "undefined") {
-		const es = new EventSource("/__events");
+		const es = new EventSource("/__events?client=" + clientId);
 		es.onmessage = (m) => {
 			try {
 				const data = JSON.parse(m.data);
-				dispatch(data.event, data.payload);
+				if (data.channel) deliverChannel(data.channel);
+				else dispatch(data.event, data.payload);
 			} catch (e) {
 				/* ignore malformed frame */
 			}
@@ -212,8 +250,8 @@
 	window.__TAURI_INTERNALS__ = {
 		__webserve: true,
 		metadata: {
-			currentWindow: { label: "main" },
-			currentWebview: { windowLabel: "main", label: "main" },
+			currentWindow: { label: clientId },
+			currentWebview: { windowLabel: clientId, label: clientId },
 		},
 		invoke,
 		transformCallback,
@@ -221,5 +259,9 @@
 		// Some builds probe these; provide harmless stubs.
 		ipc: (msg) => {},
 		unregisterCallback: (id) => callbacks.delete(id),
+	};
+	// The event API's unlisten() calls this before invoking plugin:event|unlisten.
+	window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+		unregisterListener: (_event, id) => removeListener(id),
 	};
 })();

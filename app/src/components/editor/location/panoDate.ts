@@ -1,45 +1,30 @@
-import { type PanoReference, parsePanoDate } from "@/lib/sv/lookup";
-import { ymFromDate } from "@/lib/util/date";
-
-type CurrentPano = Pick<google.maps.StreetViewPanoramaData, "location" | "imageDate"> | null;
+import { isPinned } from "@/types";
+import type { Pano } from "@/bindings.gen";
+import type { Location } from "@/bindings.gen";
 
 export interface PanoDateState {
-	defaultEntry: PanoReference | undefined;
-	sorted: PanoReference[];
-	currentEntry: PanoReference | undefined;
+	defaultEntry: Pano["time"][number] | undefined;
+	currentEntry: Pano["time"][number] | undefined;
 	isDefault: boolean;
-	displayDate: Date | null;
-	triggerPanoId: string | null;
-	yearMonth: string | null;
 }
 
-/** Derive a date picker's view labels and exact-date resolution inputs from pano-viewer
- *  state. Pure, so the resolution can be hoisted to a single owner and every picker reads
- *  the same result instead of each running the expensive lookup. */
-export function derivePanoDateState(
-	panoDates: PanoReference[],
-	selectedPanoId: string | null,
-	currentPano: CurrentPano,
-	defaultPanoId: string | null,
+/** The date picker's decision: "Default" is the pano Google resolves for the position, a
+ *  pinned draft's pano is its choice. The current pano is the sticky answer's own, so it,
+ *  the timeline and the default come from one fetch and never disagree mid-walk. */
+export function panoDates(
+	currentPano: Pano | null,
+	timeline: Pano["time"] | null,
+	defaultPano: Pano | null,
+	draft: Location | null,
 ): PanoDateState {
-	const defaultEntry = panoDates.find((d) => d.pano === defaultPanoId);
-	const resolvedEntry = currentPano?.location
-		? panoDates.find((d) => d.pano === currentPano.location!.pano)
-		: undefined;
-	const sorted = [...panoDates].sort((a, b) => a.date.getTime() - b.date.getTime());
+	const entries = timeline ?? [];
+	const current = currentPano?.id ?? null;
+	const chosen = draft && isPinned(draft) ? current : null;
+	// Dated from its own stack; the default need not be in the draft's timeline.
+	const defaultEntry = defaultPano?.time.find((d) => d.panoId === defaultPano.id);
 	const currentEntry =
-		selectedPanoId == null
-			? (defaultEntry ?? resolvedEntry)
-			: sorted.find((d) => d.pano === selectedPanoId);
-	const isDefault = selectedPanoId == null;
-	const displayDate =
-		currentEntry?.date ??
-		(isDefault && currentPano?.imageDate ? parsePanoDate(currentPano.imageDate) : null);
-	const triggerPanoId =
-		currentEntry?.pano ??
-		currentPano?.location?.pano ??
-		sorted[sorted.length - 1]?.pano ??
-		defaultPanoId;
-	const yearMonth = displayDate ? ymFromDate(displayDate) : null;
-	return { defaultEntry, sorted, currentEntry, isDefault, displayDate, triggerPanoId, yearMonth };
+		chosen == null
+			? (defaultEntry ?? entries.find((d) => d.panoId === current))
+			: entries.find((d) => d.panoId === chosen);
+	return { defaultEntry, currentEntry, isDefault: chosen == null };
 }

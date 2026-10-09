@@ -1,31 +1,26 @@
 /* eslint-disable react-refresh/only-export-components */
 import { memo, useEffect, useRef, useState, useCallback } from "react";
-import { hasLoadAsPanoId, LocationFlag } from "@/types";
-import {
-	PANO_ZOOM,
-	SV_JUMP_RADIUS,
-	displayZoom,
-	zoomInStep,
-	zoomOutStep,
-} from "@/lib/sv/constants";
-import { google } from "@/lib/sv/opensv";
-import { lookupStreetView } from "@/lib/sv/lookup";
-import { shortenMapsUrl, mapsPanoUrl, fovForZoom, appendLinkTags } from "@/lib/sv/mapsLink";
+import { isPinned } from "@/types";
+import { useFlashState, type FlashState } from "@/lib/hooks/useFlashState";
+import { PANO_ZOOM, SV_JUMP_RADIUS, displayZoom } from "@/lib/sv/constants";
+import { copyMapsLink, mapsPanoUrl, appendLinkTags } from "@/lib/sv/mapsLink";
+import { fileTimestamp, formatDistance } from "@/lib/util/format";
 import { useSettings } from "@/store/settings";
-import { getMapState, useMapState } from "@/store/useMapStore";
-import { getPanoAltitude } from "./PanoViewerContext";
-import { subscribe as subscribeEvent } from "@/lib/events";
+import { getMapState, useMapState, getTags } from "@/store/useMapStore";
+import { usePanoViewer } from "./PanoViewerContext";
+import { fieldLabel, fieldValueLabel, getFieldDef } from "@/lib/data/fieldDefRegistry";
 import { useBinding } from "@/lib/util/hotkeys";
 import { useHotkeyRef } from "@/lib/hooks/useHotkey";
-import { usePanoEvent } from "@/lib/hooks/usePanoEvent";
+import { usePano, usePanoEvent } from "@/lib/hooks/usePano";
 import { open } from "@tauri-apps/plugin-shell";
-import { tweenPov } from "@/lib/sv/tweenPov";
-import { snapshotPanoView, renderPanoView, canvasToBlob } from "@/lib/sv/panoCapture";
+import { renderPanoView, canvasToBlob } from "@/lib/sv/panoCapture";
 import { downloadBlob, copyImageToClipboard } from "@/lib/util/util";
 import { toast } from "@/lib/util/toast";
 import { log } from "@/lib/util/log";
 import { Tooltip } from "@/components/primitives/Tooltip";
 import { Icon } from "@/components/primitives/Icon";
+import { IconButton } from "@/components/primitives/IconButton";
+import { Spinner } from "@/components/primitives/Spinner";
 import {
 	mdiCameraOutline,
 	mdiFullscreenExit,
@@ -36,7 +31,6 @@ import {
 	mdiMinus,
 	mdiHome,
 	mdiOpenInNew,
-	mdiLoading,
 	mdiCheck,
 	mdiContentCopy,
 	mdiImageFilterHdrOutline,
@@ -45,10 +39,16 @@ import { t } from "@/lib/i18n";
 
 // --- Compass ---
 
-function Compass({ panorama }: { panorama: google.maps.StreetViewPanorama }) {
+function FlashIcon({ state, icon }: { state: FlashState; icon: string }) {
+	if (state === "busy") return <Spinner size="18px" />;
+	return <Icon path={state === "done" ? mdiCheck : icon} />;
+}
+
+export function Compass() {
+	const pano = usePano();
 	const ref = useRef<HTMLDivElement>(null);
-	usePanoEvent(panorama, "pov_changed", () => {
-		ref.current?.style.setProperty("--heading", `${(-panorama.getPov().heading).toFixed(2)}deg`);
+	usePanoEvent("pov_changed", () => {
+		ref.current?.style.setProperty("--heading", `${(-pano.pov().heading).toFixed(2)}deg`);
 	});
 	return (
 		<div ref={ref} className="compass">
@@ -75,11 +75,12 @@ const TAPE_DEG_WIDTH = 180;
 const TAPE_PX_PER_DEG = 1.5;
 const TAPE_WIDTH_PX = TAPE_DEG_WIDTH * TAPE_PX_PER_DEG;
 
-function CompassTape({ panorama }: { panorama: google.maps.StreetViewPanorama }) {
+export function CompassTape() {
+	const pano = usePano();
 	const innerRef = useRef<HTMLDivElement>(null);
-	usePanoEvent(panorama, "pov_changed", () => {
+	usePanoEvent("pov_changed", () => {
 		if (innerRef.current)
-			innerRef.current.style.transform = `translateX(${(-panorama.getPov().heading * TAPE_PX_PER_DEG).toFixed(1)}px)`;
+			innerRef.current.style.transform = `translateX(${(-pano.pov().heading * TAPE_PX_PER_DEG).toFixed(1)}px)`;
 	});
 
 	const ticks: { deg: number; label?: string }[] = [];
@@ -123,87 +124,6 @@ function CompassTape({ panorama }: { panorama: google.maps.StreetViewPanorama })
 	);
 }
 
-// --- Crosshair overlay ---
-
-export class CrosshairOverlay {
-	#pano: google.maps.StreetViewPanorama;
-	#canvas: HTMLCanvasElement;
-	#listener: google.maps.MapsEventListener;
-	#resizeObserver: ResizeObserver;
-	#regionSelector = '.gm-style > div[role="region"]';
-
-	constructor(pano: google.maps.StreetViewPanorama) {
-		this.#pano = pano;
-		this.#canvas = document.createElement("canvas");
-		Object.assign(this.#canvas.style, {
-			position: "absolute",
-			top: "0",
-			left: "0",
-			pointerEvents: "none",
-		});
-		this.#resizeObserver = new ResizeObserver(() => this.#draw());
-		this.#listener = pano.addListener("status_changed", () => {
-			const el = this.#root()?.querySelector(".gm-style");
-			if (el) this.#resizeObserver.observe(el);
-			this.#mount();
-		});
-		this.#mount();
-	}
-
-	#root(): HTMLElement | null {
-		return Object.values(this.#pano).find((e) => e instanceof HTMLElement) as HTMLElement | null;
-	}
-
-	#mount() {
-		const root = this.#root();
-		if (!root) return;
-		const region = root.querySelector(this.#regionSelector);
-		if (region && !root.contains(this.#canvas)) {
-			region.insertAdjacentElement("afterend", this.#canvas);
-		}
-		this.#draw();
-	}
-
-	#draw() {
-		const root = this.#root();
-		const region = root?.querySelector(this.#regionSelector);
-		if (!region) return;
-		const { width, height } = region.getBoundingClientRect();
-		this.#canvas.width = width;
-		this.#canvas.height = height;
-		const cx = Math.floor(width / 2);
-		const cy = Math.floor(height / 2);
-		const aspect = width / height;
-		const ctx = this.#canvas.getContext("2d")!;
-
-		ctx.strokeStyle = "#000";
-		ctx.lineWidth = 1;
-		ctx.setLineDash([5, 5]);
-		ctx.beginPath();
-		ctx.moveTo(0, 0);
-		ctx.lineTo(width, height);
-		ctx.moveTo(width, 0);
-		ctx.lineTo(0, height);
-		ctx.stroke();
-
-		ctx.strokeStyle = "#f33";
-		ctx.lineWidth = 3;
-		ctx.setLineDash([]);
-		ctx.beginPath();
-		ctx.moveTo(cx - 5 * aspect, cy - 5);
-		ctx.lineTo(cx + 5 * aspect, cy + 5);
-		ctx.moveTo(cx + 5 * aspect, cy - 5);
-		ctx.lineTo(cx - 5 * aspect, cy + 5);
-		ctx.stroke();
-	}
-
-	dispose() {
-		this.#resizeObserver.disconnect();
-		this.#listener.remove();
-		this.#canvas.remove();
-	}
-}
-
 // --- Shader car toggle ---
 
 export function sendHideCar(hide: boolean) {
@@ -215,70 +135,22 @@ export function sendHideCar(hide: boolean) {
 
 // --- Pano control subcomponents ---
 
-function CompassControl({ panorama }: { panorama: google.maps.StreetViewPanorama }) {
-	const [links, setLinks] = useState<google.maps.StreetViewLink[]>([]);
+function CompassControl() {
+	const pano = usePano();
+	const [links, setLinks] = useState(pano.links);
 	const controlRef = useRef<HTMLDivElement>(null);
-	const animRef = useRef<{ stop: () => void; target: { heading: number; pitch: number } } | null>(
-		null,
-	);
 
-	const animatePov = useCallback(
-		(target: { heading: number; pitch: number }) => {
-			animRef.current?.stop();
-			const stop = tweenPov(panorama, target, () => {
-				animRef.current = null;
-			});
-			animRef.current = { stop, target };
-		},
-		[panorama],
-	);
-
-	usePanoEvent(panorama, "links_changed", () => {
-		setLinks((panorama.getLinks() ?? []).filter((l): l is google.maps.StreetViewLink => l != null));
-	});
+	usePanoEvent("links_changed", () => setLinks(pano.links()));
 
 	usePanoEvent(
-		panorama,
 		"pov_changed",
 		() => {
-			const h = panorama.getPov().heading;
+			const h = pano.pov().heading;
 			controlRef.current?.querySelectorAll<HTMLElement>(".compass-control__link").forEach((btn) => {
 				btn.classList.toggle("is-active", Math.abs(h - Number(btn.dataset.heading ?? 0)) < 1);
 			});
 		},
 		[links],
-	);
-
-	const pointNorth = useCallback(
-		(e?: React.MouseEvent) => {
-			if (e?.ctrlKey && links.length > 0) {
-				if (animRef.current || links.length === 0) return;
-				const h = panorama.getPov().heading;
-				const next = links.reduce((best, cur) => {
-					const bestDelta = (best.heading! + 360 - h) % 360;
-					const curDelta = (cur.heading! + 360 - h) % 360;
-					if (bestDelta <= 0.01) return cur;
-					if (curDelta <= 0.01) return best;
-					return curDelta < bestDelta ? cur : best;
-				});
-				if (next) animatePov({ heading: next.heading!, pitch: 0 });
-				return;
-			}
-			const targetHeading = animRef.current?.target.heading ?? panorama.getPov().heading;
-			if (targetHeading === 0) {
-				animatePov({ heading: 0, pitch: -90 });
-			} else {
-				animatePov({ heading: 0, pitch: 0 });
-			}
-		},
-		[panorama, links, animatePov],
-	);
-
-	const navigateToLink = useCallback(
-		(linkHeading: number) => {
-			animatePov({ heading: linkHeading, pitch: 0 });
-		},
-		[animatePov],
 	);
 
 	return (
@@ -289,25 +161,21 @@ function CompassControl({ panorama }: { panorama: google.maps.StreetViewPanorama
 		>
 			<div className="map-control map-control--transparent">
 				<div className="compass-control" ref={controlRef}>
-					<Tooltip
-						content={t("Click to point north (N). Ctrl+click to cycle through linked panoramas.")}
-						side="right"
-					>
-						<button
-							className="compass-control__button"
-							onClick={pointNorth}
-							aria-label={t("Point north")}
-						>
-							<Compass panorama={panorama} />
-						</button>
-					</Tooltip>
+					<IconButton
+						icon={<Compass />}
+						label={t("Point north")}
+						tooltip={t("Click to point north (N). Ctrl+click to cycle through linked panoramas.")}
+						tooltipSide="right"
+						className="compass-control__button"
+						onClick={(e) => (e.ctrlKey ? pano.turnToNextLink() : pano.pointNorth())}
+					/>
 					{links.map((link) => (
 						<button
 							key={link.pano}
 							className="compass-control__link"
 							data-heading={(link.heading ?? 0).toFixed(2)}
 							style={{ "--heading": `${(link.heading ?? 0).toFixed(2)}deg` } as React.CSSProperties}
-							onClick={() => navigateToLink(link.heading ?? 0)}
+							onClick={() => pano.turnTo({ heading: link.heading ?? 0, pitch: 0 })}
 						>
 							<Icon path={mdiChevronUp} />
 						</button>
@@ -318,23 +186,12 @@ function CompassControl({ panorama }: { panorama: google.maps.StreetViewPanorama
 	);
 }
 
-function ZoomControl({ panorama }: { panorama: google.maps.StreetViewPanorama }) {
-	const [atMin, setAtMin] = useState(() => (panorama.getZoom() ?? 0) <= PANO_ZOOM.min);
-	usePanoEvent(panorama, "zoom_changed", () => {
-		setAtMin((panorama.getZoom() ?? 0) <= PANO_ZOOM.min);
+function ZoomControl() {
+	const pano = usePano();
+	const [atMin, setAtMin] = useState(() => pano.zoom() <= PANO_ZOOM.min);
+	usePanoEvent("zoom_changed", () => {
+		setAtMin(pano.zoom() <= PANO_ZOOM.min);
 	});
-
-	const zoomIn = useCallback(() => {
-		panorama.setZoom(zoomInStep(panorama.getZoom()));
-	}, [panorama]);
-
-	const zoomOut = useCallback(() => {
-		panorama.setZoom(zoomOutStep(panorama.getZoom()));
-	}, [panorama]);
-
-	const resetZoom = useCallback(() => {
-		panorama.setZoom(PANO_ZOOM.min);
-	}, [panorama]);
 
 	return (
 		<div
@@ -343,46 +200,45 @@ function ZoomControl({ panorama }: { panorama: google.maps.StreetViewPanorama })
 			style={{ inset: "auto auto 112px 0px" }}
 		>
 			<div className="map-control map-control--button">
-				<Tooltip content={t("Zoom in")} side="right">
-					<button onClick={zoomIn} aria-label={t("Zoom in")}>
-						<Icon path={mdiPlus} />
-					</button>
-				</Tooltip>
-				<Tooltip content={t("Reset zoom")} side="right">
-					<button disabled={atMin} onClick={resetZoom} aria-label={t("Reset zoom")}>
-						<Icon path={mdiImageFilterCenterFocus} />
-					</button>
-				</Tooltip>
-				<Tooltip content={t("Zoom out")} side="right">
-					<button disabled={atMin} onClick={zoomOut} aria-label={t("Zoom out")}>
-						<Icon path={mdiMinus} />
-					</button>
-				</Tooltip>
+				<IconButton icon={mdiPlus} label={t("Zoom in")} tooltipSide="right" onClick={pano.zoomIn} />
+				<IconButton
+					icon={mdiImageFilterCenterFocus}
+					label={t("Reset zoom")}
+					tooltipSide="right"
+					disabled={atMin}
+					onClick={pano.resetZoom}
+				/>
+				<IconButton
+					icon={mdiMinus}
+					label={t("Zoom out")}
+					tooltipSide="right"
+					disabled={atMin}
+					onClick={pano.zoomOut}
+				/>
 			</div>
 		</div>
 	);
 }
 
 function ReturnToSpawnControl({
-	panorama,
 	onReturnToSpawn,
 }: {
-	panorama: google.maps.StreetViewPanorama;
-	onReturnToSpawn: () => void;
+	onReturnToSpawn: () => void | Promise<void>;
 }) {
+	const pano = usePano();
 	const location = useMapState((s) => s.activeLocation);
 	const [hasChanged, setHasChanged] = useState(false);
 	const checkChanged = () => {
 		if (!location) return;
-		const pov = panorama.getPov();
+		const { heading, pitch } = pano.pov();
 		setHasChanged(
-			pov.heading !== location.heading ||
-				pov.pitch !== location.pitch ||
-				panorama.getZoom() !== displayZoom(location.zoom),
+			heading !== location.heading ||
+				pitch !== location.pitch ||
+				pano.zoom() !== displayZoom(location.zoom),
 		);
 	};
-	usePanoEvent(panorama, "pov_changed", checkChanged, [location]);
-	usePanoEvent(panorama, "zoom_changed", checkChanged, [location]);
+	usePanoEvent("pov_changed", checkChanged, [location]);
+	usePanoEvent("zoom_changed", checkChanged, [location]);
 
 	return (
 		<div
@@ -391,33 +247,33 @@ function ReturnToSpawnControl({
 			style={{ inset: "auto auto 56px 0px" }}
 		>
 			<div className="map-control map-control--button">
-				<Tooltip content={t("Return to spawn (R)")} side="right">
-					<button
-						disabled={!hasChanged}
-						onClick={onReturnToSpawn}
-						aria-label={t("Return to spawn (R)")}
-					>
-						<Icon path={mdiHome} />
-					</button>
-				</Tooltip>
+				<IconButton
+					icon={mdiHome}
+					label={t("Return to spawn (R)")}
+					tooltipSide="right"
+					disabled={!hasChanged}
+					onClick={() => void Promise.resolve(onReturnToSpawn())}
+				/>
 			</div>
 		</div>
 	);
 }
 
-function CoordinateControl({ panorama }: { panorama: google.maps.StreetViewPanorama }) {
+function CoordinateControl() {
+	const pano = usePano();
 	const textRef = useRef<HTMLSpanElement>(null);
+	const altitude = usePanoViewer().currentPano?.altitude ?? 0;
+	// Zoom ticks every frame of a pinch, so the text is written straight to the DOM.
 	const updateDisplay = useCallback(() => {
-		const zoom = (panorama.getZoom() ?? 0).toFixed(2);
-		const altitude = getPanoAltitude();
+		const zoom = pano.zoom().toFixed(2);
 		if (textRef.current)
 			textRef.current.textContent =
 				altitude === 0
 					? " " + t("zoom {zoom}", { zoom })
-					: ` ${altitude.toFixed(2)}m · ` + t("zoom {zoom}", { zoom });
-	}, [panorama]);
-	usePanoEvent(panorama, "zoom_changed", updateDisplay);
-	useEffect(() => subscribeEvent("altitude:changed", updateDisplay), [updateDisplay]);
+					: ` ${formatDistance(altitude, 2)} · ` + t("zoom {zoom}", { zoom });
+	}, [pano, altitude]);
+	usePanoEvent("zoom_changed", updateDisplay);
+	useEffect(updateDisplay, [updateDisplay]);
 
 	return (
 		<div
@@ -435,9 +291,12 @@ function CoordinateControl({ panorama }: { panorama: google.maps.StreetViewPanor
 
 // --- PanoControls ---
 
+// The draft's extra: the location as a save would write it.
 function PanoMetadataControl() {
 	const location = useMapState((s) => s.activeLocation);
+	const { draft } = usePanoViewer();
 	if (!location) return null;
+	const fields = draft?.extra ?? location.extra;
 	return (
 		<div
 			className="embed-controls__control"
@@ -446,16 +305,16 @@ function PanoMetadataControl() {
 		>
 			<div
 				className="map-control coordinate-control is-dark"
-				style={{ fontSize: "10px", display: "flex", flexDirection: "column", gap: "2px" }}
+				style={{ display: "flex", flexDirection: "column", gap: "2px" }}
 			>
 				<span>
-					{t("Pinned pano:")} {hasLoadAsPanoId(location) ? t("yes") : t("no")}
+					{t("Pinned pano:")} {isPinned(draft ?? location) ? t("yes") : t("no")}
 				</span>
-				{location.extra &&
-					Object.entries(location.extra).map(([key, val]) => (
+				{fields &&
+					Object.entries(fields).map(([key, val]) => (
 						<span key={key}>
-							{key}
-							{t(":")} {val == null ? "null" : String(val)}
+							{fieldLabel(key)}
+							{t(":")} {val == null ? "null" : fieldValueLabel(getFieldDef(key), val)}
 						</span>
 					))}
 			</div>
@@ -464,42 +323,34 @@ function PanoMetadataControl() {
 }
 
 export const PanoControls = memo(function PanoControls({
-	panorama,
 	isFullscreen,
 	onFullscreen,
 	onReturnToSpawn,
 }: {
-	panorama: google.maps.StreetViewPanorama;
 	isFullscreen: boolean;
 	onFullscreen: () => void;
-	onReturnToSpawn: () => void;
+	onReturnToSpawn: () => void | Promise<void>;
 }) {
+	const pano = usePano();
 	const vis = useSettings();
 	const fullscreenKey = useBinding("toggleFullscreen");
 	const jumpForwardKey = useBinding("jumpForward");
 	const jumpBackwardKey = useBinding("jumpBackward");
-	const [copyState, setCopyState] = useState<"idle" | "loading" | "done">("idle");
-	const [screenshotState, setScreenshotState] = useState<"idle" | "loading" | "done">("idle");
+	const [copyState, flashCopy] = useFlashState();
+	const [screenshotState, flashScreenshot] = useFlashState();
 
 	// Built from the LIVE pano, not the saved location: the link shares what you're looking at.
 	const buildMapsUrl = useCallback(() => {
-		const loc = panorama.getLocation();
-		const pos = panorama.getPosition();
-		const pov = panorama.getPov();
-		if (!loc || !pos || !pov) return null;
-		return mapsPanoUrl({
-			lat: pos.lat(),
-			lng: pos.lng(),
-			heading: pov.heading,
-			pitch: pov.pitch,
-			fov: fovForZoom(panorama.getZoom()),
-			panoId: loc.pano ?? "",
-		});
-	}, [panorama]);
+		const panoId = pano.panoId();
+		const position = pano.position();
+		if (!panoId || !position) return null;
+		const { heading, pitch } = pano.pov();
+		return mapsPanoUrl({ ...position, heading, pitch, zoom: pano.zoom(), panoId });
+	}, [pano]);
 
 	const openInMaps = useCallback(() => {
 		const url = buildMapsUrl();
-		if (url) open(url.toString());
+		if (url) void open(url.toString());
 	}, [buildMapsUrl]);
 
 	// `long` skips the shortenMapsUrl redirect lookup and copies the raw long URL;
@@ -509,97 +360,41 @@ export const PanoControls = memo(function PanoControls({
 			const url = buildMapsUrl();
 			if (!url) return;
 			const location = getMapState().activeLocation;
-			if (!noTags && location) appendLinkTags(url, location, getMapState().tags);
-			const longStr = url.toString();
-			if (long) {
-				await navigator.clipboard.writeText(longStr).catch(() => {});
-				setCopyState("done");
-				setTimeout(() => setCopyState("idle"), 500);
-				return;
-			}
-			setCopyState("loading");
-			try {
-				const short = await shortenMapsUrl(longStr);
-				await navigator.clipboard.writeText(short);
-			} catch {
-				await navigator.clipboard.writeText(longStr).catch(() => {});
-			}
-			setCopyState("done");
-			setTimeout(() => setCopyState("idle"), 500);
+			if (!noTags && location) appendLinkTags(url, location, getTags());
+			await flashCopy(() => copyMapsLink(url, { long }));
 		},
-		[buildMapsUrl],
+		[buildMapsUrl, flashCopy],
 	);
 
 	const jumpForwardRef = useHotkeyRef(jumpForwardKey);
 	const jumpBackwardRef = useHotkeyRef(jumpBackwardKey);
-	const jumpPending = useRef<Promise<void> | null>(null);
-
-	const jump = useCallback(
-		async (headingOffset: number) => {
-			await jumpPending.current;
-			const pos = panorama.getPosition();
-			if (!pos) return;
-			if (!google?.maps?.geometry) return;
-			const target = google.maps.geometry.spherical.computeOffset(
-				pos,
-				SV_JUMP_RADIUS,
-				panorama.getPov().heading + headingOffset,
-			);
-			try {
-				const loc = await lookupStreetView(target.lat(), target.lng(), 0, {
-					onlyOfficial: true,
-					radius: SV_JUMP_RADIUS,
-				});
-				if (!loc?.panoId) return;
-				if (loc.flags & LocationFlag.LoadAsPanoId) {
-					panorama.setPano(loc.panoId);
-				} else {
-					panorama.setPosition({ lat: loc.lat, lng: loc.lng });
-				}
-			} catch {
-				// no coverage found
-			} finally {
-				jumpPending.current = null;
-			}
-		},
-		[panorama],
-	);
-
-	const jumpForward = useCallback(() => {
-		jumpPending.current = jump(0);
-	}, [jump]);
-
-	const jumpBackward = useCallback(() => {
-		jumpPending.current = jump(180);
-	}, [jump]);
+	const jumpDistance = formatDistance(SV_JUMP_RADIUS, 0);
 
 	const takeScreenshot = useCallback(
 		async (download: boolean) => {
-			setScreenshotState("loading");
 			try {
-				const view = snapshotPanoView(panorama);
-				const blob = await canvasToBlob(await renderPanoView(view, 1920, 1080));
-				const copied = download ? false : await copyImageToClipboard(blob);
-				if (copied) {
-					toast(t("Screenshot copied"));
-				} else {
-					const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-					downloadBlob(blob, `${view.panoId}_${stamp}.png`);
-					toast(
-						download
-							? t("Screenshot downloaded")
-							: t("Clipboard unavailable, downloaded instead"),
-					);
-				}
-				setScreenshotState("done");
-				setTimeout(() => setScreenshotState("idle"), 500);
+				await flashScreenshot(async () => {
+					const view = pano.snapshot();
+					const blob = await canvasToBlob(await renderPanoView(view, 1920, 1080));
+					const copied = download ? false : await copyImageToClipboard(blob);
+					if (copied) {
+						toast(t("Screenshot copied"));
+					} else {
+						const stamp = fileTimestamp();
+						downloadBlob(blob, `${view.panoId}_${stamp}.png`);
+						toast(
+							download
+								? t("Screenshot downloaded")
+								: t("Clipboard unavailable, downloaded instead"),
+						);
+					}
+				});
 			} catch (error) {
 				log.warn("[pano-screenshot] capture failed", error);
-				setScreenshotState("idle");
 				toast(t("Screenshot failed"));
 			}
 		},
-		[panorama],
+		[pano, flashScreenshot],
 	);
 
 	return (
@@ -612,24 +407,14 @@ export const PanoControls = memo(function PanoControls({
 				>
 					{vis.showScreenshotButton && (
 						<div className="map-control map-control--button">
-							<Tooltip
-								content={t("Copy screenshot (Shift: download)")}
-								side="bottom"
-								align="end"
-							>
+							<Tooltip content={t("Copy screenshot (Shift: download)")} side="bottom" align="end">
 								<button
-									onClick={(e) => takeScreenshot(e.shiftKey)}
+									onClick={(e) => void takeScreenshot(e.shiftKey)}
 									disabled={screenshotState !== "idle"}
 									aria-label={t("Copy screenshot to clipboard")}
 									data-qa="pano-screenshot"
 								>
-									{screenshotState === "loading" ? (
-										<Icon path={mdiLoading} className="spin" />
-									) : screenshotState === "done" ? (
-										<Icon path={mdiCheck} />
-									) : (
-										<Icon path={mdiCameraOutline} />
-									)}
+									<FlashIcon state={screenshotState} icon={mdiCameraOutline} />
 								</button>
 							</Tooltip>
 						</div>
@@ -663,44 +448,54 @@ export const PanoControls = memo(function PanoControls({
 				>
 					<div className="map-control map-control--button">
 						<Tooltip
-							content={t("Jump forward 100 metres ({key})", { key: jumpForwardKey })}
+							content={t("Jump forward {distance} ({key})", {
+								distance: jumpDistance,
+								key: jumpForwardKey,
+							})}
 							side="left"
 						>
 							<button
 								ref={jumpForwardRef}
 								disabled={vis.defaultMovementMode !== "moving"}
-								onClick={jumpForward}
-								aria-label={t("Jump forward 100 metres ({key})", { key: jumpForwardKey })}
+								onClick={() => void pano.jumpAhead(0)}
+								aria-label={t("Jump forward {distance} ({key})", {
+									distance: jumpDistance,
+									key: jumpForwardKey,
+								})}
 							>
-								100m
+								{jumpDistance}
 							</button>
 						</Tooltip>
 						<Tooltip
-							content={t("Jump backward 100 metres ({key})", { key: jumpBackwardKey })}
+							content={t("Jump backward {distance} ({key})", {
+								distance: jumpDistance,
+								key: jumpBackwardKey,
+							})}
 							side="left"
 						>
 							<button
 								ref={jumpBackwardRef}
 								disabled={vis.defaultMovementMode !== "moving"}
-								onClick={jumpBackward}
-								aria-label={t("Jump backward 100 metres ({key})", { key: jumpBackwardKey })}
+								onClick={() => void pano.jumpAhead(180)}
+								aria-label={t("Jump backward {distance} ({key})", {
+									distance: jumpDistance,
+									key: jumpBackwardKey,
+								})}
 							>
-								-100m
+								-{jumpDistance}
 							</button>
 						</Tooltip>
 					</div>
 				</div>
 			)}
 
-			{vis.showCompass && <CompassControl panorama={panorama} />}
+			{vis.showCompass && <CompassControl />}
 
-			{vis.showCompassTape && <CompassTape panorama={panorama} />}
+			{vis.showCompassTape && <CompassTape />}
 
-			{vis.showZoom && <ZoomControl panorama={panorama} />}
+			{vis.showZoom && <ZoomControl />}
 
-			{vis.showReturnToSpawn && (
-				<ReturnToSpawnControl panorama={panorama} onReturnToSpawn={onReturnToSpawn} />
-			)}
+			{vis.showReturnToSpawn && <ReturnToSpawnControl onReturnToSpawn={onReturnToSpawn} />}
 
 			<div
 				className="embed-controls__control"
@@ -714,25 +509,19 @@ export const PanoControls = memo(function PanoControls({
 								<Icon path={mdiOpenInNew} />
 							</button>
 						</Tooltip>
-						<Tooltip content={t("Copy link - Shift: without tags, Alt: long URL")} side="right">
-							<button
-								onClick={(e) => doCopy({ long: e.altKey, noTags: e.shiftKey })}
-								aria-label={t("Copy link")}
-							>
-								{copyState === "loading" ? (
-									<Icon path={mdiLoading} className="spin" />
-								) : copyState === "done" ? (
-									<Icon path={mdiCheck} />
-								) : (
-									<Icon path={mdiContentCopy} />
-								)}
-							</button>
-						</Tooltip>
+						<IconButton
+							icon={<FlashIcon state={copyState} icon={mdiContentCopy} />}
+							label={t("Copy link")}
+							tooltip={t("Copy link - Shift: without tags, Alt: long URL")}
+							tooltipSide="right"
+							disabled={copyState !== "idle"}
+							onClick={(e) => void doCopy({ long: e.altKey, noTags: e.shiftKey })}
+						/>
 					</div>
 				)}
 			</div>
 
-			{vis.showCoordinateDisplay && <CoordinateControl panorama={panorama} />}
+			{vis.showCoordinateDisplay && <CoordinateControl />}
 
 			{vis.showPanoMetadata && <PanoMetadataControl />}
 		</div>

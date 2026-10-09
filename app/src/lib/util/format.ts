@@ -1,4 +1,7 @@
-import { getLocale, t } from "@/lib/i18n";
+import type { ExprError, KeySpec, StoreWarning } from "@/bindings.gen";
+import { getLocale, msg, t } from "@/lib/i18n";
+import { getSettings } from "@/store/settings";
+import { ERROR_CODES } from "@/bindings.consts";
 
 /** Product name -- never translated. */
 export const APP_NAME = "Map Making App";
@@ -30,15 +33,48 @@ export const dateTimeFmt = localeFormat<Date | number>(
 	(l) => new Intl.DateTimeFormat(l, { dateStyle: "medium", timeStyle: "short" }),
 );
 
+const regionFmt = localeFormat<string>((l) => {
+	const names = new Intl.DisplayNames([l], { type: "region" });
+	return {
+		format: (code) => {
+			try {
+				return names.of(code) ?? code;
+			} catch {
+				return code;
+			}
+		},
+	};
+});
+
+/** Localised country name for an ISO 3166-1 alpha-2 code; the code itself if unknown. */
+export function countryName(code: string): string {
+	return regionFmt.format(code);
+}
+
 // Fixed to UTC so the month index can't slip a boundary in a negative-offset zone.
 const monthFmt = localeFormat<Date | number>(
 	(l) => new Intl.DateTimeFormat(l, { month: "short", timeZone: "UTC" }),
+);
+const monthLongFmt = localeFormat<Date | number>(
+	(l) => new Intl.DateTimeFormat(l, { month: "long", timeZone: "UTC" }),
 );
 
 /** Localised short month name for a 0-based index. Display only -- `MONTHS` in `util/date`
  *  stays English because it also backs date *parsing*. */
 export function monthShort(index: number): string {
 	return monthFmt.format(Date.UTC(2000, index, 1));
+}
+
+/** Localised full month name for a 0-based index. */
+export function monthLong(index: number): string {
+	return monthLongFmt.format(Date.UTC(2000, index, 1));
+}
+
+/** The display label for a partition bucket key. Rust keys every group with a
+ *  locale-neutral token, so month-of-year ("01".."12") is named here. */
+export function partitionLabel(key: string, spec: KeySpec): string {
+	if (spec.kind === "datePart" && spec.part === "monthOfYear") return monthLong(Number(key) - 1);
+	return key;
 }
 
 /** Location timestamps are Unix seconds; JS Date wants milliseconds. */
@@ -60,14 +96,167 @@ export function utcDateTime(secs: number): string {
 	return new Date(secs * 1000).toISOString().slice(0, 16).replace("T", " ");
 }
 
-/** Current time as Unix seconds, the form Location timestamps use. */
-export function nowUnix(): number {
-	return Math.floor(Date.now() / 1000);
+// --- Distances ---
+
+/** Units a stored distance can be held in. Every distance in the app is stored in one of these. */
+export type MetricUnit = "m" | "km";
+export type DistanceUnit = MetricUnit | "ft" | "mi";
+
+/** The one table: what each unit is worth, what Intl calls it, and how it is labelled on a
+ *  field. `decimals` is what a value in that unit reads to when nothing overrides it. */
+const UNITS: Record<
+	DistanceUnit,
+	{ meters: number; intl: string; label: string; decimals: number }
+> = {
+	m: { meters: 1, intl: "meter", label: msg("m"), decimals: 0 },
+	km: { meters: 1000, intl: "kilometer", label: msg("km"), decimals: 2 },
+	ft: { meters: 0.3048, intl: "foot", label: msg("ft"), decimals: 0 },
+	mi: { meters: 1609.344, intl: "mile", label: msg("mi"), decimals: 2 },
+};
+
+/** The imperial unit each metric one becomes, small and large. */
+const IMPERIAL_OF: Record<MetricUnit, DistanceUnit> = { m: "ft", km: "mi" };
+
+/** A unit switches to the larger one of its system at a thousand of itself: 1000 m, 1000 ft. */
+const LARGE_AT = 1000;
+
+/** Regions that still measure road distance in miles (CLDR's `us`/`uk` measurement systems). */
+const IMPERIAL_REGIONS = new Set(["US", "GB", "LR", "MM"]);
+
+let inferredUnits: "metric" | "imperial" | null = null;
+
+/** The `auto` setting reads the *system* locale, not the app language: the language code
+ *  carries no region, and `maximize()` supplies CLDR's likely one for a bare tag. */
+function localeUnits(): "metric" | "imperial" {
+	try {
+		const region = new Intl.Locale(navigator.language).maximize().region;
+		return region && IMPERIAL_REGIONS.has(region) ? "imperial" : "metric";
+	} catch {
+		return "metric";
+	}
+}
+
+export function unitSystem(): "metric" | "imperial" {
+	const pref = getSettings().units;
+	if (pref !== "auto") return pref;
+	return (inferredUnits ??= localeUnits());
+}
+
+/** The unit a stored `base` value is shown in: itself under metric, its imperial twin otherwise. */
+function displayUnit(base: MetricUnit): DistanceUnit {
+	return unitSystem() === "imperial" ? IMPERIAL_OF[base] : base;
+}
+
+const unitFmts = new Map<string, { locale: string; formatter: Intl.NumberFormat }>();
+
+function unitFmt(unit: DistanceUnit, maximumFractionDigits: number): Intl.NumberFormat {
+	const key = `${unit}:${maximumFractionDigits}`;
+	const locale = getLocale();
+	let cached = unitFmts.get(key);
+	if (cached?.locale !== locale) {
+		cached = {
+			locale,
+			formatter: new Intl.NumberFormat(locale, {
+				style: "unit",
+				unit: UNITS[unit].intl,
+				maximumFractionDigits,
+			}),
+		};
+		unitFmts.set(key, cached);
+	}
+	return cached.formatter;
+}
+
+/** Every distance the UI displays, in the user's unit system: metres/feet up to a thousand of
+ *  them, kilometres/miles above. `maximumFractionDigits` overrides whichever unit the magnitude
+ *  picks; left alone each unit uses its own default. */
+export function formatDistance(meters: number, maximumFractionDigits?: number): string {
+	const small = displayUnit("m");
+	const unit = meters / UNITS[small].meters >= LARGE_AT ? displayUnit("km") : small;
+	return unitFmt(unit, maximumFractionDigits ?? UNITS[unit].decimals).format(
+		meters / UNITS[unit].meters,
+	);
+}
+
+export interface DistanceField {
+	unit: DistanceUnit;
+	/** Localised short label for the field ("m", "km", "ft", "mi"). */
+	label: string;
+	/** Stored metric value -> the number the field shows. */
+	toDisplay(value: number): number;
+	/** A number typed into the field -> the metric value to store. */
+	fromDisplay(value: number): number;
+}
+
+/** Fixed-unit conversion for a distance *input* whose stored value is in `base`. Unlike
+ *  {@link formatDistance} the unit never changes with magnitude, so the field keeps one label.
+ *  Only the displayed number is rounded -- the stored value keeps the exact conversion, so
+ *  re-displaying it gives back the number that was typed. */
+export function distanceUnit(base: MetricUnit): DistanceField {
+	const unit = displayUnit(base);
+	const perStored = UNITS[base].meters / UNITS[unit].meters;
+	const scale = 10 ** UNITS[unit].decimals;
+	return {
+		unit,
+		label: t(UNITS[unit].label),
+		toDisplay: (v) => Math.round(v * perStored * scale) / scale,
+		fromDisplay: (v) => v / perStored,
+	};
 }
 
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
+
+/** Human-readable byte count: KB below a mebibyte, MB below a gibibyte, GB above. */
+export function formatBytes(bytes: number): string {
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+type ErrorCode = (typeof ERROR_CODES)[number];
+
+/** The message each Rust error code reads as, given whatever detail followed it on the wire. */
+const CODE_MESSAGES: Record<ErrorCode, (detail: string) => string> = {
+	// The provider's own words, which Rust only stamped; there is nothing to translate.
+	auth: (d) => d,
+	"attachment-not-staged": () => t("That file was not staged for upload."),
+	"attachment-too-large": (d) =>
+		t("That image is too large ({limit} maximum).", { limit: formatBytes(Number(d)) }),
+	"attachment-not-image": () => t("That file is not a PNG, JPEG, GIF or WebP."),
+	"upload-rejected": (d) => t("The upload was rejected ({detail}).", { detail: d }),
+	"report-rejected": (d) => t("The report was rejected ({detail}).", { detail: d }),
+	"report-unreadable": (d) => t("Could not read the report ({status}).", { status: d }),
+	"sign-in-timed-out": () => t("Timed out waiting for GitHub sign-in."),
+	"sign-in-token-rejected": () => t("Signed in, but GitHub rejected the token."),
+	"issue-rejected": (d) => t("GitHub rejected the report: {detail}", { detail: d }),
+	"geoguessr-polygonal": () => t("This GeoGuessr map is polygonal and cannot be synced."),
+	"geoguessr-draft-too-large": (d) => {
+		const [stored, limit] = d.split(" ").map(Number);
+		return t("Too large for a GeoGuessr draft (stores as {size}; the limit is {limit}).", {
+			size: formatBytes(stored),
+			limit: formatBytes(limit),
+		});
+	},
+};
+
+/** Displayable message for a thrown value, resolving Rust's `<code>[: detail]` form. */
+export function errText(e: unknown): string {
+	const raw = e instanceof Error ? e.message : String(e);
+	const sep = raw.indexOf(": ");
+	const message = CODE_MESSAGES[(sep === -1 ? raw : raw.slice(0, sep)) as ErrorCode];
+	return message ? message(sep === -1 ? "" : raw.slice(sep + 2)) : raw;
+}
+
+/** Fill `{name}` placeholders from `vars`; an unknown placeholder is left as written. */
+export function fillTemplate(template: string, vars: Record<string, string>): string {
+	return template.replace(/\{(\w+)\}/g, (m, key: string) => vars[key] ?? m);
+}
+
+export function fileTimestamp(date: Date = new Date()): string {
+	return date.toISOString().slice(0, 19).replace(/[T:]/g, "-");
+}
 
 export function relativeTime(time: string | number): string {
 	const ms = typeof time === "number" ? time * 1000 : new Date(time).getTime();
@@ -77,4 +266,50 @@ export function relativeTime(time: string | number): string {
 	if (delta < DAY) return t("{n}h ago", { n: Math.floor(delta / HOUR) });
 	if (delta < 30 * DAY) return t("{n}d ago", { n: Math.floor(delta / DAY) });
 	return shortDateFmt.format(new Date(ms));
+}
+
+/** The message for a warning the store raised. */
+export function storeWarningText(warning: StoreWarning): string {
+	switch (warning.kind) {
+		case "deltaSetAside":
+			return t(
+				"Uncommitted changes could not be read and were set aside as a .corrupt file. The map opened from its last committed state.",
+			);
+	}
+}
+
+/** The message for a field-expression parse error. */
+export function exprErrorText(err: ExprError): string {
+	switch (err.kind) {
+		case "invalidNumber":
+			return t("Invalid number at position {position}", { position: err.position });
+		case "unterminatedString":
+			return t("Unterminated string");
+		case "unexpectedCharacter":
+			return t('Unexpected character "{character}" at position {position}', {
+				character: err.character,
+				position: err.position,
+			});
+		case "expectedSymbol":
+			return t('Expected "{symbol}"', { symbol: err.symbol });
+		case "chainedComparison":
+			return t("Comparisons do not chain; use parentheses");
+		case "unexpectedEnd":
+			return t("Unexpected end of expression");
+		case "missingLeftOperand":
+			return t("Expected a value before the comparison");
+		case "hasTakesFieldName":
+			return t("has() takes a field name");
+		case "unknownFunction":
+			return t('Unknown function "{name}"', { name: err.name });
+		case "wrongArgCount":
+			return t(
+				{ one: "{name}() takes {n} argument", other: "{name}() takes {n} arguments" },
+				{ name: err.name, n: err.expected },
+			);
+		case "unexpectedToken":
+			return t('Unexpected "{token}"', { token: err.token });
+		case "trailingToken":
+			return t('Unexpected "{token}" after expression', { token: err.token });
+	}
 }

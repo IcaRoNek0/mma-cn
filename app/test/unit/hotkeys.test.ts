@@ -4,7 +4,9 @@ import {
 	parseHotkey,
 	matchesKey,
 	buildComboString,
+	formatBinding,
 	firesInEditable,
+	isActivationElement,
 	blockBrowserAccelerators,
 } from "@/lib/hooks/useHotkey";
 import {
@@ -128,6 +130,24 @@ describe("matchesKey", () => {
 		expect(matchesKey(mockEvent({ key: "!", code: "Digit1", shiftKey: true }), combo)).toBe(false);
 		expect(matchesKey(mockEvent({ key: "1", code: "Digit1", shiftKey: false }), combo)).toBe(true);
 	});
+
+	it("matches a letter typed in a non-Latin layout by its US position", () => {
+		const [w] = parseHotkey("w")[0];
+		expect(matchesKey(mockEvent({ key: "ц", code: "KeyW" }), w)).toBe(true);
+		expect(matchesKey(mockEvent({ key: "Ц", code: "KeyW", shiftKey: true }), w)).toBe(false);
+		const [shiftW] = parseHotkey("Shift+w")[0];
+		expect(matchesKey(mockEvent({ key: "Ц", code: "KeyW", shiftKey: true }), shiftW)).toBe(true);
+		const [period] = parseHotkey(".")[0];
+		expect(matchesKey(mockEvent({ key: "ю", code: "Period" }), period)).toBe(true);
+	});
+
+	it("keeps matching Latin layouts by the letter they type", () => {
+		const [q] = parseHotkey("q")[0];
+		expect(matchesKey(mockEvent({ key: "q", code: "KeyA" }), q)).toBe(true);
+		expect(matchesKey(mockEvent({ key: "a", code: "KeyA" }), q)).toBe(false);
+		const [umlaut] = parseHotkey("ö")[0];
+		expect(matchesKey(mockEvent({ key: "ö", code: "Semicolon" }), umlaut)).toBe(true);
+	});
 });
 
 describe("buildComboString", () => {
@@ -149,8 +169,48 @@ describe("buildComboString", () => {
 		);
 	});
 
+	it('names the comma, which a raw "," would split as an alternative', () => {
+		expect(buildComboString(mockEvent({ key: ",", ctrlKey: true }))).toBe("Mod+comma");
+		const [[pk]] = parseHotkey("Mod+comma");
+		expect(pk.key).toBe(",");
+		expect(matchesKey(mockEvent({ key: ",", ctrlKey: true }), pk)).toBe(true);
+		expect(parseHotkey("Mod+comma")).toHaveLength(1);
+	});
+
 	it("records a plain digit as itself", () => {
 		expect(buildComboString(mockEvent({ key: "0", code: "Digit0" }))).toBe("0");
+	});
+
+	it("records a non-Latin letter by its US position", () => {
+		expect(buildComboString(mockEvent({ key: "ц", code: "KeyW" }))).toBe("w");
+		expect(buildComboString(mockEvent({ key: "б", code: "Comma", ctrlKey: true }))).toBe(
+			"Mod+comma",
+		);
+	});
+});
+
+describe("formatBinding", () => {
+	const cases: [string, string, string][] = [
+		["Mod+k", "Ctrl+K", "⌘K"],
+		["Mod+Shift+ArrowLeft", "Ctrl+Shift+Left", "⌘⇧←"],
+		["Alt+ArrowUp", "Alt+Up", "⌥↑"],
+		["Ctrl+a", "Ctrl+A", "⌃A"],
+		["Meta+x", "Meta+X", "⌘X"],
+		["Mod+comma", "Ctrl+,", "⌘,"],
+		["Mod++", "Ctrl++", "⌘+"],
+		["plus", "+", "+"],
+		["Shift+space", "Shift+Space", "⇧Space"],
+		["F5", "F5", "F5"],
+		["g g", "G G", "G G"],
+		["Mod+s,Mod+Shift+s", "Ctrl+S, Ctrl+Shift+S", "⌘S, ⌘⇧S"],
+	];
+
+	it.each(cases)("%s reads as words off Mac", (binding, words) => {
+		expect(formatBinding(binding, false)).toBe(words);
+	});
+
+	it.each(cases)("%s reads as glyphs on Mac", (binding, _words, glyphs) => {
+		expect(formatBinding(binding, true)).toBe(glyphs);
 	});
 });
 
@@ -319,5 +379,26 @@ describe("blockBrowserAccelerators", () => {
 		expect(press({ key: "R", ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(true);
 		expect(press({ key: "p", ctrlKey: true }).defaultPrevented).toBe(true);
 		expect(press({ key: "j" }).defaultPrevented).toBe(false);
+	});
+});
+
+describe("isActivationElement", () => {
+	function el(html: string): HTMLElement {
+		const doc = new DOMParser().parseFromString(html, "text/html");
+		return doc.body.firstElementChild as HTMLElement;
+	}
+
+	it("claims Enter for controls that activate on it", () => {
+		expect(isActivationElement(el("<button>x</button>"))).toBe(true);
+		expect(isActivationElement(el('<a href="#">x</a>'))).toBe(true);
+		expect(isActivationElement(el('<div role="button">x</div>'))).toBe(true);
+		expect(isActivationElement(el('<div role="menuitem">x</div>'))).toBe(true);
+	});
+
+	it("leaves Enter alone everywhere else", () => {
+		expect(isActivationElement(el("<div>x</div>"))).toBe(false);
+		expect(isActivationElement(el("<a>x</a>"))).toBe(false);
+		expect(isActivationElement(el('<input type="text" />'))).toBe(false);
+		expect(isActivationElement(null)).toBe(false);
 	});
 });

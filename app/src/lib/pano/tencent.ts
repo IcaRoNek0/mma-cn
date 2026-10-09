@@ -197,7 +197,10 @@ function tencentTimeline(data: TencentMetadataResponse, source: PanoSource): Pan
 }
 
 export class TencentPanoramaProvider implements PanoramaProvider {
-	constructor(readonly source: "qq_pano" | "qq_trekker" = "qq_pano") {}
+	readonly source: "qq_pano" | "qq_trekker";
+	constructor(source: "qq_pano" | "qq_trekker" = "qq_pano") {
+		this.source = source;
+	}
 
 	async findNearest(
 		point: GcjPoint,

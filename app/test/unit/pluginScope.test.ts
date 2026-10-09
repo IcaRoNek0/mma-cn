@@ -1,10 +1,12 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import { act, createElement } from "react";
 
-vi.mock("@/lib/util/log", () => ({
-	log: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
-}));
+vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 
 import { runAsPlugin, trackDisposable, disposePlugin } from "@/plugins/scope";
+import { on, definePluginEvent, emitPluginEvent, usePluginEvent } from "@/plugins/pluginEvents";
+import { mount } from "./fixtures/harness";
 
 describe("plugin scope (ownership + disposables)", () => {
 	it("disposes an owner's tracked callbacks in reverse order", () => {
@@ -52,5 +54,57 @@ describe("plugin scope (ownership + disposables)", () => {
 		});
 		expect(() => disposePlugin("e")).not.toThrow();
 		expect(ok).toHaveBeenCalledOnce();
+	});
+});
+
+describe("plugin events", () => {
+	const changed = definePluginEvent("p", "changed");
+
+	it("are named for the plugin that defines them", () => {
+		expect(String(changed)).toBe("plugin:p:changed");
+	});
+
+	it("reach the plugin's own listeners until it deactivates", () => {
+		const heard = vi.fn();
+		runAsPlugin("p", () => on(changed, heard));
+
+		emitPluginEvent(changed);
+		emitPluginEvent(definePluginEvent("other", "changed"));
+		expect(heard).toHaveBeenCalledOnce();
+
+		disposePlugin("p");
+		emitPluginEvent(changed);
+		expect(heard).toHaveBeenCalledOnce();
+	});
+
+	it("hand their payload to listeners", () => {
+		const counted = definePluginEvent<number>("p", "counted");
+		const heard: number[] = [];
+		const off = on(counted, (n) => {
+			heard.push(n);
+		});
+
+		emitPluginEvent(counted, 7);
+		off();
+		expect(heard).toEqual([7]);
+		// @ts-expect-error an event that carries a payload is raised with one
+		emitPluginEvent(counted);
+	});
+
+	it("usePluginEvent reads again each time the event is raised", () => {
+		let value = 1;
+		function Probe() {
+			return createElement(
+				"output",
+				null,
+				usePluginEvent(changed, () => value),
+			);
+		}
+		const m = mount(createElement(Probe));
+		expect(m.container.textContent).toBe("1");
+
+		value = 2;
+		act(() => emitPluginEvent(changed));
+		expect(m.container.textContent).toBe("2");
 	});
 });

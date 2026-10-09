@@ -1,35 +1,122 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { Sidebar, Section, Field, EmptyState } from "@/components/primitives/Sidebar";
+import { Sidebar, Section, Field } from "@/components/primitives/Sidebar";
+import { EmptyState } from "@/components/primitives/EmptyState";
+import { Notice } from "@/components/primitives/Hint";
 import { Tooltip } from "@/components/primitives/Tooltip";
+import { Spinner } from "@/components/primitives/Spinner";
 import { SuggestInput } from "@/components/primitives/SuggestInput";
+import { TextInput } from "@/components/primitives/TextInput";
 import { Icon } from "@/components/primitives/Icon";
 import { mdiInformationOutline } from "@mdi/js";
-import type { Conflict, FirstSyncMode, NormalizedSyncLocation } from "@/bindings.gen";
+import type { Conflict, NormalizedSyncLocation, SideCounts, SyncLogEntry } from "@/bindings.gen";
+import { SyncDirection, type FirstSyncMode, type SyncTrigger } from "@/bindings.consts";
 import type { SyncController } from "../controller";
 import type { SyncOutcome } from "../engine";
 import type { RemoteMapSummary } from "../provider";
 import type { SyncStatus } from "../scheduler";
-import { errText } from "@/lib/util/util";
-import { t, msg, getLocale } from "@/lib/i18n";
+import { errText } from "@/lib/util/format";
+import { t, msg } from "@/lib/i18n";
+import { matches } from "@/lib/search";
+import { dateTimeFmt } from "@/lib/util/format";
+import { Button } from "@/components/primitives/Button";
+import { IconButton } from "@/components/primitives/IconButton";
 
 type Side = "local" | "remote";
 
 export interface SyncSidebarProps {
 	onClose: () => void;
 	controller: SyncController;
-	/** Rendered in the Connection section: the provider's own auth affordance. */
-	auth: ReactNode;
+	/** Rendered in the Connection section: the provider's own auth affordance. A provider
+	 *  with no account to connect omits it, and the section with it. */
+	auth?: ReactNode;
 	/**
 	 * `undefined` while the provider is still working out whether it has a session, `null` once
 	 * it knows there is none. The distinction matters: treating "not yet known" as "signed out"
 	 * flashes the whole sign-in UI for a moment on every open.
 	 */
 	identity: { id: string | null } | null | undefined;
-	/** Fetch linkable remote maps. Called when authenticated and unlinked. */
-	listMaps: () => Promise<RemoteMapSummary[]>;
-	/** Provider mark for the header's open-in-browser button (shown when linked). */
-	brand?: { path: string; color: string };
+	source: LinkSource;
+}
+
+/** How the user picks what to link: a map from the provider's list, or an address they give. */
+export type LinkSource =
+	| {
+			kind: "list";
+			/** Fetch linkable remote maps. Called when authenticated and unlinked. */
+			listMaps: () => Promise<RemoteMapSummary[]>;
+			/** Create an empty remote map named `name`, to link to. */
+			createMap?: (name: string) => Promise<RemoteMapSummary>;
+	  }
+	| {
+			kind: "address";
+			placeholder: string;
+			/** Pick an address with a native dialog; null when cancelled. */
+			browse: () => Promise<string | null>;
+			/** Read what is at an address, to link to it. */
+			resolve: (address: string) => Promise<RemoteMapSummary>;
+	  };
+
+function AddressPicker({
+	source,
+	busy,
+	onPick,
+}: {
+	source: Extract<LinkSource, { kind: "address" }>;
+	busy: boolean;
+	onPick: (m: RemoteMapSummary) => void;
+}) {
+	const [address, setAddress] = useState("");
+	const [reading, setReading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const read = async (value: string) => {
+		const trimmed = value.trim();
+		if (!trimmed) return;
+		setReading(true);
+		setError(null);
+		try {
+			onPick(await source.resolve(trimmed));
+		} catch (e) {
+			setError(errText(e));
+		} finally {
+			setReading(false);
+		}
+	};
+
+	const browse = async () => {
+		const picked = await source.browse();
+		if (picked) {
+			setAddress(picked);
+			await read(picked);
+		}
+	};
+
+	return (
+		<Field label={t("Map file")}>
+			<div style={{ display: "flex", gap: 8 }}>
+				<TextInput
+					style={{ flex: 1 }}
+					value={address}
+					placeholder={source.placeholder}
+					disabled={busy || reading}
+					onChange={(e) => setAddress(e.target.value)}
+					onKeyDown={(e) => e.key === "Enter" && void read(address)}
+				/>
+				<Button disabled={busy || reading} onClick={() => void browse()}>
+					{t("Browse")}
+				</Button>
+			</div>
+			<Button
+				variant="primary"
+				disabled={busy || reading || !address.trim()}
+				onClick={() => void read(address)}
+			>
+				{reading ? t("Reading...") : t("Link")}
+			</Button>
+			{error && <Notice tone="error">{error}</Notice>}
+		</Field>
+	);
 }
 
 /** Compact signed-in row for the Connection section: avatar (or initial), name, action. */
@@ -54,34 +141,11 @@ export function ConnectionUser({
 					onError={(e) => (e.currentTarget.style.display = "none")}
 				/>
 			) : (
-				<span
-					aria-hidden
-					style={{
-						width: 24,
-						height: 24,
-						borderRadius: "50%",
-						background: "var(--surface-3, rgba(128,128,128,0.25))",
-						display: "inline-flex",
-						alignItems: "center",
-						justifyContent: "center",
-						fontSize: 12,
-						flexShrink: 0,
-					}}
-				>
+				<span aria-hidden className="sync-user__initial">
 					{name.slice(0, 1).toUpperCase()}
 				</span>
 			)}
-			<span
-				style={{
-					flex: 1,
-					minWidth: 0,
-					overflow: "hidden",
-					textOverflow: "ellipsis",
-					whiteSpace: "nowrap",
-				}}
-			>
-				{name}
-			</span>
+			<span className="sync-user__name truncate">{name}</span>
 			{action}
 		</div>
 	);
@@ -92,6 +156,88 @@ const CONFLICT_LABEL: Record<Conflict["kind"], string> = {
 	"delete-update": msg("Deleted on one side, edited on the other"),
 	"add-add": msg("Both sides added"),
 };
+
+/** One line for what a pass changed on each side. */
+function passSummary(
+	r: { pushed: SideCounts; pulled: SideCounts; adopted: number; conflicts: number },
+	pullOnly: boolean,
+): string {
+	const counts = pullOnly
+		? t("Pulled +{lc} ~{lu} -{ld}", {
+				lc: r.pulled.create,
+				lu: r.pulled.update,
+				ld: r.pulled.delete,
+			})
+		: t("Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}", {
+				pc: r.pushed.create,
+				pu: r.pushed.update,
+				pd: r.pushed.delete,
+				lc: r.pulled.create,
+				lu: r.pulled.update,
+				ld: r.pulled.delete,
+			});
+	const adopted = r.adopted ? " · " + t("Adopted {n}", { n: r.adopted }) : "";
+	const conflicts = r.conflicts
+		? " · " +
+			t(
+				{ one: "{n} conflict held for review", other: "{n} conflicts held for review" },
+				{ n: r.conflicts },
+			)
+		: "";
+	return counts + adopted + conflicts;
+}
+
+const TRIGGER_LABEL: Record<SyncTrigger, string> = {
+	manual: msg("Sync now"),
+	live: msg("Live"),
+	link: msg("Linked"),
+	resolve: msg("Conflicts resolved"),
+};
+
+/** The map's recorded sync passes with this provider, newest first. */
+function SyncHistory({
+	controller,
+	mapId,
+	pullOnly,
+}: {
+	controller: SyncController;
+	mapId: string;
+	pullOnly: boolean;
+}) {
+	const [entries, setEntries] = useState<SyncLogEntry[]>([]);
+	useEffect(() => {
+		let live = true;
+		const load = () =>
+			void controller
+				.history()
+				.then((e) => live && setEntries(e))
+				.catch(() => live && setEntries([]));
+		load();
+		const off = controller.onHistory(load);
+		return () => {
+			live = false;
+			off();
+		};
+	}, [controller, mapId]);
+
+	if (entries.length === 0) return null;
+	return (
+		<Section title={t("History")} defaultOpen={false}>
+			<ul className="sync-history">
+				{entries.map((e) => (
+					<li key={`${e.startedAt}:${e.trigger}`}>
+						<span className="text-muted">
+							{dateTimeFmt.format(new Date(e.startedAt))} · {t(TRIGGER_LABEL[e.trigger])}
+						</span>
+						<div className={e.result.kind === "error" ? "sync-history__error" : undefined}>
+							{e.result.kind === "ok" ? passSummary(e.result, pullOnly) : errText(e.result.message)}
+						</div>
+					</li>
+				))}
+			</ul>
+		</Section>
+	);
+}
 
 const coord = (n: NormalizedSyncLocation): string => `${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
 
@@ -106,6 +252,7 @@ const FIELD_TEXT: {
 	panoId: (v) => v ?? "none",
 	flags: (v) => String(v),
 	tags: (v) => (v.length ? v.join(", ") : "none"),
+	extra: (v) => (v ? JSON.stringify(v) : "none"),
 };
 
 const FIELDS = Object.keys(FIELD_TEXT) as (keyof NormalizedSyncLocation)[];
@@ -140,14 +287,14 @@ function ConflictItem({
 
 	return (
 		<div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
-			<span className="mma-input__help">
+			<span>
 				{t(CONFLICT_LABEL[conflict.kind])}
 				{known ? ` · ${coord(known)}` : ""}
 			</span>
-			{!local && <span className="mma-input__help">{t("Deleted here")}</span>}
-			{!remote && <span className="mma-input__help">{t("Deleted on the remote")}</span>}
+			{!local && <span>{t("Deleted here")}</span>}
+			{!remote && <span>{t("Deleted on the remote")}</span>}
 			{diffs.map((d) => (
-				<span className="mma-input__help" key={d.field}>
+				<span key={d.field}>
 					{t("{field}: local {local} · remote {remote}", {
 						field: d.field,
 						local: String(d.local),
@@ -156,25 +303,19 @@ function ConflictItem({
 				</span>
 			))}
 			<div style={{ display: "flex", gap: 8 }}>
-				<button className="button" disabled={busy} onClick={() => onResolve("local")}>
+				<Button disabled={busy} onClick={() => onResolve("local")}>
 					{t("Keep local")}
-				</button>
-				<button className="button" disabled={busy} onClick={() => onResolve("remote")}>
+				</Button>
+				<Button disabled={busy} onClick={() => onResolve("remote")}>
 					{t("Keep remote")}
-				</button>
+				</Button>
 			</div>
 		</div>
 	);
 }
 
-export function SyncSidebar({
-	onClose,
-	controller,
-	auth,
-	identity,
-	listMaps,
-	brand,
-}: SyncSidebarProps) {
+export function SyncSidebar({ onClose, controller, auth, identity, source }: SyncSidebarProps) {
+	const icon = controller.provider.icon;
 	const [maps, setMaps] = useState<RemoteMapSummary[] | null>(null);
 	const [filter, setFilter] = useState("");
 	const [link, setLink] = useState(controller.getLink());
@@ -186,6 +327,7 @@ export function SyncSidebar({
 	const [pendingLink, setPendingLink] = useState<RemoteMapSummary | null>(null);
 
 	const mapId = controller.currentMapId();
+	const pullOnly = controller.direction === SyncDirection.PullOnly;
 	const checking = identity === undefined;
 	const authed = !checking && identity !== null;
 
@@ -203,17 +345,18 @@ export function SyncSidebar({
 	);
 
 	// The prop is typically an inline arrow, so it can't be an effect dep.
+	const listMaps = source.kind === "list" ? source.listMaps : null;
 	const fetchMaps = useRef(listMaps);
 	fetchMaps.current = listMaps;
 	const [mapsAttempt, setMapsAttempt] = useState(0);
 
 	useEffect(() => {
-		if (!authed || !mapId || link) return;
+		const list = fetchMaps.current;
+		if (!list || !authed || !mapId || link) return;
 		let cancelled = false;
 		setMaps(null);
 		setError(null);
-		fetchMaps
-			.current()
+		list()
 			.then((m) => !cancelled && setMaps(m))
 			.catch((e: unknown) => !cancelled && setError(errText(e)));
 		return () => {
@@ -258,6 +401,21 @@ export function SyncSidebar({
 		},
 		[controller, performLink],
 	);
+
+	const createMap = source.kind === "list" ? source.createMap : undefined;
+	const doCreate = useCallback(async () => {
+		if (!createMap) return;
+		setBusy(true);
+		setError(null);
+		const created = await createMap(window.MMA.getMapState().map?.name ?? "").catch(
+			(e: unknown) => {
+				setError(errText(e));
+				return null;
+			},
+		);
+		setBusy(false);
+		if (created) doLink(created);
+	}, [createMap, doLink]);
 
 	const doSync = useCallback(async () => {
 		setBusy(true);
@@ -315,8 +473,8 @@ export function SyncSidebar({
 
 	const shown = useMemo(() => {
 		if (!maps) return [];
-		const f = filter.trim().toLowerCase();
-		const list = f ? maps.filter((m) => m.name.toLowerCase().includes(f) || m.id === f) : maps;
+		const f = filter.trim();
+		const list = f ? maps.filter((m) => matches(f, m.name) || m.id === f) : maps;
 		return list.slice(0, 25);
 	}, [maps, filter]);
 
@@ -327,37 +485,34 @@ export function SyncSidebar({
 			title={controller.provider.label}
 			onBack={onClose}
 			actions={
-				brand && remoteUrl ? (
-					<Tooltip content={t("Open in {provider}", { provider: controller.provider.label })}>
-						<button
-							className="icon-button"
-							type="button"
-							aria-label={t("Open in {provider}", { provider: controller.provider.label })}
-							onClick={() => void openExternal(remoteUrl)}
-						>
-							<Icon path={brand.path} size={18} style={{ fill: brand.color }} />
-						</button>
-					</Tooltip>
+				icon && remoteUrl ? (
+					<IconButton
+						icon={<Icon path={icon} size={18} style={{ fill: "var(--accent)" }} />}
+						label={t("Open in {provider}", { provider: controller.provider.label })}
+						onClick={() => void openExternal(remoteUrl)}
+					/>
 				) : undefined
 			}
 		>
-			<Section title={t("Connection")} defaultOpen>
-				{/* 2rem is the button height both auth states resolve to, so the swap does not shift. */}
-				{checking ? (
-					<div
-						style={{
-							display: "flex",
-							alignItems: "center",
-							justifyContent: "center",
-							minHeight: "2rem",
-						}}
-					>
-						<span className="spinner" aria-label={t("Checking connection")} />
-					</div>
-				) : (
-					auth
-				)}
-			</Section>
+			{(checking || auth != null) && (
+				<Section title={t("Connection")} defaultOpen>
+					{/* 2rem is the button height both auth states resolve to, so the swap does not shift. */}
+					{checking ? (
+						<div
+							style={{
+								display: "flex",
+								alignItems: "center",
+								justifyContent: "center",
+								minHeight: "2rem",
+							}}
+						>
+							<Spinner label={t("Checking connection")} />
+						</div>
+					) : (
+						auth
+					)}
+				</Section>
+			)}
 
 			{authed && !mapId && <EmptyState>{t("Open a map to link it.")}</EmptyState>}
 
@@ -367,14 +522,12 @@ export function SyncSidebar({
 					<Field label={t("Linked to")} row>
 						<span>
 							{link.remoteMapName || t("(unnamed)")}{" "}
-							<span style={{ opacity: 0.6 }}>#{link.remoteMapId}</span>
+							<span className="text-muted">#{link.remoteMapId}</span>
 						</span>
 					</Field>
 					<Field label={t("Last synced")} row>
 						<span>
-							{link.lastSyncedAt
-								? new Date(link.lastSyncedAt).toLocaleString(getLocale())
-								: t("never")}
+							{link.lastSyncedAt ? dateTimeFmt.format(new Date(link.lastSyncedAt)) : t("never")}
 						</span>
 					</Field>
 					<Field
@@ -406,7 +559,7 @@ export function SyncSidebar({
 									borderRadius: "50%",
 									background:
 										status === "error"
-											? "var(--red-9, #e5484d)"
+											? "var(--destructive-text)"
 											: status === "syncing"
 												? "currentColor"
 												: "transparent",
@@ -420,50 +573,28 @@ export function SyncSidebar({
 					</Field>
 					<div style={{ display: "flex", gap: 8 }}>
 						{/* Driven by `busy` alone; the background poll must not drive this label. */}
-						<button className="button button--primary" disabled={busy} onClick={doSync}>
+						<Button variant="primary" disabled={busy} onClick={() => void doSync()}>
 							{busy ? t("Syncing...") : t("Sync now")}
-						</button>
-						<button className="button" disabled={busy} onClick={doUnlink}>
+						</Button>
+						<Button disabled={busy} onClick={() => void doUnlink()}>
 							{t("Unlink")}
-						</button>
+						</Button>
 					</div>
 					{status === "error" && controller.liveError() && (
-						<p className="mma-input__help" style={{ color: "var(--red-9, #e5484d)" }}>
-							{controller.liveError()}
-						</p>
+						<Notice tone="error">{controller.liveError()}</Notice>
 					)}
 					{outcome && (
-						<p className="mma-input__help">
-							{t("Pushed +{pc} ~{pu} -{pd} · Pulled +{lc} ~{lu} -{ld}", {
-								pc: outcome.pushed.create,
-								pu: outcome.pushed.update,
-								pd: outcome.pushed.delete,
-								lc: outcome.pulled.create,
-								lu: outcome.pulled.update,
-								ld: outcome.pulled.delete,
-							})}
-							{outcome.adopted ? " · " + t("Adopted {n}", { n: outcome.adopted }) : ""}
-							{outcome.conflicts.length
-								? " · " +
-									t(
-										{
-											one: "{n} conflict held for review",
-											other: "{n} conflicts held for review",
-										},
-										{ n: outcome.conflicts.length },
-									)
-								: ""}
-						</p>
+						<p>{passSummary({ ...outcome, conflicts: outcome.conflicts.length }, pullOnly)}</p>
 					)}
 					{outcome && outcome.conflicts.length > 0 && (
 						<>
 							<div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-								<button className="button" disabled={busy} onClick={() => resolveAll("local")}>
+								<Button disabled={busy} onClick={() => resolveAll("local")}>
 									{t("Keep local for all")}
-								</button>
-								<button className="button" disabled={busy} onClick={() => resolveAll("remote")}>
+								</Button>
+								<Button disabled={busy} onClick={() => resolveAll("remote")}>
 									{t("Keep remote for all")}
-								</button>
+								</Button>
 							</div>
 							{outcome.conflicts.map((c) => (
 								<ConflictItem
@@ -480,55 +611,62 @@ export function SyncSidebar({
 
 			{authed && mapId && !link && !pendingLink && (
 				<Section title={t("Link this map")} defaultOpen>
-					{!maps && error ? (
-						<button className="button" onClick={() => setMapsAttempt((n) => n + 1)}>
-							{t("Retry loading maps")}
-						</button>
+					{source.kind === "address" ? (
+						<AddressPicker source={source} busy={busy} onPick={doLink} />
+					) : !maps && error ? (
+						<Button onClick={() => setMapsAttempt((n) => n + 1)}>{t("Retry loading maps")}</Button>
 					) : !maps ? (
 						<div style={{ display: "flex", justifyContent: "center", padding: "0.5rem 0" }}>
-							<span className="spinner" aria-label={t("Loading maps")} />
+							<Spinner label={t("Loading maps")} />
 						</div>
 					) : (
-						<Field label={t("Find a remote map")}>
-							<SuggestInput
-								// Portalled: the sidebar clips overflow, so an inline dropdown is both cut
-								// off and forced to grow the section instead of floating over it.
-								portal
-								listStyle={{ maxHeight: "40vh", overflowY: "auto" }}
-								value={filter}
-								onChange={setFilter}
-								suggestions={shown}
-								getKey={(m) => m.id}
-								onPick={(m) => !m.unsupported && doLink(m)}
-								disabled={busy}
-								placeholder={t(
-									{ one: "Search {n} map", other: "Search {n} maps" },
-									{ n: maps.length },
-								)}
-								renderItem={(m) => (
-									<span
-										style={{
-											display: "flex",
-											justifyContent: "space-between",
-											gap: 8,
-											opacity: m.unsupported ? 0.5 : 1,
-										}}
-									>
-										<span>{m.name || t("(unnamed)")}</span>
-										<span style={{ opacity: 0.6, whiteSpace: "nowrap" }}>
-											{m.unsupported ?? (m.locationCount !== null ? m.locationCount : "")}
+						<>
+							<Field label={t("Find a remote map")}>
+								<SuggestInput
+									// Portalled: the sidebar clips overflow, so an inline dropdown is both cut
+									// off and forced to grow the section instead of floating over it.
+									portal
+									listStyle={{ maxHeight: "40vh", overflowY: "auto" }}
+									value={filter}
+									onChange={setFilter}
+									suggestions={shown}
+									getKey={(m) => m.id}
+									onPick={(m) => !m.unsupported && doLink(m)}
+									disabled={busy}
+									placeholder={t(
+										{ one: "Search {n} map", other: "Search {n} maps" },
+										{ n: maps.length },
+									)}
+									renderItem={(m) => (
+										<span
+											style={{
+												display: "flex",
+												justifyContent: "space-between",
+												gap: 8,
+												opacity: m.unsupported ? 0.5 : 1,
+											}}
+										>
+											<span>{m.name || t("(unnamed)")}</span>
+											<span className="text-muted" style={{ whiteSpace: "nowrap" }}>
+												{m.unsupported ?? (m.locationCount !== null ? m.locationCount : "")}
+											</span>
 										</span>
-									</span>
-								)}
-							/>
-						</Field>
+									)}
+								/>
+							</Field>
+							{createMap && (
+								<Button onClick={() => void doCreate()} disabled={busy}>
+									{t("Create a new remote map from this one")}
+								</Button>
+							)}
+						</>
 					)}
 				</Section>
 			)}
 
 			{authed && mapId && !link && pendingLink && (
 				<Section title={t("First sync")} defaultOpen>
-					<p className="mma-input__help">
+					<p>
 						{t(
 							'This map ({local}) and "{name}" ({remote}) may both already have locations. How should the first sync go?',
 							{
@@ -538,41 +676,39 @@ export function SyncSidebar({
 							},
 						)}
 					</p>
-					<button
-						className="button button--primary"
+					<Button
+						variant="primary"
 						disabled={busy}
 						style={{ display: "block", width: "100%", textAlign: "left" }}
-						onClick={() => performLink(pendingLink, "merge")}
+						onClick={() => void performLink(pendingLink, "merge")}
 					>
 						{t("Merge · keep everything on both sides")}
-					</button>
-					<button
-						className="button"
+					</Button>
+					<Button
 						disabled={busy}
 						style={{ display: "block", width: "100%", textAlign: "left" }}
-						onClick={() => performLink(pendingLink, "mirrorFromRemote")}
+						onClick={() => void performLink(pendingLink, "mirrorFromRemote")}
 					>
 						{t("Use remote · delete local-only pins")}
-					</button>
-					<button
-						className="button"
-						disabled={busy}
-						style={{ display: "block", width: "100%", textAlign: "left" }}
-						onClick={() => performLink(pendingLink, "mirrorFromLocal")}
-					>
-						{t("Use local · delete remote-only pins")}
-					</button>
-					<button className="button" disabled={busy} onClick={() => setPendingLink(null)}>
+					</Button>
+					{!pullOnly && (
+						<Button
+							disabled={busy}
+							style={{ display: "block", width: "100%", textAlign: "left" }}
+							onClick={() => void performLink(pendingLink, "mirrorFromLocal")}
+						>
+							{t("Use local · delete remote-only pins")}
+						</Button>
+					)}
+					<Button disabled={busy} onClick={() => setPendingLink(null)}>
 						{t("Cancel")}
-					</button>
+					</Button>
 				</Section>
 			)}
 
-			{error && (
-				<p className="mma-input__help" style={{ color: "var(--red-9, #e5484d)" }}>
-					{error}
-				</p>
-			)}
+			{mapId && <SyncHistory controller={controller} mapId={mapId} pullOnly={pullOnly} />}
+
+			{error && <Notice tone="error">{error}</Notice>}
 		</Sidebar>
 	);
 }

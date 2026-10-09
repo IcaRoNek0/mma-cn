@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { addClickInterceptor } from "@/lib/map/mapState";
 import { getBinding } from "@/lib/util/hotkeys";
 import type { HotkeyAction } from "@/lib/util/hotkeys";
-import { parseHotkey, matchesKey, isEditableElement } from "@/lib/hooks/useHotkey";
+import { parseHotkey, matchesKey, eventKey, isEditableElement } from "@/lib/hooks/useHotkey";
 
 /** Hold a single-key hotkey to arm a crosshair, then a map click runs `onClick`
  *  (consuming the click so it never falls through to the default map handler).
@@ -42,7 +42,7 @@ export function useHeldHotkeyClick(
 			const binding = getBinding(action);
 			if (!binding) return;
 			for (const alt of parseHotkey(binding)) {
-				if (alt.length === 1 && e.key.toLowerCase() === alt[0].key) {
+				if (alt.length === 1 && eventKey(e).toLowerCase() === alt[0].key) {
 					held = false;
 					document.body.style.cursor = "";
 					return;

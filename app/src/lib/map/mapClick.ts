@@ -1,29 +1,33 @@
 import type { PickingInfo } from "@deck.gl/core";
 import type { CellManager } from "@/lib/render/CellManager";
+import type { ClickMode } from "@/store/mapEmbedPrefs";
 import { boundsOfCoords, type MapHost } from "@/lib/map/host";
 import { LOCATION_LAYER_ID } from "@/lib/render/buildSceneLayers";
 import { cmd } from "@/lib/commands";
-import { fallbackPanoramaMetadata, getPanoramaProvider, type PanoramaMetadata } from "@/lib/pano";
+import { fallbackPanoramaMetadata, getPanoramaProvider } from "@/lib/pano";
+import { getLocal } from "@/lib/hooks/useLocalStorage";
+import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
+import { LocationFlag } from "@/bindings.consts";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
 import { tryInterceptClick, fitMapToBounds } from "@/lib/map/mapState";
 import { getSettings } from "@/store/settings";
-import { getLocal } from "@/lib/hooks/useLocalStorage";
-import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
-import type { ParsedLocation } from "@/lib/data/importExport";
+import type { ParsedLocation } from "@/bindings.gen";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { openSeenEntry } from "@/lib/seen/seenOverlay";
 import { openContextMenuLatLng, openContextMenuLocation } from "@/lib/map/contextMenu";
 import { trace } from "@/lib/util/debug";
 import {
 	addLocations,
+	applySelectionUpdate,
 	createTags,
 	getMapState,
 	openStagedLocation,
 	resolveLocation,
 	setActiveLocation,
-	toggleManualSelection,
 } from "@/store/useMapStore";
-import { isVirtualLocation, isImportPreview, locId, createLocation, LocationFlag } from "@/types";
+import { toggleManualSelection } from "@/store/selections";
+import { isVirtualLocation, isImportPreview, locId, createLocation } from "@/types";
 import type { MaybeLocation, Bounds } from "@/types";
 import type { Location } from "@/bindings.gen";
 
@@ -69,8 +73,27 @@ export async function addParsedLocations(parsed: ParsedLocation[]) {
 		}),
 	);
 	await addLocations(locs);
-	setActiveLocation(locs[locs.length - 1].id);
+	await setActiveLocation(locs[locs.length - 1].id);
 	zoomToPasted(boundsOfCoords(locs));
+}
+
+/** Open a clicked href map-aware: an href that parses as a location route opens
+ *  the existing location if the map already has it (same pano, else within 2m --
+ *  the duplicate-detection radius), otherwise adds it as if pasted. Everything
+ *  else opens externally. */
+export async function openHref(href: string) {
+	const parsed = await cmd.parseMapsUrl(href);
+	if (!parsed) {
+		await openExternal(href);
+		return;
+	}
+	const nearby = await cmd.storeFindNearby(parsed.lat, parsed.lng, 2.0);
+	const match = nearby.find((l) => parsed.panoId && l.panoId === parsed.panoId) ?? nearby[0];
+	if (match) {
+		await setActiveLocation(match);
+		return;
+	}
+	await addParsedLocations([parsed]);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,26 +115,19 @@ export async function createLocationAtLatLng(
 	if (active != null && isImportPreview(active)) return null;
 
 	const tr = trace("add");
-	const providerKey = getLocal("mapEmbedPrefs", DEFAULT_PREFS).panoProvider ?? "baidu";
-	const provider = getPanoramaProvider(providerKey === "baidu" ? "baidu_pano" : "qq_pano");
+	const source =
+		getLocal("mapEmbedPrefs", DEFAULT_PREFS).panoProvider === "tencent" ? "qq_pano" : "baidu_pano";
+	const provider = getPanoramaProvider(source);
 	const nearest = await provider.findNearest({ lat, lng }, zoom);
 	if (!nearest) {
 		if (opts?.container) toast(t("No coverage found at this location."), 1500, opts.container);
 		return null;
 	}
-	let metadata: PanoramaMetadata;
-	try {
-		metadata = await provider.getMetadata(nearest.panoId);
-	} catch (error) {
-		// qsdata can return a tile-only Baidu pano. Keep it addable when sdata
-		// is unavailable, using its coordinate or the clicked GCJ-02 point.
-		tr.step("metadata fallback");
-		metadata = fallbackPanoramaMetadata(
-			provider.source,
-			nearest.panoId,
-			nearest.position ?? { lat, lng },
+	const metadata = await provider
+		.getMetadata(nearest.panoId)
+		.catch(() =>
+			fallbackPanoramaMetadata(source, nearest.panoId, nearest.position ?? { lat, lng }),
 		);
-	}
 	const loc = createLocation({
 		...metadata.position,
 		heading: metadata.heading || nearest.heading,
@@ -123,7 +139,7 @@ export async function createLocationAtLatLng(
 	tr.step("lookup");
 	await addLocations([loc]);
 	tr.step("addLocations");
-	setActiveLocation(loc);
+	await setActiveLocation(loc);
 	tr.step("setActive");
 	tr.end();
 	return loc;
@@ -134,7 +150,7 @@ export async function createLocationAtLatLng(
 export interface MapClickCtx {
 	cm: CellManager;
 	host: MapHost | null;
-	selectOnly?: boolean;
+	clickMode?: ClickMode;
 	findNearbyPanoOnClick?: boolean;
 	measuring?: boolean;
 	// Dispatch the surface's context menu at the given client coords. Absent => the
@@ -180,6 +196,9 @@ export async function handleMapClick(
 	}
 
 	if (domEvent instanceof MouseEvent && domEvent.button !== 0) return;
+	// The overlay replays the engine's double-click as one more click. The engine has already
+	// clicked for that gesture, and the browser also pairs presses it took as pans into one.
+	if (domEvent?.type === "dblclick") return;
 
 	// Interceptors first: the measure tool consumes the click to place a node.
 	if (
@@ -198,16 +217,25 @@ export async function handleMapClick(
 		const picked = await resolvePicked();
 		if (picked != null) {
 			if (isVirtualLocation({ id: locId(picked) })) return; // staged location's active pin: already open
-			if (domEvent instanceof MouseEvent && domEvent.ctrlKey) toggleManualSelection(locId(picked));
-			else setActiveLocation(picked); // fetches once iff lazy; free if materialized
+			if (domEvent instanceof MouseEvent && domEvent.ctrlKey)
+				void applySelectionUpdate(toggleManualSelection(locId(picked)));
+			else void setActiveLocation(picked);
 			return;
 		}
 	}
 
 	if (info.coordinate) {
 		const container = ctx.host?.container ?? null;
-		if (ctx.selectOnly) {
+		if (ctx.clickMode === "selectOnly") {
 			if (container) toast(t("Select-only mode is on."), 1500, container);
+			return;
+		}
+		if (ctx.clickMode === "nearest") {
+			const nearest = await cmd.storeFindNearest(info.coordinate[1], info.coordinate[0]);
+			if (!nearest) return;
+			if (domEvent instanceof MouseEvent && domEvent.ctrlKey)
+				void applySelectionUpdate(toggleManualSelection(nearest.id));
+			else void setActiveLocation(nearest);
 			return;
 		}
 		if (ctx.findNearbyPanoOnClick === false) return;
