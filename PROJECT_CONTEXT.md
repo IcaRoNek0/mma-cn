@@ -1,6 +1,6 @@
 # MMA-CN 项目上下文
 
-最后核对日期：2026-10-09
+最后核对日期：2026-10-10
 
 当前迁移分支 `migrate/upstream-0.11.6` 已合入上游 v0.11.6（`5433b539`），保留百度/腾讯独立 PSV、华为底图、覆盖层、透明度三档和原版 LocalGuessr。本文后续历史路径和版本记录需要结合新源码阅读；Rust 模块已迁到 `src/net` 和 `src/io`。
 
@@ -26,7 +26,7 @@ MMA-CN 是 MMA 的中国街景定制版本。目标是保留 MMA 原有界面和
 - 必须调用真实的百度/腾讯街景 API，包括 panoId 查询、元数据和瓦片。
 - 已经实现并在项目中使用的 API 可以继续调用和调试。
 - 如果任务需要引入一种新的 API 功能或新的接口用途，先向用户说明需求并询问，不要自行试探新接口。
-- 不要把真实 API key、Cookie、Token 或会话凭据提交到源码、Git 或分发包。
+- 不要输出任何真实凭据。用户于 2026-10-10 明确授权恢复旧版百度逆地理编码 Cookie 和 AK 到源码及编译产物；仅这组旧版百度请求凭据适用该例外。华为 key 仍不进入主仓库源码。
 - 华为 Petal Maps key 只能由用户通过 `VITE_PETAL_MAP_KEY` 提供；源码不含测试 key。
 
 ### 坐标系约定
@@ -159,12 +159,12 @@ git diff --check
 4. 用户只要求研究、解释或规划时，不修改代码。
 5. 用户要求实现时，先做最小范围修改，再运行相关类型检查、测试和 `git diff --check`。
 6. 未经用户明确要求，不自行提交、推送、发布或更改远程状态。
-7. 不输出、提交或打包任何真实 key、Cookie、Token 或私人 API 凭据。
+7. 不输出凭据。提交与打包遵循第 2 节的百度明确授权例外，其他凭据不得纳入。
 
 ## 9. v0.11.6 迁移补充
 
 - 构建需初始化子模块和下载 Git LFS 资源：`git submodule update --init --recursive`、`git lfs pull`。腾讯 PMTiles 不能用三行 LFS 指针代替。
-- 百度详细逆地理编码从服务进程环境变量 `MMA_BAIDU_REVERSE_AK` 读取用户自己的 AK；不再在源码内携带固定 AK 或 Cookie。未配置时使用离线城市表。
+- 根据用户要求恢复旧版百度逆地理编码 AK 和 Cookie；`MMA_BAIDU_REVERSE_AK` 仍可覆盖默认 AK。请求失败时使用离线城市表。
 - 自动安装更新保持关闭，避免中国定制版被上游安装包替换。发布列表读取本 fork。
 - 桌面及浏览器入口仍兼容 `map-making-app --serve`（构建需 `--features web-serve`）。
 - macOS Apple Silicon 可执行 `cd app && npm exec tauri build -- --bundles app --features web-serve`；产物在 `app/src-tauri/target/release/bundle/macos/MMA-CN.app`。

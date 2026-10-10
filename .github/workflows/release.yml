@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    # app releases only; plugin tags (vision-v*, copyright-v*) must not match
-    tags: ['v[0-9]*']
   workflow_dispatch:
     inputs:
       tag:

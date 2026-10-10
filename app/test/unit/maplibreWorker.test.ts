@@ -8,18 +8,37 @@ import { describe, it, expect, vi } from "vitest";
 const h = vi.hoisted(() => ({
 	order: [] as string[],
 	workerUrl: null as unknown,
+	options: null as null | { maxZoom: number; zoom: number },
+}));
+
+vi.mock("@/lib/map/tencentCoverageOverlay", () => ({
+	TencentCoverageOverlay: class {
+		destroy() {}
+	},
 }));
 
 vi.mock("maplibre-gl", () => {
 	class Map {
-		constructor() {
+		zoom: number;
+		touchZoomRotate = { disableRotation() {}, setZoomRate() {} };
+		scrollZoom = { setZoomRate() {}, setWheelZoomRate() {} };
+		keyboard = { disable() {} };
+		constructor(options: { maxZoom: number; zoom: number }) {
 			h.order.push("Map");
+			h.options = options;
+			this.zoom = options.zoom;
+		}
+		getZoom() {
+			return this.zoom;
+		}
+		setZoom(value: number) {
+			this.zoom = Math.min(value, h.options!.maxZoom);
 		}
 		on() {}
 		once() {}
 		remove() {}
 		getCanvas() {
-			return { style: {} };
+			return { style: {}, classList: { add() {} } };
 		}
 	}
 	// `import * as maplibregl` reads named exports, so the mock must expose them flat.
@@ -40,6 +59,17 @@ vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
 vi.mock("@/lib/util/log", async () => (await import("./fixtures/mocks")).logMock());
 
 describe("the maplibre host points the library at its worker", () => {
+	it("allows zooming past 18.4 while preserving the old host zoom offset", async () => {
+		const { createMapLibreHost } = await import("@/lib/map/maplibreHost");
+		const { DEFAULT_PREFS } = await import("@/store/mapEmbedPrefs");
+		const host = createMapLibreHost(document.createElement("div"), DEFAULT_PREFS, {
+			customStyles: [],
+		});
+		host.setZoom(21);
+		expect(host.getZoom()).toBe(21);
+		expect(h.options!.maxZoom).toBe(22);
+		host.destroy();
+	});
 	it("calls setWorkerUrl with a real url when the module loads", async () => {
 		await import("@/lib/map/maplibreHost");
 		expect(h.order).toContain("setWorkerUrl");

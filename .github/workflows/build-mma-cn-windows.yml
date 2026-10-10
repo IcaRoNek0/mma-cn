@@ -18,9 +18,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: |
+            app/package-lock.json
+            plugins/*/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -34,6 +36,9 @@ jobs:
       - name: Install npm dependencies
         working-directory: app
         run: npm ci
+
+      - name: Build plugin artifacts
+        run: node plugins/build-all.mjs
 
       - name: Create production environment
         shell: pwsh

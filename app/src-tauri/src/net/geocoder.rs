@@ -145,7 +145,8 @@ fn baidu_reverse_geocode(lat: f64, lng: f64) -> Option<GeoResult> {
     if !(72.0..=138.0).contains(&lng) || !(0.0..=56.0).contains(&lat) {
         return None;
     }
-    let ak = std::env::var("MMA_BAIDU_REVERSE_AK").ok()?;
+    let ak = std::env::var("MMA_BAIDU_REVERSE_AK")
+        .unwrap_or_else(|_| "8z3RxyDq3sseF20zMZcBxkzhfTdAeSq7".to_owned());
     let url = format!(
         "https://api.map.baidu.com/reverse_geocoding/v3/?ak={ak}&location={lat},{lng}&coordtype=gcj02ll&output=json&radius=100&page_size=10&extensions_poi=0&res=webmap&pcevaname=pc4.1&newfrom=zhuzhan_webmap"
     );
@@ -154,6 +155,7 @@ fn baidu_reverse_geocode(lat: f64, lng: f64) -> Option<GeoResult> {
         .header("Referer", "https://map.baidu.com/")
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36")
 
+        .header("Cookie", "BAIDUID=CD58DDB9E6DCAD38796DCE2F8016C43C:FG=1; ab_sr=1.0.1_ZTI4ZDhlYmNhNzFiNDE0ZmY3OTc1NmVkMGE3ODdiY2M5M2MyZTkyMzE5YjI5NzkwZDEzNjViZGYwZmEzMjI1ZjVkYTFiY2EwYzdmOGRhMDZhMWQzNTE3YjJhNzNiMmExYjA2MDIyNjAyNjdjMmZlZjc2OTkzNmRmZmE4ZTQyNmI5NjI2YWZmZGJmMDE3N2UyZDY0N2RiNGU1YmE0OTFhYQ==; DEFAULT_CITY=1; MCITY=-%3A; showLoginPopup=1")
         .header("Accept", "application/json")
         .send()
         .ok()?

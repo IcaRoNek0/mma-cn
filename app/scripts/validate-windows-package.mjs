@@ -30,11 +30,13 @@ const config = JSON.parse(fs.readFileSync(path.join(appDir, "src-tauri/tauri.con
 if (config.productName !== "MMA-CN" || config.identifier !== "fun.tuxun.mmacn") {
 	fail("Tauri productName or identifier is not configured for MMA-CN");
 }
-if (JSON.stringify(config.bundle?.targets) !== JSON.stringify(["nsis"])) {
-	fail("the only bundle target must be NSIS");
-}
+// build-windows.ps1 selects NSIS via the CLI; the shared config also builds macOS.
 if (config.bundle?.createUpdaterArtifacts !== false || config.plugins?.updater) {
 	fail("the internal build must not use the upstream updater");
+}
+const rustApp = fs.readFileSync(path.join(appDir, "src-tauri/src/lib.rs"), "utf8");
+if (rustApp.includes("tauri_plugin_updater::Builder")) {
+	fail("the internal build must not initialize the updater plugin at runtime");
 }
 if (config.bundle?.resources?.["resources/tencent-lines.pmtiles"] !== "tencent-lines.pmtiles") {
 	fail("Tencent PMTiles is not configured as a single Tauri resource");

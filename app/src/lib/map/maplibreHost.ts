@@ -40,7 +40,8 @@ import type {
 } from "@/lib/map/host";
 
 const ZOOM_OFFSET = 1;
-const MAX_HOST_ZOOM = 18.4;
+// Keep the host/display zoom offset while allowing raster tiles to overzoom.
+const MAX_HOST_ZOOM = 23;
 const TRACKPAD_ZOOM_RATE = 1 / 100;
 const WHEEL_ZOOM_RATE = 1 / 450;
 

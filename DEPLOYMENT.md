@@ -571,7 +571,7 @@ git lfs pull
 
 腾讯覆盖资源 `app/src-tauri/resources/tencent-lines.pmtiles` 应为约 120 MiB 的真实 PMTiles 文件。运行时也可通过 `MMA_TENCENT_COVERAGE_PATH` 指定其绝对路径。
 
-百度详细地址查询使用进程环境变量 `MMA_BAIDU_REVERSE_AK`，请提供自己的 key；缺省使用离线城市表。不要把 key 写入源码。
+百度详细地址查询按用户授权恢复旧版 AK 和 Cookie。进程环境变量 `MMA_BAIDU_REVERSE_AK` 可覆盖默认 AK；请求失败时使用离线城市表。
 
 macOS Apple Silicon 构建：
 
