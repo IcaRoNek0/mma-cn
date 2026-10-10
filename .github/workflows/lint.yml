@@ -13,6 +13,9 @@ jobs:
         with:
           # check-legacy and check-floors read mma.d.ts out of release tags.
           fetch-depth: 0
+      - name: Fetch upstream SDK release history
+        # API.md derives historical version annotations from upstream release tags.
+        run: git fetch --no-tags https://github.com/ccmdi/mma.git 'refs/tags/v*:refs/tags/v*'
       - uses: ./.github/actions/setup
       - uses: actions/cache@v5
         with:
