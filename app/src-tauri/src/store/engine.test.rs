@@ -6432,3 +6432,87 @@ fn a_save_stamped_with_an_older_rev_leaves_the_value_unsaved() {
     tracked.saved_at(current);
     assert!(!tracked.is_unsaved());
 }
+
+#[test]
+fn pano_duplicates_merge_tags_and_undo() {
+    let mut a = loc_with_tags(1, 0.0, 0.0, vec![1]);
+    a.pano_id = Some("same".into());
+    let mut b = loc_with_tags(2, 5.0, 5.0, vec![2]);
+    b.pano_id = Some("same".into());
+    let mut store = setup_store_with(&[a, b, loc(3, 0.0, 0.0), loc(4, 0.0, 0.0)]);
+    assert_eq!(store.pano_duplicate_summary().removed, 1);
+    store.merge_pano_duplicates(None).unwrap();
+    let survivors: Vec<_> = store.all().rows().map(|r| r.to_location()).collect();
+    assert_eq!(survivors.len(), 3);
+    let merged = survivors.iter().find(|l| l.pano_id.is_some()).unwrap();
+    assert_eq!(merged.tags, vec![1, 2]);
+    let changes = store.undo(|_| unreachable!()).unwrap().unwrap();
+    store.finish_mutation(&changes);
+    assert_eq!(store.all().rows().count(), 4);
+    let changes = store.redo(|_| unreachable!()).unwrap().unwrap();
+    store.finish_mutation(&changes);
+    assert_eq!(store.all().rows().count(), 3);
+}
+
+#[test]
+fn auto_tags_union_idempotently_and_undo() {
+    let mut a = loc_with_tags(1, 0.0, 0.0, vec![99]);
+    a.pano_id = Some("14091134140630113614900".into());
+    a.extra = RawExtra::from_string(r#"{"source":"qq_pano"}"#.into());
+    let mut store = setup_store_with(&[a]);
+    let options = AutoTagOptions {
+        source: true,
+        vehicle: true,
+        year: true,
+        season: true,
+        month: true,
+    };
+    store.auto_tag(&options).unwrap();
+    let names: std::collections::BTreeSet<_> = store.value_meta["tags"]
+        .values()
+        .filter_map(record_name)
+        .collect();
+    assert_eq!(
+        names,
+        std::collections::BTreeSet::from([
+            "qq_pano",
+            "1409-134车",
+            "2014年",
+            "2014年夏季",
+            "2014年6月"
+        ])
+    );
+    assert_eq!(store.get_loc_by_id(1).unwrap().tags.len(), 6);
+    let before = store.edits.undo_len();
+    store.auto_tag(&options).unwrap();
+    assert_eq!(store.edits.undo_len(), before);
+    let changes = store.undo(|_| unreachable!()).unwrap().unwrap();
+    store.finish_mutation(&changes);
+    assert_eq!(store.get_loc_by_id(1).unwrap().tags, vec![99]);
+}
+
+/// Manual performance probe; no timing assertion because CI hardware varies.
+#[test]
+#[ignore]
+fn million_pano_duplicate_scan_benchmark() {
+    let rows: Vec<_> = (1..=1_000_000)
+        .map(|id| {
+            let mut row = loc(id, 30.0, 120.0);
+            row.pano_id = Some(format!("qq-{:020}", id / 2).into());
+            row
+        })
+        .collect();
+    let mut store = Store::new();
+    store.batch = Some(arrow::locations_to_batch(&rows));
+    drop(rows);
+    let start = Instant::now();
+    let summary = store.pano_duplicate_summary();
+    eprintln!(
+        "million-row pano ID preview: {:?}; groups={}, removed={}",
+        start.elapsed(),
+        summary.groups,
+        summary.removed
+    );
+    assert_eq!(summary.groups, 499_999);
+    assert_eq!(summary.removed, 499_999);
+}

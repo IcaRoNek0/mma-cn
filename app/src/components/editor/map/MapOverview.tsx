@@ -25,6 +25,7 @@ import { TagManager } from "@/components/editor/tags/TagManager";
 import { FilterForm, usePickableFields } from "@/components/editor/map/FilterBuilder";
 import { ApplyFieldAsTagsDialog } from "@/components/editor/tags/ApplyFieldAsTagsDialog";
 import { TagFindReplaceDialog } from "@/components/editor/tags/TagFindReplaceDialog";
+import { AutoTagDialog, MergePanoDuplicatesDialog } from "@/components/dialogs/PanoCommandsDialog";
 import { MergeDuplicatesModal } from "@/components/dialogs/MergeDuplicatesModal";
 import { ReviewSessionsModal } from "@/components/dialogs/ReviewSessions";
 import { reviewSelected } from "@/lib/review/review";
@@ -343,6 +344,8 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 	const [rankCount, setRankCount] = useState(10);
 	const [rankAscending, setRankAscending] = useState(false);
 	const [showTagFindReplace, setShowTagFindReplace] = useDialogState("tag-find-replace");
+	const [showAutoTag, setShowAutoTag] = useDialogState("auto-tag");
+	const [showPanoDuplicates, setShowPanoDuplicates] = useDialogState("merge-pano-duplicates");
 	const [showMergeDuplicates, setShowMergeDuplicates] = useDialogState("merge-duplicates");
 	const [showReviews, setShowReviews] = useDialogState("review-sessions");
 	const [showApplyFieldAsTags, setShowApplyFieldAsTags] = useDialogState("apply-field-as-tags");
@@ -443,6 +446,10 @@ export function MapOverview({ hidden }: { hidden?: boolean }) {
 			{showTagFindReplace && <TagFindReplaceDialog open onOpenChange={setShowTagFindReplace} />}
 			{showApplyFieldAsTags && (
 				<ApplyFieldAsTagsDialog open onOpenChange={setShowApplyFieldAsTags} />
+			)}
+			{showAutoTag && <AutoTagDialog open onOpenChange={setShowAutoTag} />}
+			{showPanoDuplicates && (
+				<MergePanoDuplicatesDialog open onOpenChange={setShowPanoDuplicates} />
 			)}
 			{showMergeDuplicates && (
 				<MergeDuplicatesModal open onOpenChange={setShowMergeDuplicates} distance={dupDistance} />

@@ -1138,3 +1138,12 @@ export async function checkoutCommit(commitId: string) {
 	emitEvent("store:changed");
 	await invalidateMapList();
 }
+
+/** Provider-ID operations run as one undoable backend transaction. */
+export const previewPanoDuplicates = () => cmd.storePanoDuplicateSummary();
+export async function mergePanoDuplicates() {
+	await mutate(() => cmd.storeMergePanoDuplicates(state.map?.settings.duplicateScore ?? null));
+}
+export async function autoTag(options: import("@/bindings.gen").AutoTagOptions) {
+	await mutate(() => cmd.storeAutoTag(options));
+}

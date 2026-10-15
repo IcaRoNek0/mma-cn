@@ -757,6 +757,14 @@ applySelectionUpdate(
 Apply `op` to the listed selections and re-resolve them: the one way the selection changes.
 Lift an op over the active selections alone with `onActive`. No-op when nothing changed.
 
+### autoTag
+
+`stable` · unreleased
+
+```ts
+autoTag(options: AutoTagOptions): Promise<void>
+```
+
 ### cancelAutosave
 
 `unstable` · since v0.8.1
@@ -988,6 +996,14 @@ mergeDuplicates(distance: number): Promise<void>
 Merge each transitive duplicate group into one survivor (tags unioned), ranked by the
 map's duplicate preference. One undoable edit.
 
+### mergePanoDuplicates
+
+`stable` · unreleased
+
+```ts
+mergePanoDuplicates(): Promise<void>
+```
+
 ### mutate
 
 `unstable` · since v0.4.0
@@ -1056,6 +1072,16 @@ previewDuplicateGroups(distance: number): Promise<number[][]>
 ```
 
 Read-only preview of transitive duplicate groups (size >= 2) within `distance` metres.
+
+### previewPanoDuplicates
+
+`stable` · unreleased
+
+```ts
+previewPanoDuplicates(): Promise<PanoDuplicateSummary>
+```
+
+Provider-ID operations run as one undoable backend transaction.
 
 ### previewVirtualLocation
 
@@ -5640,6 +5666,14 @@ cmd.storeApplyFieldOp(
 
 Apply a field operation to every location matched by `selector`.
 
+#### cmd.storeAutoTag
+
+`unstable` · unreleased
+
+```ts
+cmd.storeAutoTag(options: AutoTagOptions): Promise<MutationResult>
+```
+
 #### cmd.storeBounds
 
 `unstable` · since v0.4.0
@@ -6109,6 +6143,14 @@ Merge each duplicate group within `distance` metres into one location, unioning 
 and extra fields. `score` ranks which location survives; blank uses the default ranking.
 Undoable.
 
+#### cmd.storeMergePanoDuplicates
+
+`unstable` · unreleased
+
+```ts
+cmd.storeMergePanoDuplicates(score: string | null): Promise<MutationResult>
+```
+
 #### cmd.storeNearAny
 
 `unstable` · since v0.7.0
@@ -6134,6 +6176,16 @@ cmd.storeOpenMap(mapId: string): Promise<StoreStatus>
 
 Open a map and return its initial state (per-value counts, metadata, undo/redo availability).
 Must be called before any other store commands.
+
+#### cmd.storePanoDuplicateSummary
+
+`unstable` · unreleased
+
+```ts
+cmd.storePanoDuplicateSummary(): Promise<PanoDuplicateSummary>
+```
+
+Counts only, so even a million-row preview stays small over IPC.
 
 #### cmd.storePatchFieldValues
 

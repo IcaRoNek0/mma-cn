@@ -48,7 +48,7 @@ bytemuck = "1"
 roaring = "0.10"
 arrow-array = "54"
 arrow-buffer = "54"
-arrow-ipc = "54"
+arrow-ipc = { version = "54", features = ["lz4"] }
 arrow-schema = "54"
 arrow-select = "54"
 bitflags = "2"

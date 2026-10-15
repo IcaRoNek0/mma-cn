@@ -34,6 +34,7 @@ import { GuessMap } from "./GuessMap";
 import { ResultOverlay } from "./ResultOverlay";
 import type { PsvPanoramaController } from "@/lib/sv/panoSingleton";
 import { emit } from "@/lib/events";
+import { PsvCompass } from "@/components/primitives/PsvCompass";
 
 export function RoundPlayer({
 	active,
@@ -436,7 +437,7 @@ export function RoundPlayer({
 			{!showResult && (
 				<div className="gg-controls">
 					{panorama && showCompass && (
-						<div className="gg-controls__compass gg-compass-control-host" aria-hidden="true" />
+						<PsvCompass panorama={panorama} className="gg-controls__compass gg-psv-compass" />
 					)}
 					<div className="gg-controls__col">
 						{canMove && (

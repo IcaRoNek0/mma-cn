@@ -3,12 +3,22 @@ import {
 	angularDistance,
 	distanceMeters,
 	movementCandidates,
+	moveMarkerRotation,
 	selectMoveLink,
 } from "@/lib/pano/movement";
 
 const position = { lat: 39.9, lng: 116.4 };
 
 describe("panorama movement", () => {
+	it("rotates movement arrows toward the link relative to the viewer", () => {
+		expect(moveMarkerRotation(90, 90)).toBe(0);
+		expect(moveMarkerRotation(135, 90)).toBe(45);
+		expect(moveMarkerRotation(45, 90)).toBe(-45);
+		expect(moveMarkerRotation(5, 355)).toBe(10);
+		expect(moveMarkerRotation(355, 5)).toBe(-10);
+		expect(moveMarkerRotation(45, 810)).toBe(-45);
+	});
+
 	it("measures angles across north", () => {
 		expect(angularDistance(355, 5)).toBe(10);
 		expect(angularDistance(90, 270)).toBe(180);

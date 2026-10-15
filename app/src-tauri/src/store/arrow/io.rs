@@ -5,7 +5,7 @@ use crate::store::arrow::migrate;
 use crate::store::storage::atomic_write;
 use crate::types::{AppError, AppResult};
 use arrow_ipc::reader::FileReader;
-use arrow_ipc::writer::FileWriter;
+use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow_select::concat;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Read, Seek, Write};
@@ -30,6 +30,29 @@ pub(crate) fn arrow_ipc_bytes(batch: &RecordBatch) -> AppResult<Vec<u8>> {
     let mut bytes = Vec::new();
     write_ipc(&mut bytes, batch)?;
     Ok(bytes)
+}
+
+/// Compress materialized deltas/history, while leaving mmap base snapshots plain.
+/// These are standard Arrow IPC files; readers also accept older plain files.
+pub(crate) fn compressed_arrow_ipc_bytes(batch: &RecordBatch) -> AppResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    write_compressed_ipc(&mut bytes, batch)?;
+    Ok(bytes)
+}
+
+pub(crate) fn write_compressed_arrow_ipc(path: &Path, batch: &RecordBatch) -> AppResult<()> {
+    atomic_write(path, |file| {
+        write_compressed_ipc(BufWriter::with_capacity(1 << 20, file), batch)
+    })
+}
+
+fn write_compressed_ipc(out: impl Write, batch: &RecordBatch) -> AppResult<()> {
+    let options = IpcWriteOptions::default()
+        .try_with_compression(Some(arrow_ipc::CompressionType::LZ4_FRAME))?;
+    let mut writer = FileWriter::try_new_with_options(out, &batch.schema(), options)?;
+    writer.write(batch)?;
+    writer.finish()?;
+    Ok(())
 }
 
 fn write_ipc(out: impl Write, batch: &RecordBatch) -> AppResult<()> {

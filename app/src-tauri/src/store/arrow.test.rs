@@ -402,3 +402,88 @@ proptest! {
         prop_assert_eq!(removed_out, removed);
     }
 }
+
+#[test]
+fn compressed_ipc_reads_plain_history_and_preserves_delta_rows() {
+    let created = sample_locations();
+    let mut removed = created.clone();
+    removed[0].tags = vec![7];
+    removed[1].pano_id = Some("14091134140630113614900".into());
+    let batch = delta_to_batch(&created, &removed);
+    for bytes in [
+        arrow_ipc_bytes(&batch).unwrap(),
+        compressed_arrow_ipc_bytes(&batch).unwrap(),
+    ] {
+        let restored = read_arrow_ipc_bytes(&bytes).unwrap();
+        let (new, old) = batch_to_delta(&restored);
+        assert_eq!(new, created);
+        assert_eq!(old, removed);
+    }
+    let empty = delta_to_batch(&[], &[]);
+    let bytes = compressed_arrow_ipc_bytes(&empty).unwrap();
+    assert_eq!(read_arrow_ipc_bytes(&bytes).unwrap().num_rows(), 0);
+}
+
+#[test]
+fn compressed_delta_uses_the_normal_file_reader() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("uncommitted.arrow");
+    let batch = delta_to_batch(&sample_locations(), &[]);
+    write_compressed_arrow_ipc(&path, &batch).unwrap();
+    assert_eq!(read_arrow_ipc(&path).unwrap(), batch);
+}
+
+/// Opt-in measurement of the actual IPC codec; no timing assertions on CI.
+/// Run with --ignored --nocapture, optionally MMA_STORAGE_BENCH_ROWS=1000000.
+#[test]
+#[ignore]
+fn benchmark_capture_delta_compression() {
+    use std::time::Instant;
+    let count = std::env::var("MMA_STORAGE_BENCH_ROWS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1_000_000);
+    let mut rng = fastrand::Rng::with_seed(197);
+    let locs: Vec<_> = (1..=count).map(|id| Location {
+        id: id as u32,
+        lat: 20.0 + rng.f64() * 25.0,
+        lng: 100.0 + rng.f64() * 25.0,
+        heading: rng.f64() * 360.0,
+        zoom: 1.0,
+        pano_id: Some(format!("1409{:017}", rng.u64(0..100_000_000_000_000_000)).into()),
+        tags: vec![1, 2 + (id % 12) as u32, 20 + (id % 20) as u32],
+        extra: Some(RawExtra::from_string(format!(
+            r#"{{"source":"tencent","countryCode":"CN","year":{},"month":{},"address":"Shanghai, China"}}"#,
+            2010 + id % 15, 1 + id % 12)).unwrap()),
+        created_at: 1_700_000_000,
+        ..Default::default()
+    }).collect();
+    let batch = delta_to_batch(&locs, &[]);
+    drop(locs);
+    let mut sizes = Vec::new();
+    for (label, compressed) in [("plain", false), ("lz4", true)] {
+        let started = Instant::now();
+        let bytes = if compressed {
+            compressed_arrow_ipc_bytes(&batch)
+        } else {
+            arrow_ipc_bytes(&batch)
+        }
+        .unwrap();
+        let encode = started.elapsed();
+        let started = Instant::now();
+        let decoded = read_arrow_ipc_bytes(&bytes).unwrap();
+        let decode = started.elapsed();
+        assert_eq!(decoded, batch);
+        eprintln!(
+            "capture-delta rows={count} codec={label} bytes={} encode_ms={} decode_ms={}",
+            bytes.len(),
+            encode.as_millis(),
+            decode.as_millis()
+        );
+        sizes.push(bytes.len());
+    }
+    assert!(
+        sizes[1] < sizes[0] / 2,
+        "capture metadata/tags should compress substantially"
+    );
+}

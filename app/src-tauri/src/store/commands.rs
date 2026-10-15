@@ -1320,3 +1320,35 @@ pub fn store_near_any(
         Ok(result)
     })
 }
+
+/// Counts only, so even a million-row preview stays small over IPC.
+#[tauri::command]
+#[specta::specta]
+pub fn store_pano_duplicate_summary(
+    label: WindowLabel,
+    state: tauri::State<'_, StoreState>,
+) -> AppResult<PanoDuplicateSummary> {
+    with_store!(label, state, |store| { Ok(store.pano_duplicate_summary()) })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn store_merge_pano_duplicates(
+    label: WindowLabel,
+    state: tauri::State<'_, StoreState>,
+    score: Option<String>,
+) -> AppResult<MutationResult> {
+    with_store!(label, state, |store| {
+        store.merge_pano_duplicates(score.as_deref())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn store_auto_tag(
+    label: WindowLabel,
+    state: tauri::State<'_, StoreState>,
+    options: AutoTagOptions,
+) -> AppResult<MutationResult> {
+    with_store!(label, state, |store| { store.auto_tag(&options) })
+}

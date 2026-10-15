@@ -289,6 +289,10 @@ export const commands = {
 	 *  Undoable.
 	 */
 	storeMergeDuplicates: (distance: number, score: string | null) => __TAURI_INVOKE<MutationResult>("store_merge_duplicates", { distance, score }),
+	/**  Counts only, so even a million-row preview stays small over IPC. */
+	storePanoDuplicateSummary: () => __TAURI_INVOKE<PanoDuplicateSummary>("store_pano_duplicate_summary"),
+	storeMergePanoDuplicates: (score: string | null) => __TAURI_INVOKE<MutationResult>("store_merge_pano_duplicates", { score }),
+	storeAutoTag: (options: AutoTagOptions) => __TAURI_INVOKE<MutationResult>("store_auto_tag", { options }),
 	/**
 	 *  Remove duplicate locations within `distance` metres of each other, keeping the
 	 *  best-scored survivor per cluster. Undoable.
@@ -585,6 +589,14 @@ export type AttachmentRef = {
 	 *  rendered issue.
 	 */
 	name: string,
+};
+
+export type AutoTagOptions = {
+	source?: boolean,
+	vehicle?: boolean,
+	year?: boolean,
+	season?: boolean,
+	month?: boolean,
 };
 
 /**  How a page of rows is cut into procedure calls. */
@@ -1346,6 +1358,11 @@ export type PanoDate = {
 	year: number,
 	month: number,
 	day: number,
+};
+
+export type PanoDuplicateSummary = {
+	groups: number,
+	removed: number,
 };
 
 export type PanoLink = {

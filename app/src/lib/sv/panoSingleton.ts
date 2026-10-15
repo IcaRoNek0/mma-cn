@@ -17,7 +17,12 @@ import {
 	type PanoSource,
 	viewerYawToHeading,
 } from "@/lib/pano";
-import { movementCandidates, selectMoveLink, type PanoMoveDirection } from "@/lib/pano/movement";
+import {
+	movementCandidates,
+	moveMarkerRotation,
+	selectMoveLink,
+	type PanoMoveDirection,
+} from "@/lib/pano/movement";
 import { getLocal } from "@/lib/hooks/useLocalStorage";
 import { DEFAULT_PREFS } from "@/store/mapEmbedPrefs";
 import { getSettings, normalizeInputSensitivity } from "@/store/settings";
@@ -30,6 +35,7 @@ interface ListenerHandle {
 export interface PsvMoveMarker {
 	panoId: string;
 	heading: number;
+	rotation: number;
 	distance: number;
 	x: number;
 	y: number;
@@ -330,6 +336,7 @@ export class PsvPanoramaController {
 
 	getMoveMarkers(): PsvMoveMarker[] {
 		if (!this.metadata) return [];
+		const viewerHeading = this.getPov().heading;
 		return movementCandidates(this.metadata.links, this.metadata.position).flatMap(
 			({ link, distance, pitch, visible }) => {
 				const position = {
@@ -342,6 +349,7 @@ export class PsvPanoramaController {
 					{
 						panoId: link.panoId,
 						heading: link.heading!,
+						rotation: moveMarkerRotation(link.heading!, viewerHeading),
 						distance,
 						x: point.x,
 						y: point.y,

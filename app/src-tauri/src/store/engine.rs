@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Mutex, OnceLock};
 
+pub use capture_tags::*;
 pub use frame::*;
 pub(crate) use history::*;
 pub use membership::*;
@@ -950,6 +951,7 @@ macro_rules! selector_read {
 }
 pub(crate) use selector_read;
 
+mod capture_tags;
 pub(crate) mod delta_legacy;
 pub(crate) mod frame;
 mod history;

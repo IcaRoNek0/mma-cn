@@ -1806,5 +1806,21 @@
 	"{rate} requests/s": "{rate} requêtes/s",
 	"{rate}/s": "{rate}/s",
 	"{selected} of {total} selected ({locations} locations)": "{selected} sur {total} sélectionnés ({locations} lieux)",
-	"{value} is the projected value, {field} the field label. A / makes a folder.": "{value} est la valeur projetée, {field} le libellé du champ. Un / crée un dossier."
+	"{value} is the projected value, {field} the field label. A / makes a folder.": "{value} est la valeur projetée, {field} le libellé du champ. Un / crée un dossier.",
+	"Add tags across the whole map. Choose any combination. Existing tags are preserved; missing or invalid capture times are skipped.": "Add tags across the whole map. Choose any combination. Existing tags are preserved; missing or invalid capture times are skipped.",
+	"Applying...": "Applying...",
+	"Auto Tag": "Auto Tag",
+	"Auto Tag...": "Auto Tag...",
+	"Could not load preview.": "Could not load preview.",
+	"Duplicate groups: {groups}. Locations removed: {removed}.": "Duplicate groups: {groups}. Locations removed: {removed}.",
+	"Identical non-empty pano IDs are merged across the whole map. Tags are combined. This edit can be undone.": "Identical non-empty pano IDs are merged across the whole map. Tags are combined. This edit can be undone.",
+	"Loading...": "Loading...",
+	"Merge duplicate pano IDs": "Merge duplicate pano IDs",
+	"Merge duplicate pano IDs...": "Merge duplicate pano IDs...",
+	"Month tag (2022年8月)": "Month tag (2022年8月)",
+	"Season tag (2014年冬季)": "Season tag (2014年冬季)",
+	"Seasons: March–May spring, June–August summer, September–November autumn, December–February winter. The year follows the capture date.": "Seasons: March–May spring, June–August summer, September–November autumn, December–February winter. The year follows the capture date.",
+	"Source tag": "Source tag",
+	"Street View vehicle tag": "Street View vehicle tag",
+	"Year tag (2014年)": "Year tag (2014年)"
 }

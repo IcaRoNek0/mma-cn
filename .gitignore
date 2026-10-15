@@ -81,3 +81,8 @@ plugins/copyright/sidecar/verify_parity.py
 
 # local border rebuild tooling
 data/borders/generate.py
+
+# Local build environment and deliverables
+toolchain/
+logs/
+outputs/

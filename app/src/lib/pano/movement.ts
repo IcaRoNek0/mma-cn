@@ -9,6 +9,11 @@ export function angularDistance(a: number, b: number): number {
 	return Math.abs(((a - b + 540) % 360) - 180);
 }
 
+/** Clockwise ground-plane rotation relative to the direction the viewer faces. */
+export function moveMarkerRotation(linkHeading: number, viewerHeading: number): number {
+	return ((((linkHeading - viewerHeading) % 360) + 540) % 360) - 180;
+}
+
 export function distanceMeters(a: GcjPoint, b: GcjPoint): number {
 	const latScale = 111_320;
 	const meanLat = ((a.lat + b.lat) * Math.PI) / 360;

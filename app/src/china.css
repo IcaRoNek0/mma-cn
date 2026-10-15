@@ -1,4 +1,5 @@
 .psv-move-marker {
+	--marker-rotation: 0deg;
 	--marker-scale: 1;
 }
 @media (prefers-color-scheme: dark) {
@@ -49,7 +50,7 @@
 }
 
 .psv-metadata-panel {
-	width: min(360px, calc(100vw - 32px));
+	width: min(450px, calc(100vw - 32px));
 	max-height: min(70vh, 560px);
 	overflow: auto;
 	background: var(--surface-3);
@@ -362,7 +363,7 @@
 	width: 3rem;
 	height: 3rem;
 	filter: drop-shadow(0 2px 1px #0008);
-	transform: rotateX(-56deg);
+	transform: rotate(var(--marker-rotation, 0deg));
 }
 
 .psv-move-marker:not(:disabled):hover,

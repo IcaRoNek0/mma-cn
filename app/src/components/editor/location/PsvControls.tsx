@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
 	mdiChevronUp,
 	mdiFullscreen,
@@ -18,8 +18,16 @@ import { useSettings } from "@/store/settings";
 import type { PsvMoveMarker, PsvPanoramaController } from "@/lib/sv/panoSingleton";
 import { toast } from "@/lib/util/toast";
 import { t } from "@/lib/i18n";
+import { parsePanoCaptureParts } from "@/lib/pano/types";
+import { PsvCompass } from "@/components/primitives/PsvCompass";
 
-function PsvMetadataControl({ panorama }: { panorama: PsvPanoramaController }) {
+function PsvMetadataControl({
+	panorama,
+	address,
+}: {
+	panorama: PsvPanoramaController;
+	address: string | null;
+}) {
 	const [metadata, setMetadata] = useState(() => panorama.getMetadata());
 	useEffect(() => {
 		const update = () => setMetadata(panorama.getMetadata());
@@ -35,6 +43,10 @@ function PsvMetadataControl({ panorama }: { panorama: PsvPanoramaController }) {
 			toast(t("Copy failed"));
 		}
 	};
+	const captureDate = metadata ? parsePanoCaptureParts(metadata.panoId, metadata.source) : null;
+	const captureTime = captureDate
+		? `${captureDate.year}-${String(captureDate.month).padStart(2, "0")}-${String(captureDate.day).padStart(2, "0")} ${String(captureDate.hour).padStart(2, "0")}:${String(captureDate.minute).padStart(2, "0")}`
+		: "—";
 	const rows: readonly (readonly [string, string, boolean?])[] = metadata
 		? ([
 				["panoid", metadata.panoId, true],
@@ -44,8 +56,8 @@ function PsvMetadataControl({ panorama }: { panorama: PsvPanoramaController }) {
 					true,
 				],
 				[t("Source"), metadata.source],
-				[t("Address"), metadata.address ?? "—"],
-				[t("Altitude"), metadata.altitude == null ? "—" : `${metadata.altitude} m`],
+				[t("Address"), address || "—"],
+				[t("Image date"), captureTime],
 				[t("Heading"), `${metadata.heading}°`],
 				[t("Pitch"), `${metadata.pitch}°`],
 				[t("North offset"), `${metadata.northOffset}°`],
@@ -173,6 +185,7 @@ export const PsvMoveControls = memo(function PsvMoveControls({
 							left: marker.x,
 							top: marker.y,
 							"--marker-scale": marker.scale,
+							"--marker-rotation": `${marker.rotation}deg`,
 						} as CSSProperties
 					}
 				>
@@ -191,25 +204,19 @@ export const PsvControls = memo(function PsvControls({
 	isFullscreen,
 	onFullscreen,
 	onReturnToSpawn,
+	address,
 }: {
 	panorama: PsvPanoramaController;
 	isFullscreen: boolean;
 	onFullscreen: () => void;
 	onReturnToSpawn: () => void;
+	address: string | null;
 }) {
 	const settings = useSettings();
-	const compassRef = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		const update = () =>
-			compassRef.current?.style.setProperty("--heading", `${-panorama.getPov().heading}deg`);
-		const listener = panorama.addListener("pov_changed", update);
-		update();
-		return () => listener.remove();
-	}, [panorama]);
 
 	return (
 		<div className="embed-controls">
-			<PsvMetadataControl panorama={panorama} />
+			<PsvMetadataControl panorama={panorama} address={address} />
 			{settings.defaultMovementMode === "moving" && <PsvMoveControls panorama={panorama} />}
 			{settings.showFullscreenButton && (
 				<div className="embed-controls__control" style={{ inset: "0 0 auto auto" }}>
@@ -222,14 +229,7 @@ export const PsvControls = memo(function PsvControls({
 					</div>
 				</div>
 			)}
-			{settings.showCompass && (
-				<div ref={compassRef} className="compass">
-					<svg className="compass__arrow" viewBox="0 0 40 100">
-						<path fill="#C1272D" d="M10 50l10-32 10 32z" />
-						<path fill="#D1D1D1" d="M30 50L20 82 10 50z" />
-					</svg>
-				</div>
-			)}
+			{settings.showCompass && <PsvCompass panorama={panorama} />}
 			{settings.showZoom && (
 				<div className="embed-controls__control" style={{ inset: "auto 0 0 auto" }}>
 					<div className="map-control map-control--button">

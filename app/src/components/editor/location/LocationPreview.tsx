@@ -350,6 +350,7 @@ export function LocationPreview() {
 							(pano.psv() ? (
 								<PsvControls
 									panorama={pano.psv()!}
+									address={geo?.address ?? null}
 									isFullscreen={isFullscreen}
 									onFullscreen={handleFullscreen}
 									onReturnToSpawn={() => {

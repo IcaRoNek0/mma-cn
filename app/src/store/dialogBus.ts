@@ -13,6 +13,8 @@ type DialogPayloads = {
 	"tag-find-replace": void;
 	"apply-field-as-tags": void;
 	"merge-duplicates": void;
+	"merge-pano-duplicates": void;
+	"auto-tag": void;
 	"save-selections": void;
 	"apply-saved-selection": void;
 	"review-sessions": void;

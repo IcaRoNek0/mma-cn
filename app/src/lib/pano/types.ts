@@ -109,14 +109,56 @@ export function fallbackPanoramaMetadata(
 	};
 }
 
+export interface PanoCaptureParts {
+	year: number;
+	month: number;
+	day: number;
+	hour: number;
+	minute: number;
+	second: number;
+}
+
+/** Provider civil time, validated without the computer's timezone or DST. */
+export function parsePanoCaptureParts(panoId: string, source: PanoSource): PanoCaptureParts | null {
+	const start = source === "baidu_pano" ? 10 : 8;
+	const stamp = panoId.slice(start, start + 12);
+	if (!/^\d{12}$/.test(stamp)) return null;
+	const values = stamp.match(/.{2}/g)!.map(Number);
+	const parts = {
+		year: 2000 + values[0]!,
+		month: values[1]!,
+		day: values[2]!,
+		hour: values[3]!,
+		minute: values[4]!,
+		second: values[5]!,
+	};
+	const date = new Date(
+		Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second),
+	);
+	return date.getUTCFullYear() === parts.year &&
+		date.getUTCMonth() === parts.month - 1 &&
+		date.getUTCDate() === parts.day &&
+		date.getUTCHours() === parts.hour &&
+		date.getUTCMinutes() === parts.minute &&
+		date.getUTCSeconds() === parts.second
+		? parts
+		: null;
+}
+
+/** Legacy local Date representation; prefer civil parts for capture-time display. */
+export function parsePanoCaptureDate(panoId: string, source: PanoSource): Date | null {
+	const parts = parsePanoCaptureParts(panoId, source);
+	return parts
+		? new Date(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second)
+		: null;
+}
 export function parsePanoDate(panoId: string, source: PanoSource): Date {
-	const yearStart = source === "baidu_pano" ? 10 : 8;
-	const monthStart = source === "baidu_pano" ? 12 : 10;
-	const year = Number.parseInt(panoId.slice(yearStart, yearStart + 2), 10);
-	const month = Number.parseInt(panoId.slice(monthStart, monthStart + 2), 10);
-	const day = Number.parseInt(panoId.slice(monthStart + 2, monthStart + 4), 10) || 1;
-	const hour = Number.parseInt(panoId.slice(monthStart + 4, monthStart + 6), 10) || 0;
-	const minute = Number.parseInt(panoId.slice(monthStart + 6, monthStart + 8), 10) || 0;
-	if (!Number.isFinite(year) || !Number.isFinite(month)) return new Date(0);
-	return new Date(2000 + year, month - 1, day, hour, minute);
+	return parsePanoCaptureDate(panoId, source) ?? new Date(0);
+}
+export function parsePanoVehicle(panoId: string, source: PanoSource): string | null {
+	const valid = source === "baidu_pano" ? /^\d{26}[A-Za-z]$/.test(panoId) : /^\d{23}$/.test(panoId);
+	if (!valid) return null;
+	return source === "baidu_pano"
+		? `${panoId.slice(0, 3)}_${panoId.slice(5, 9)}_${panoId.slice(-2)}`
+		: `${panoId.slice(0, 4)}-${panoId.slice(5, 8)}车`;
 }

@@ -94,7 +94,7 @@ impl Unsaved {
         delta_path: &Path,
     ) -> AppResult<()> {
         if let Some(delta) = &self.delta {
-            arrow::write_arrow_ipc(delta_path, delta.value())?;
+            arrow::write_compressed_arrow_ipc(delta_path, delta.value())?;
         }
         storage::set_map_counts(conn, map_id, self.alive, self.pending)?;
         if let Some(edits) = &self.edits {
@@ -176,7 +176,7 @@ pub(crate) fn save_edit_history(
                     edit.seq as i64,
                     stack,
                     entry.max_id(),
-                    arrow::arrow_ipc_bytes(&arrow::delta_to_batch(&entry.created, &entry.removed))?
+                    arrow::compressed_arrow_ipc_bytes(&arrow::delta_to_batch(&entry.created, &entry.removed))?
                 ])?;
             }
             (None, None) => log::warn!(

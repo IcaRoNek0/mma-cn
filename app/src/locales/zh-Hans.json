@@ -1668,5 +1668,21 @@
 	"{rate} requests/s": "{rate} 请求/秒",
 	"{rate}/s": "{rate}/秒",
 	"{selected} of {total} selected ({locations} locations)": "已选 {selected} / {total}（{locations} 个位置）",
-	"{value} is the projected value, {field} the field label. A / makes a folder.": "{value} 为投影值，{field} 为字段名。/ 会创建文件夹。"
+	"{value} is the projected value, {field} the field label. A / makes a folder.": "{value} 为投影值，{field} 为字段名。/ 会创建文件夹。",
+	"Add tags across the whole map. Choose any combination. Existing tags are preserved; missing or invalid capture times are skipped.": "为整个题库添加标签，可多选组合。保留已有标签，跳过缺失或无效的拍摄时间。",
+	"Applying...": "应用中…",
+	"Auto Tag": "自动标签",
+	"Auto Tag...": "自动标签…",
+	"Could not load preview.": "无法加载预览。",
+	"Duplicate groups: {groups}. Locations removed: {removed}.": "重复组数：{groups}，将移除的地点数：{removed}。",
+	"Identical non-empty pano IDs are merged across the whole map. Tags are combined. This edit can be undone.": "对整个题库中相同且非空的 Panoid 进行合并，保留所有标签。此操作可撤销。",
+	"Loading...": "加载中…",
+	"Merge duplicate pano IDs": "按 Panoid 合并重复街景",
+	"Merge duplicate pano IDs...": "按 Panoid 合并重复街景…",
+	"Month tag (2022年8月)": "按月份（2022年8月）",
+	"Season tag (2014年冬季)": "按季节（2014年冬季）",
+	"Seasons: March–May spring, June–August summer, September–November autumn, December–February winter. The year follows the capture date.": "季节按春季 3–5 月、夏季 6–8 月、秋季 9–11 月、冬季 12–2 月划分。年份以拍摄日期为准。",
+	"Source tag": "按 source 标签",
+	"Street View vehicle tag": "按街景车标签",
+	"Year tag (2014年)": "按年份（2014年）"
 }
