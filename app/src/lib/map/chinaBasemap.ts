@@ -55,7 +55,8 @@ export function chinaBasemapStyle(prefs: MapEmbedPrefs): StyleSpecification {
 				type: "raster",
 				tiles: [petalTileUrl()],
 				tileSize: 256,
-				maxzoom: 19,
+				// Match the original China basemap; higher camera zooms reuse level 20.
+				maxzoom: 20,
 				attribution: "Huawei Petal Maps",
 			},
 			[BAIDU_COVERAGE_SOURCE]: {

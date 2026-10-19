@@ -23,7 +23,7 @@ describe("China basemap coverage composition", () => {
 		});
 		expect(style.sources.petal).toMatchObject({
 			type: "raster",
-			maxzoom: 19,
+			maxzoom: 20,
 		});
 	});
 
